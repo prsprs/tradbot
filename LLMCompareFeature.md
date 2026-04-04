@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the design for adding Claude (Anthropic) as a secondary LLM to the trading bot, enabling comparison of cryptocurrency recommendations between Gemini and Claude.
+This document describes the design for multi-LLM support in the trading bot, enabling comparison of cryptocurrency recommendations across five LLM providers: Google Gemini, Anthropic Claude, OpenAI GPT, xAI Grok, and Perplexity AI.
 
 ## Goals
 
@@ -21,12 +21,49 @@ A wrapper module mirroring the existing Gemini client pattern:
 
 - Initialize Anthropic client with API credentials from environment variables
 - Expose methods matching the existing request functions:
-  - `sendRecommendationRequest()`
-  - `sendCoinCheckRequest(coin)`
-  - `sendTrendCheckRequest(coin)`
-- Use the `anthropic` Python SDK (similar to how `google-genai` is used)
+  - `send_recommendation_request()`
+  - `send_coin_check_request(coin)`
+  - `send_trend_check_request(coin)`
+  - `send_integrated_coin_check(coin, peer_analysis)` - Round 2 integration
+  - `send_integrated_trend_check(coin, peer_analysis)` - Round 2 integration
+- Uses the `anthropic` Python SDK
+- Model: `claude-sonnet-4-20250514`
 
-#### 2. LLM Response Normalizer
+#### 2. OpenAIClient Wrapper (`openaiutil.py`)
+
+A wrapper module for OpenAI GPT models:
+
+- Initialize OpenAI client with API credentials from environment variables
+- Expose methods matching the existing request functions:
+  - `send_recommendation_request()`
+  - `send_coin_check_request(coin)`
+  - `send_trend_check_request(coin)`
+  - `send_integrated_coin_check(coin, peer_analysis)` - Round 2 integration
+  - `send_integrated_trend_check(coin, peer_analysis)` - Round 2 integration
+- Uses the `openai` Python SDK
+- Model: `gpt-4o`
+
+#### 3. GrokClient Wrapper (`grokutil.py`)
+
+A wrapper module for xAI Grok models with real-time X (Twitter) data access:
+
+- Initialize via OpenAI-compatible API with xAI base URL
+- Real-time social sentiment from X platform
+- Expose standard trading request methods
+- Uses `openai` SDK with `base_url="https://api.x.ai/v1"`
+- Model: `grok-2-latest`
+
+#### 4. PerplexityClient Wrapper (`perplexityutil.py`)
+
+A wrapper module for Perplexity AI with built-in web search:
+
+- Initialize via OpenAI-compatible API with Perplexity base URL
+- **Live web search** built into every query - no separate API needed
+- Real-time market data and news in responses
+- Uses `openai` SDK with `base_url="https://api.perplexity.ai"`
+- Model: `sonar-pro`
+
+#### 5. LLM Response Normalizer
 
 A common interface to normalize responses from different LLMs:
 
@@ -34,7 +71,7 @@ A common interface to normalize responses from different LLMs:
 - Parse recommendation markers (`<**COIN-PRS-BUY**>`) consistently
 - Return standardized recommendation objects
 
-#### 3. Comparison Engine
+#### 6. Comparison Engine
 
 Logic to compare and score recommendations:
 
@@ -45,14 +82,38 @@ Logic to compare and score recommendations:
 
 ## Environment Variables
 
-Add new environment variables following existing pattern:
+### API Keys
 
 | Variable | Description |
 |----------|-------------|
-| `CLAUDE_API_KEY` | Anthropic API key |
-| `GOOGLE_API_KEY` | Existing Gemini API key |
-| `COINBASE_API_KEY` | Existing Coinbase API key |
-| `COINBASE_API_SECRET` | Existing Coinbase API secret |
+| `GOOGLE_API_KEY` | Google Gemini API key |
+| `CLAUDE_API_KEY` | Anthropic Claude API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `XAI_API_KEY` | xAI Grok API key |
+| `PERPLEXITY_API_KEY` | Perplexity AI API key |
+| `COINBASE_API_KEY` | Coinbase API key |
+| `COINBASE_API_SECRET` | Coinbase API secret |
+
+### LLM Configuration
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `LLM_MODE` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, `integrate` | `compare` | Which mode to use |
+| `PRIMARY_LLM` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | LLM for discovery and first analysis (compare/integrate modes) |
+| `COMPARE_LLMS` | Comma-separated list | `gemini,claude` | Which LLMs to include in compare/integrate modes |
+| `REQUIRE_CONSENSUS` | `true`, `false` | `true` | Only trade when all LLMs agree |
+| `INTEGRATION_TIEBREAKER` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `none` | `gemini` | Which LLM wins on disagreement |
+| `LOG_INTEGRATION_ROUNDS` | `true`, `false` | `true` | Log detailed round responses |
+
+## Supported Models
+
+| Provider | Model | Wrapper Module | Special Features |
+|----------|-------|----------------|------------------|
+| Google | `gemini-2.5-pro` | Built into main script | Google Search grounding |
+| Anthropic | `claude-sonnet-4-20250514` | `claudeutil.py` | Strong reasoning |
+| OpenAI | `gpt-4o` | `openaiutil.py` | Multimodal capabilities |
+| xAI | `grok-3` | `grokutil.py` | Real-time X/Twitter data |
+| Perplexity | `sonar-pro` | `perplexityutil.py` | Built-in live web search |
 
 ## Implementation Approach
 
@@ -117,8 +178,8 @@ The structured output format (`<**COIN-PRS-RECOMMENDATION**>`) works across both
               │                         │
               ▼                         ▼
        ┌─────────────┐          ┌─────────────┐
-       │   Gemini    │          │   Claude    │
-       │  2.5 Pro    │          │  3.5 Sonnet │
+       │   Gemini    │          │   Claude    │          │   OpenAI    │
+       │  2.5 Pro    │          │   Sonnet    │          │   GPT-4o    │
        └──────┬──────┘          └──────┬──────┘
               │                         │
               ▼                         ▼
@@ -158,6 +219,105 @@ Add configuration flags (environment variables or config file):
 | `REQUIRE_CONSENSUS` | `true`, `false` | Only trade on agreement |
 | `LOG_DISAGREEMENTS` | `true`, `false` | Log when LLMs disagree |
 
+## Primary LLM Selection
+
+### Overview
+
+The trading bot uses a **two-stage flow** for coin analysis:
+
+1. **Discovery Stage**: An LLM generates initial coin recommendations
+2. **Analysis Stage**: Each coin is analyzed with trend/market data
+
+Currently, Gemini is hardwired as the primary LLM for both stages. This section describes how to make the primary LLM configurable.
+
+### Current Behavior (Hardwired)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    STAGE 1: DISCOVERY                       │
+│                                                             │
+│   sendRecommendationRequest() ──► Gemini ──► 3 coin picks  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    STAGE 2: ANALYSIS                        │
+│                                                             │
+│   For each coin:                                            │
+│     1. Gemini trend/coin check (always runs first)          │
+│     2. process_coin_with_comparison() runs other LLMs       │
+│     3. Compare/integrate based on LLM_MODE                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+This means Gemini is always queried, even when `LLM_MODE=grok` or another single-LLM mode.
+
+### Proposed Behavior (Configurable Primary)
+
+Add a new environment variable `PRIMARY_LLM` to control which LLM handles discovery and first analysis:
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `PRIMARY_LLM` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | LLM for discovery and first analysis |
+
+### Execution Flow with Primary LLM
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    STAGE 1: DISCOVERY                       │
+│                                                             │
+│   PRIMARY_LLM.send_recommendation_request()                 │
+│      │                                                      │
+│      ├── If gemini: sendRecommendationRequest()             │
+│      ├── If claude: claude_trader.send_recommendation_...   │
+│      ├── If openai: openai_trader.send_recommendation_...   │
+│      ├── If grok: grok_trader.send_recommendation_...       │
+│      └── If perplexity: perplexity_trader.send_recomm...    │
+│                                                             │
+│   Result: 3 coin picks from PRIMARY_LLM                     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    STAGE 2: ANALYSIS                        │
+│                                                             │
+│   For each coin:                                            │
+│     1. PRIMARY_LLM trend/coin check (runs first)            │
+│     2. process_coin_with_comparison() handles mode logic:   │
+│        - Single mode: return PRIMARY_LLM result             │
+│        - Compare/Integrate: query other LLMs in COMPARE_LLMS│
+│     3. Final decision based on configured mode              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Mode Interactions
+
+| LLM_MODE | PRIMARY_LLM | Behavior |
+|----------|-------------|----------|
+| `gemini` | (ignored) | Gemini only |
+| `claude` | (ignored) | Claude only |
+| `openai` | (ignored) | OpenAI only |
+| `grok` | (ignored) | Grok only |
+| `perplexity` | (ignored) | Perplexity only |
+| `compare` | `grok` | Grok discovers coins, then all COMPARE_LLMS analyze |
+| `integrate` | `claude` | Claude discovers coins, then Round 1 + Round 2 integration |
+
+**Note**: In single-LLM modes (`gemini`, `claude`, etc.), the `PRIMARY_LLM` setting is ignored—the mode itself determines which LLM to use exclusively.
+
+### Benefits
+
+1. **Real-time discovery**: Use Grok or Perplexity as primary to leverage their real-time data for initial coin picks
+2. **Cost optimization**: Use a cheaper LLM for discovery, premium LLMs for analysis
+3. **A/B testing**: Compare performance when different LLMs lead the discovery
+4. **Flexibility**: Adapt to API outages by switching primary
+
+### Implementation Notes
+
+1. Each LLM wrapper must implement `send_recommendation_request()` that returns coins in a parseable format
+2. The response parsing logic (`get_text_after_delimiter`, `get_text_between_strings`) must work with all LLM response formats
+3. Consider standardizing the recommendation output format across all LLMs
+4. The primary LLM should always be included in `COMPARE_LLMS` for compare/integrate modes
+
 ## Error Handling
 
 Follow existing patterns:
@@ -169,10 +329,16 @@ Follow existing patterns:
 
 ## Dependencies
 
-Add to project requirements:
+Project requirements:
 
 - `anthropic` - Anthropic Python SDK
-- Existing: `google-genai`, `coinbase-advanced-py`, `pytrends`, `pandas`
+- `openai` - OpenAI Python SDK (also used for Grok and Perplexity via compatible API)
+- `google-genai` - Google Generative AI SDK
+- `coinbase-advanced-py` - Coinbase trading API
+- `pytrends` - Google Trends API
+- `pandas` - Data manipulation
+
+**Note:** Grok and Perplexity use the OpenAI SDK with custom base URLs, so no additional packages are required.
 
 ## Testing Strategy
 
@@ -286,15 +452,19 @@ Update `LLM_MODE` to support the new mode:
 |----------------|----------|
 | `gemini` | Gemini only |
 | `claude` | Claude only |
-| `compare` | Independent parallel queries, compare results |
-| `integrate` | Two-round cross-feed, collaborative analysis |
+| `openai` | OpenAI only |
+| `grok` | Grok only (with X/Twitter sentiment) |
+| `perplexity` | Perplexity only (with live web search) |
+| `compare` | Independent queries to LLMs in COMPARE_LLMS, compare results |
+| `integrate` | Two-round cross-feed with LLMs in COMPARE_LLMS |
 
-Additional options for integration mode:
+Additional options:
 
-| Option | Values | Description |
-|--------|--------|-------------|
-| `INTEGRATION_TIEBREAKER` | `gemini`, `claude`, `none` | Which LLM wins on disagreement |
-| `LOG_INTEGRATION_ROUNDS` | `true`, `false` | Log both round responses |
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `COMPARE_LLMS` | Comma-separated | `gemini,claude` | LLMs to use in compare/integrate modes |
+| `INTEGRATION_TIEBREAKER` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `none` | `gemini` | Which LLM wins on disagreement |
+| `LOG_INTEGRATION_ROUNDS` | `true`, `false` | `true` | Log both round responses |
 
 ### Benefits
 
@@ -320,7 +490,7 @@ Additional options for integration mode:
 
 ## Future Enhancements
 
-- Add more LLMs (OpenAI GPT-4, Llama, etc.)
+- Add more LLMs (Llama, Mistral, etc.)
 - Weight recommendations by historical accuracy
 - Track and report agreement rates over time
 - A/B test trading strategies (single LLM vs consensus)
