@@ -26,3 +26,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Coinbase credentials
+cdp_api_key.json
+cdp_api_key*.json
+*.pem

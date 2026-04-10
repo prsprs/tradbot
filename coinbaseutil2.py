@@ -1,10 +1,41 @@
 from coinbase.rest import RESTClient
 import json
+import os
+
+# Default path for Coinbase credentials JSON file
+DEFAULT_CREDENTIALS_PATH = "cdp_api_key.json"
 
 class BlobbyTrader:
-    def __init__(self, api_key, api_secret):
-        """Initialize the Coinbase REST client with API credentials."""
-        self.client = RESTClient(api_key=api_key, api_secret=api_secret)
+    def __init__(self, credentials_path=None):
+        """Initialize the Coinbase REST client with API credentials from JSON file.
+        
+        Args:
+            credentials_path: Path to the Coinbase CDP JSON credentials file.
+                            Defaults to 'cdp_api_key.json' in the current directory,
+                            or can be set via COINBASE_CREDENTIALS_FILE env var.
+        """
+        # Determine credentials file path
+        if credentials_path is None:
+            credentials_path = os.environ.get('COINBASE_CREDENTIALS_FILE', DEFAULT_CREDENTIALS_PATH)
+        
+        # Load credentials from JSON file
+        try:
+            with open(credentials_path, 'r') as f:
+                creds = json.load(f)
+            
+            api_key = creds['name']
+            api_secret = creds['privateKey']
+            
+            self.client = RESTClient(api_key=api_key, api_secret=api_secret)
+            print(f"Coinbase client initialized from {credentials_path}")
+            
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"Coinbase credentials file not found: {credentials_path}\n"
+                "Download your API key JSON from https://cloud.coinbase.com/access/api"
+            )
+        except KeyError as e:
+            raise ValueError(f"Invalid credentials file format, missing key: {e}")
     
     def get_product_details(self, product_id):
         """Get details for a specific product (e.g., 'BTC-USD')."""

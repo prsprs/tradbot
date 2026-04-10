@@ -691,27 +691,17 @@ config = types.GenerateContentConfig(
 
 
 
-# The Values below should be derived from environment variables obviously
-
-
-
-BLOBS2 = os.environ.get('COINBASE_API_KEY')
-
-BLOBS1 = os.environ.get('COINBASE_API_SECRET')
-
-
+# Coinbase credentials are loaded from JSON file (cdp_api_key.json)
+# Can be overridden with COINBASE_CREDENTIALS_FILE env var
 
 coinsToExclude = {'PEPE'}
 
 
 
 
-
-
-
 doPython=True  # This makes the thing do no actual trading, should be renamed
 
-trader = BlobbyTrader(BLOBS2, BLOBS1)
+trader = BlobbyTrader()
 
 # === COIN CHOICE MODE: Analyze specified coins directly ===
 if not USE_COIN_DISCOVERY:
