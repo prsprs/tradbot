@@ -1,0 +1,28 @@
+{
+  "recommendations": [
+    {
+      "id": "rec_20260410_194806_SHIB",
+      "timestamp": "2026-04-10T19:48:06.600002Z",
+      "coin_symbol": "SHIB",
+      "recommendation": "HOLD",
+      "price_at_recommendation": 6.01e-06,
+      "bid_price": 6.01e-06,
+      "ask_price": 6.01e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null
+    },
+    {
+      "id": "rec_20260410_195053_SHIB",
+      "timestamp": "2026-04-10T19:50:53.648959Z",
+      "coin_symbol": "SHIB",
+      "recommendation": "BUY",
+      "price_at_recommendation": 6.03e-06,
+      "bid_price": 6.03e-06,
+      "ask_price": 6.03e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null
+    }
+  ]
+}

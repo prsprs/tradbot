@@ -20,6 +20,8 @@ from grokutil import GrokTrader
 
 from perplexityutil import PerplexityTrader
 
+from historyutil import record_recommendation
+
 from pytrends.request import TrendReq
 
 import pandas as pd
@@ -734,6 +736,17 @@ if not USE_COIN_DISCOVERY:
         # Apply comparison/integration if enabled
         final_action = process_coin_with_comparison(coin_symbol, followUpResponseText, use_trend_check=use_trend)
         
+        # Record recommendation to history
+        if final_action:
+            record_recommendation(
+                coin_symbol=coin_symbol,
+                recommendation=final_action,
+                trader=trader,
+                llm_source=PRIMARY_LLM,
+                mode=LLM_MODE,
+                consensus=None  # Consensus tracking for compare/integrate modes
+            )
+        
         # Track and execute trade if recommended
         if final_action and 'BUY' in final_action:
             coinsToBuy.append(coin_symbol)
@@ -789,6 +802,17 @@ else:
         # Use comparison/integration if enabled - pass full response text for integration mode
         final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
         
+        # Record recommendation to history
+        if final_action:
+            record_recommendation(
+                coin_symbol=extracted_content,
+                recommendation=final_action,
+                trader=trader,
+                llm_source=PRIMARY_LLM,
+                mode=LLM_MODE,
+                consensus=None
+            )
+        
         if doPython:
             if extracted_content not in coinsToExclude:
                 if final_action and 'BUY' in final_action:
@@ -826,6 +850,17 @@ else:
         
         # Use comparison/integration if enabled - pass full response text for integration mode
         final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
+        
+        # Record recommendation to history
+        if final_action:
+            record_recommendation(
+                coin_symbol=extracted_content,
+                recommendation=final_action,
+                trader=trader,
+                llm_source=PRIMARY_LLM,
+                mode=LLM_MODE,
+                consensus=None
+            )
         
         if doPython:
             if extracted_content not in coinsToExclude:
@@ -866,6 +901,17 @@ else:
             # Use comparison/integration if enabled - pass full response text for integration mode
             final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
             
+            # Record recommendation to history
+            if final_action:
+                record_recommendation(
+                    coin_symbol=extracted_content,
+                    recommendation=final_action,
+                    trader=trader,
+                    llm_source=PRIMARY_LLM,
+                    mode=LLM_MODE,
+                    consensus=None
+                )
+            
             if final_action and 'BUY' in final_action:
                 coinsToBuy.append(followUp_coin1)
             if doPython:
@@ -905,6 +951,17 @@ else:
         
         # Use comparison/integration if enabled - pass full response text for integration mode
         final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
+        
+        # Record recommendation to history
+        if final_action:
+            record_recommendation(
+                coin_symbol=extracted_content,
+                recommendation=final_action,
+                trader=trader,
+                llm_source=PRIMARY_LLM,
+                mode=LLM_MODE,
+                consensus=None
+            )
         
         if final_action and 'BUY' in final_action:
             coinsToBuy.append(followUp_coin1)

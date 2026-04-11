@@ -1,0 +1,5 @@
+timestamp,coin,recommendation,rec_price,current_price,change_pct,outcome,outcome_display,llm_source,mode,consensus
+2026-04-09T12:00:00Z,DOGE,BUY,0.15,0.095,-36.7%,INCORRECT,Incorrect (-36.7%),gemini,compare,True
+2026-04-09T14:00:00Z,SHIB,SELL,2e-05,6.04e-06,-69.8%,CORRECT,Correct (-69.8%),claude,integrate,False
+2026-04-03T10:00:00Z,BTC,HOLD,68000.0,72988.0,+7.3%,,(+7.3%),gemini,gemini,
+2026-04-03T12:00:00Z,ETH,BUY,3200.0,0,0.0%,UNKNOWN,Unknown (price unavailable),openai,compare,True

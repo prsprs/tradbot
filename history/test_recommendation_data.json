@@ -1,0 +1,52 @@
+{
+  "recommendations": [
+    {
+      "id": "rec_20260409_120000_DOGE",
+      "timestamp": "2026-04-09T12:00:00Z",
+      "coin_symbol": "DOGE",
+      "recommendation": "BUY",
+      "price_at_recommendation": 0.15,
+      "bid_price": 0.1499,
+      "ask_price": 0.1501,
+      "llm_source": "gemini",
+      "mode": "compare",
+      "consensus": true
+    },
+    {
+      "id": "rec_20260409_140000_SHIB",
+      "timestamp": "2026-04-09T14:00:00Z",
+      "coin_symbol": "SHIB",
+      "recommendation": "SELL",
+      "price_at_recommendation": 0.00002,
+      "bid_price": 0.000019,
+      "ask_price": 0.000021,
+      "llm_source": "claude",
+      "mode": "integrate",
+      "consensus": false
+    },
+    {
+      "id": "rec_20260403_100000_BTC",
+      "timestamp": "2026-04-03T10:00:00Z",
+      "coin_symbol": "BTC",
+      "recommendation": "HOLD",
+      "price_at_recommendation": 68000.0,
+      "bid_price": 67990.0,
+      "ask_price": 68010.0,
+      "llm_source": "gemini",
+      "mode": "gemini",
+      "consensus": null
+    },
+    {
+      "id": "rec_20260403_120000_ETH",
+      "timestamp": "2026-04-03T12:00:00Z",
+      "coin_symbol": "ETH",
+      "recommendation": "BUY",
+      "price_at_recommendation": 3200.0,
+      "bid_price": 3199.0,
+      "ask_price": 3201.0,
+      "llm_source": "openai",
+      "mode": "compare",
+      "consensus": true
+    }
+  ]
+}
