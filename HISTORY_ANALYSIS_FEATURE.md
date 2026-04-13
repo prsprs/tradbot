@@ -34,7 +34,7 @@ A mechanism to capture and retrieve historical prices:
 - Record price at recommendation time (including bid/ask spread)
 - Fetch current price for comparison (Coinbase primary, CoinGecko fallback)
 - Calculate price change percentage
-- Support two time horizons: 24-hour and 7-day
+- Support three time horizons: 24-hour, mid-term (3-6 days), and 7-day
 
 ### 3. Analysis Engine
 
@@ -68,7 +68,7 @@ Logic to evaluate recommendation accuracy:
 |-------|------|-------------|
 | `recommendation_id` | string | Links to recommendation |
 | `analysis_timestamp` | datetime | When analysis was performed |
-| `analysis_window` | string | "24h" or "7d" |
+| `analysis_window` | string | "24h", "midterm", or "7d" |
 | `current_price` | decimal | Price at analysis time |
 | `price_change_percent` | decimal | Percentage change since recommendation |
 | `outcome` | enum | CORRECT, INCORRECT, UNKNOWN |
@@ -86,16 +86,17 @@ LLM_MODE=analysis
 
 ### Analysis Process
 
-1. **24-hour window:** Find recommendations made 24-48 hours ago
-2. **7-day window:** Find recommendations made 7-8 days ago
-3. For each recommendation in scope:
+1. **24-hour window:** Find recommendations made 24-48 hours ago (days 1-2)
+2. **Mid-term window:** Find recommendations made 2-7 days ago (48-168 hours)
+3. **7-day window:** Find recommendations made 7-8 days ago (168-192 hours)
+4. For each recommendation in scope:
    - Fetch current price from Coinbase (fallback: CoinGecko)
    - If price unavailable, mark as UNKNOWN
    - Calculate price change percentage since recommendation
    - Determine outcome based on recommendation type
    - Store analysis result
-4. Generate console report
-5. Export to CSV file
+5. Generate console report
+6. Export to CSV files
 
 ### Correctness Criteria
 
@@ -146,9 +147,10 @@ Analysis mode should output:
 
 ```
 ./history/
-├── recommendations.json      # All recommendation records
-├── analysis_24h_YYYYMMDD.csv # 24-hour analysis results
-└── analysis_7d_YYYYMMDD.csv  # 7-day analysis results
+├── recommendations.json          # All recommendation records
+├── analysis_24h_YYYYMMDD.csv     # 24-hour analysis results
+├── analysis_midterm_YYYYMMDD.csv # Mid-term (3-6 day) analysis results
+└── analysis_7d_YYYYMMDD.csv      # 7-day analysis results
 ```
 
 ### JSON Format (recommendations.json)
@@ -199,13 +201,14 @@ When `LLM_MODE=analysis`:
 1. Skip normal trading flow entirely (exclusive mode)
 2. Load `./history/recommendations.json`
 3. **24-hour window:** Find recs from 24-48 hours ago
-4. **7-day window:** Find recs from 7-8 days ago
-5. For each recommendation:
+4. **Mid-term window:** Find recs from 2-7 days ago
+5. **7-day window:** Find recs from 7-8 days ago
+6. For each recommendation:
    - Fetch current price (Coinbase, fallback CoinGecko)
    - Calculate price change
    - Determine outcome
-6. Output console report
-7. Export CSV files (`analysis_24h_YYYYMMDD.csv`, `analysis_7d_YYYYMMDD.csv`)
+7. Output console report
+8. Export CSV files (`analysis_24h_YYYYMMDD.csv`, `analysis_midterm_YYYYMMDD.csv`, `analysis_7d_YYYYMMDD.csv`)
 
 ## Sample Console Output
 
@@ -224,6 +227,21 @@ SOL, Buy, Unknown (price unavailable)
 
 --- 24-HOUR SUMMARY ---
 BUY recommendations:  2 correct, 1 incorrect, 1 unknown (66.7% accuracy)
+SELL recommendations: 1 correct, 0 incorrect (100.0% accuracy)
+HOLD recommendations: 1 total (no judgment)
+
+=== MID-TERM ANALYSIS (recs from 2-7 days ago) ===
+Recommendations found: 6
+
+DOGE, Buy, Correct (+5.2%)
+SHIB, Sell, Correct (+3.8%)
+PEPE, Buy, Incorrect (-2.1%)
+ETH, Hold, (+1.5%)
+BTC, Buy, Correct (+3.2%)
+SOL, Buy, Correct (+4.1%)
+
+--- MID-TERM SUMMARY ---
+BUY recommendations:  3 correct, 1 incorrect (75.0% accuracy)
 SELL recommendations: 1 correct, 0 incorrect (100.0% accuracy)
 HOLD recommendations: 1 total (no judgment)
 
@@ -250,6 +268,7 @@ SELL: 2 correct / 3 judged (66.7%)
 
 CSV files written:
   ./history/analysis_24h_20260410.csv
+  ./history/analysis_midterm_20260410.csv
   ./history/analysis_7d_20260410.csv
 ```
 
@@ -264,7 +283,7 @@ CSV files written:
 
 ### Analysis Logic
 
-5. **Time horizons:** 24-hour and 7-day windows
+5. **Time horizons:** 24-hour (1-2 days), mid-term (2-7 days), and 7-day (7-8 days) windows for continuous 8-day coverage
 6. **Correctness reporting:** Report actual percentage change with outcome
    - Example BUY correct: `DOGE, Buy, Correct (+2%)`
    - Example SELL incorrect: `DOGE, Sell, Incorrect (-5%)`

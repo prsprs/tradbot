@@ -23,6 +23,18 @@
       "llm_source": "grok",
       "mode": "compare,",
       "consensus": null
+    },
+    {
+      "id": "rec_20260413_005811_SHIB",
+      "timestamp": "2026-04-13T00:58:11.045733Z",
+      "coin_symbol": "SHIB",
+      "recommendation": "HOLD",
+      "price_at_recommendation": 5.8e-06,
+      "bid_price": 5.8e-06,
+      "ask_price": 5.8e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null
     }
   ]
 }

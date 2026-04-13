@@ -10,7 +10,7 @@ Usage:
 
 Output:
     - Console report with per-recommendation and summary statistics
-    - CSV files: ./history/analysis_24h_YYYYMMDD.csv, ./history/analysis_7d_YYYYMMDD.csv
+    - CSV files: ./history/analysis_24h_YYYYMMDD.csv, ./history/analysis_midterm_YYYYMMDD.csv, ./history/analysis_7d_YYYYMMDD.csv
 """
 
 import csv
@@ -347,6 +347,26 @@ def main():
     else:
         print("No recommendations in this window.")
     
+    # Mid-term analysis (recs from 2-7 days ago)
+    print("\n" + "="*50)
+    print("=== MID-TERM ANALYSIS (recs from 2-7 days ago) ===")
+    recs_midterm = get_recommendations_in_window(all_recs, 48, 168)  # 2*24=48, 7*24=168
+    print(f"Recommendations found: {len(recs_midterm)}\n")
+    
+    csv_midterm = None
+    if recs_midterm:
+        results_midterm = analyze_recommendations(recs_midterm, trader)
+        bc, bi, sc, si = print_summary(results_midterm, "MID-TERM")
+        total_buy_correct += bc
+        total_buy_incorrect += bi
+        total_sell_correct += sc
+        total_sell_incorrect += si
+        all_results.extend(results_midterm)
+        
+        csv_midterm = export_to_csv(results_midterm, f"analysis_midterm_{datetime.utcnow().strftime('%Y%m%d')}.csv")
+    else:
+        print("No recommendations in this window.")
+    
     # 7-day analysis (recs from 7-8 days ago)
     print("\n" + "="*50)
     print("=== 7-DAY ANALYSIS (recs from 7-8 days ago) ===")
@@ -393,9 +413,11 @@ def main():
     print("\nCSV files written:")
     if csv_24h:
         print(f"  {csv_24h}")
+    if csv_midterm:
+        print(f"  {csv_midterm}")
     if csv_7d:
         print(f"  {csv_7d}")
-    if not csv_24h and not csv_7d:
+    if not csv_24h and not csv_midterm and not csv_7d:
         print("  (none - no recommendations in analysis windows)")
 
 
