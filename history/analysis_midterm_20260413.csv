@@ -1,3 +1,3 @@
 timestamp,coin,recommendation,rec_price,current_price,change_pct,outcome,outcome_display,llm_source,mode,consensus
-2026-04-10T19:48:06.600002Z,SHIB,HOLD,6.01e-06,5.81e-06,-3.3%,,(-3.3%),grok,"compare,",
-2026-04-10T19:50:53.648959Z,SHIB,BUY,6.03e-06,5.81e-06,-3.6%,INCORRECT,Incorrect (-3.6%),grok,"compare,",
+2026-04-10T19:48:06.600002Z,SHIB,HOLD,6.01e-06,5.79e-06,-3.7%,,(-3.7%),grok,"compare,",
+2026-04-10T19:50:53.648959Z,SHIB,BUY,6.03e-06,5.79e-06,-4.0%,INCORRECT,Incorrect (-4.0%),grok,"compare,",

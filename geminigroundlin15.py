@@ -412,44 +412,46 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
         use_trend_check: If True, use trend check; otherwise use coin check
     
     Returns:
-        str or None: The final action to take
+        tuple: (action, consensus) where:
+            - action: str or None - The final action to take (BUY/SELL/HOLD or None)
+            - consensus: bool or None - True if all LLMs agreed, False if tiebreaker used, None for single LLM
     """
     if coin_symbol is None:
-        return None
+        return None, None
     
     # Parse PRIMARY_LLM's Round 1 recommendation
     primary_rec = get_text_between_strings(primary_response_text, "-PRS-", "**>") if primary_response_text else None
     
-    # Single LLM modes - use the single LLM exclusively
+    # Single LLM modes - use the single LLM exclusively (consensus=None for single LLM)
     if LLM_MODE == 'gemini':
         if PRIMARY_LLM == 'gemini':
-            return primary_rec
+            return primary_rec, None
         _, rec = get_llm_response('gemini', coin_symbol, use_trend_check)
-        return rec
+        return rec, None
     
     if LLM_MODE == 'claude':
         if PRIMARY_LLM == 'claude':
-            return primary_rec
+            return primary_rec, None
         _, rec = get_llm_response('claude', coin_symbol, use_trend_check)
-        return rec
+        return rec, None
     
     if LLM_MODE == 'openai':
         if PRIMARY_LLM == 'openai':
-            return primary_rec
+            return primary_rec, None
         _, rec = get_llm_response('openai', coin_symbol, use_trend_check)
-        return rec
+        return rec, None
     
     if LLM_MODE == 'grok':
         if PRIMARY_LLM == 'grok':
-            return primary_rec
+            return primary_rec, None
         _, rec = get_llm_response('grok', coin_symbol, use_trend_check)
-        return rec
+        return rec, None
     
     if LLM_MODE == 'perplexity':
         if PRIMARY_LLM == 'perplexity':
-            return primary_rec
+            return primary_rec, None
         _, rec = get_llm_response('perplexity', coin_symbol, use_trend_check)
-        return rec
+        return rec, None
     
     # === COMPARE/INTEGRATE MODES: Multi-LLM ===
     try:
@@ -510,7 +512,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
         
         if len(r1_recs) < 2:
             print(f"Only {len(r1_recs)} LLM(s) responded, using first available")
-            return list(r1_recs.values())[0] if r1_recs else primary_rec
+            return (list(r1_recs.values())[0] if r1_recs else primary_rec), None
         
         # === COMPARE MODE ===
         if LLM_MODE == 'compare':
@@ -523,15 +525,15 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             print(f"\n[COMPARISON] " + ", ".join(f"{k}: {v}" for k, v in r1_recs.items()) + f", Agree: {all_agree}")
             
             if all_agree:
-                return recs_list[0]
+                return recs_list[0], True  # All LLMs agreed
             elif REQUIRE_CONSENSUS:
                 print("  [DISAGREE] No consensus - no action taken")
-                return None
+                return None, False  # No consensus, no action
             else:
                 # Use tiebreaker or first LLM
                 if INTEGRATION_TIEBREAKER in r1_recs:
-                    return r1_recs[INTEGRATION_TIEBREAKER]
-                return recs_list[0]
+                    return r1_recs[INTEGRATION_TIEBREAKER], False  # Tiebreaker used
+                return recs_list[0], False  # First LLM used as fallback
         
         # === INTEGRATE MODE: Round 2 cross-feeding ===
         if LLM_MODE == 'integrate':
@@ -568,23 +570,23 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             print(f"\n[INTEGRATE FINAL] " + ", ".join(f"{k}: {v}" for k, v in r2_recs.items()) + f", Agree: {all_agree}")
             
             if all_agree:
-                return recs_list[0]
+                return recs_list[0], True  # All LLMs agreed after Round 2
             else:
                 if INTEGRATION_TIEBREAKER in r2_recs:
                     print(f"  [TIEBREAKER] Using {INTEGRATION_TIEBREAKER} recommendation: {r2_recs[INTEGRATION_TIEBREAKER]}")
-                    return r2_recs[INTEGRATION_TIEBREAKER]
+                    return r2_recs[INTEGRATION_TIEBREAKER], False  # Tiebreaker used
                 elif INTEGRATION_TIEBREAKER == 'none':
                     print("  [TIEBREAKER] No tiebreaker set, no action taken")
-                    return None
+                    return None, False  # No consensus, no action
                 else:
-                    return recs_list[0]
+                    return recs_list[0], False  # First LLM used as fallback
         
     except Exception as e:
         print(f"Error in LLM processing for {coin_symbol}: {e}")
         print(f"Falling back to {PRIMARY_LLM} recommendation only")
-        return primary_rec
+        return primary_rec, None  # Fallback, no consensus info
     
-    return primary_rec
+    return primary_rec, None  # Default fallback
 
 def buy_something(coinToBuy):
 
@@ -734,9 +736,9 @@ if not USE_COIN_DISCOVERY:
         print(f"Coin and rec: {followUp_coin}, {followUp_rec}")
         
         # Apply comparison/integration if enabled
-        final_action = process_coin_with_comparison(coin_symbol, followUpResponseText, use_trend_check=use_trend)
+        final_action, consensus = process_coin_with_comparison(coin_symbol, followUpResponseText, use_trend_check=use_trend)
         
-        # Record recommendation to history
+        # Record recommendation to history (discovery_llm=None since coin was user-specified)
         if final_action:
             record_recommendation(
                 coin_symbol=coin_symbol,
@@ -744,7 +746,8 @@ if not USE_COIN_DISCOVERY:
                 trader=trader,
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
-                consensus=None  # Consensus tracking for compare/integrate modes
+                consensus=consensus,
+                discovery_llm=None
             )
         
         # Track and execute trade if recommended
@@ -800,9 +803,9 @@ else:
         print("Trend check coin and rec1: ", followUp_coin1, followUp_rec1)
         
         # Use comparison/integration if enabled - pass full response text for integration mode
-        final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
+        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
         
-        # Record recommendation to history
+        # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
         if final_action:
             record_recommendation(
                 coin_symbol=extracted_content,
@@ -810,7 +813,8 @@ else:
                 trader=trader,
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
-                consensus=None
+                consensus=consensus,
+                discovery_llm=PRIMARY_LLM
             )
         
         if doPython:
@@ -849,9 +853,9 @@ else:
         print("coin and rec1: ", followUp_coin1, followUp_rec1)
         
         # Use comparison/integration if enabled - pass full response text for integration mode
-        final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
+        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
         
-        # Record recommendation to history
+        # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
         if final_action:
             record_recommendation(
                 coin_symbol=extracted_content,
@@ -859,7 +863,8 @@ else:
                 trader=trader,
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
-                consensus=None
+                consensus=consensus,
+                discovery_llm=PRIMARY_LLM
             )
         
         if doPython:
@@ -899,9 +904,9 @@ else:
             print("coin and rec1: ", followUp_coin1, followUp_rec1)
             
             # Use comparison/integration if enabled - pass full response text for integration mode
-            final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
+            final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
             
-            # Record recommendation to history
+            # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
             if final_action:
                 record_recommendation(
                     coin_symbol=extracted_content,
@@ -909,7 +914,8 @@ else:
                     trader=trader,
                     llm_source=PRIMARY_LLM,
                     mode=LLM_MODE,
-                    consensus=None
+                    consensus=consensus,
+                    discovery_llm=PRIMARY_LLM
                 )
             
             if final_action and 'BUY' in final_action:
@@ -950,9 +956,9 @@ else:
         print("Trend check coin and rec1: ", followUp_coin1, followUp_rec1)
         
         # Use comparison/integration if enabled - pass full response text for integration mode
-        final_action = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
+        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
         
-        # Record recommendation to history
+        # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
         if final_action:
             record_recommendation(
                 coin_symbol=extracted_content,
@@ -960,7 +966,8 @@ else:
                 trader=trader,
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
-                consensus=None
+                consensus=consensus,
+                discovery_llm=PRIMARY_LLM
             )
         
         if final_action and 'BUY' in final_action:

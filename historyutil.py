@@ -59,7 +59,8 @@ def create_recommendation_record(
     ask_price: float,
     llm_source: str,
     mode: str,
-    consensus: Optional[bool] = None
+    consensus: Optional[bool] = None,
+    discovery_llm: Optional[str] = None
 ) -> Dict:
     """Create a recommendation record with all required fields.
     
@@ -72,6 +73,7 @@ def create_recommendation_record(
         llm_source: Which LLM(s) made this recommendation
         mode: gemini, claude, openai, grok, perplexity, compare, or integrate
         consensus: Whether all LLMs agreed (for multi-LLM modes), None for single LLM
+        discovery_llm: Which LLM discovered this coin (None if coin was specified via ANALYZE_COINS)
     
     Returns:
         Dictionary containing the recommendation record.
@@ -86,7 +88,8 @@ def create_recommendation_record(
         'ask_price': ask_price,
         'llm_source': llm_source,
         'mode': mode,
-        'consensus': consensus
+        'consensus': consensus,
+        'discovery_llm': discovery_llm
     }
 
 
@@ -96,7 +99,8 @@ def record_recommendation(
     trader,
     llm_source: str,
     mode: str,
-    consensus: Optional[bool] = None
+    consensus: Optional[bool] = None,
+    discovery_llm: Optional[str] = None
 ) -> Optional[Dict]:
     """Record a recommendation by fetching current price from trader and saving.
     
@@ -109,6 +113,7 @@ def record_recommendation(
         llm_source: Which LLM(s) made this recommendation
         mode: gemini, claude, openai, grok, perplexity, compare, or integrate
         consensus: Whether all LLMs agreed (for multi-LLM modes)
+        discovery_llm: Which LLM discovered this coin (None if coin was specified via ANALYZE_COINS)
     
     Returns:
         The saved recommendation record, or None if price fetch failed.
@@ -133,7 +138,8 @@ def record_recommendation(
                 ask_price=ask,
                 llm_source=llm_source,
                 mode=mode,
-                consensus=consensus
+                consensus=consensus,
+                discovery_llm=discovery_llm
             )
             save_recommendation(rec_record)
             print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ ${price:.6f}")

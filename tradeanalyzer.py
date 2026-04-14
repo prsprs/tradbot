@@ -146,6 +146,7 @@ def analyze_recommendations(recs: List[Dict], trader=None) -> List[Dict]:
             outcome, outcome_display = calculate_outcome(recommendation, change_pct)
         
         results.append({
+            'recommendation_id': rec.get('id', ''),
             'timestamp': rec.get('timestamp', ''),
             'coin': coin,
             'recommendation': recommendation,
@@ -177,7 +178,7 @@ def export_to_csv(results: List[Dict], filename: str) -> str:
     """
     ensure_history_dir()
     filepath = os.path.join(HISTORY_DIR, filename)
-    fieldnames = ['timestamp', 'coin', 'recommendation', 'rec_price', 
+    fieldnames = ['recommendation_id', 'timestamp', 'coin', 'recommendation', 'rec_price', 
                   'current_price', 'change_pct', 'outcome', 'outcome_display',
                   'llm_source', 'mode', 'consensus']
     with open(filepath, 'w', newline='') as f:
