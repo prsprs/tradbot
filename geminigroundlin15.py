@@ -2,11 +2,11 @@ from google import genai
 
 from google.genai import types
 
+import argparse
 import datetime
-
 import json
-
 import os
+import sys
 
 from coinbase.rest import RESTClient
 
@@ -25,6 +25,100 @@ from historyutil import record_recommendation
 from pytrends.request import TrendReq
 
 import pandas as pd
+
+
+def parse_args():
+    """Parse command-line arguments with environment variable fallbacks."""
+    parser = argparse.ArgumentParser(
+        description='Trading Bot - Cryptocurrency recommendation engine',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python geminigroundlin15.py --llm-mode=compare --coins=PEPE,BONK
+  python geminigroundlin15.py --trading-mode=whatif --llm-mode=integrate
+  
+Environment variables can also be used (CLI takes precedence):
+  TRADING_MODE, LLM_MODE, PRIMARY_LLM, COMPARE_LLMS, ANALYZE_COINS, etc.
+"""
+    )
+    
+    # Trading mode
+    parser.add_argument(
+        '--trading-mode',
+        choices=['live', 'whatif'],
+        default=os.environ.get('TRADING_MODE', 'live').lower(),
+        help='Trading mode: live executes trades, whatif simulates (default: live)'
+    )
+    
+    # LLM mode
+    parser.add_argument(
+        '--llm-mode',
+        choices=['gemini', 'claude', 'openai', 'grok', 'perplexity', 'compare', 'integrate'],
+        default=os.environ.get('LLM_MODE', 'compare').lower(),
+        help='LLM mode for recommendations (default: compare)'
+    )
+    
+    # Primary LLM
+    parser.add_argument(
+        '--primary-llm',
+        choices=['gemini', 'claude', 'openai', 'grok', 'perplexity'],
+        default=os.environ.get('PRIMARY_LLM', 'gemini').lower(),
+        help='Primary LLM for discovery (default: gemini)'
+    )
+    
+    # Compare LLMs
+    parser.add_argument(
+        '--compare-llms',
+        default=os.environ.get('COMPARE_LLMS', 'gemini,claude').lower(),
+        help='Comma-separated LLMs for compare/integrate mode (default: gemini,claude)'
+    )
+    
+    # Coins to analyze
+    parser.add_argument(
+        '--coins',
+        default=os.environ.get('ANALYZE_COINS', ''),
+        help='Comma-separated coins to analyze (max 5), or empty for discovery mode'
+    )
+    
+    # Require consensus
+    parser.add_argument(
+        '--require-consensus',
+        choices=['true', 'false'],
+        default=os.environ.get('REQUIRE_CONSENSUS', 'true').lower(),
+        help='Require LLM consensus for action (default: true)'
+    )
+    
+    # Tiebreaker
+    parser.add_argument(
+        '--tiebreaker',
+        choices=['gemini', 'claude', 'openai', 'grok', 'perplexity', 'none'],
+        default=os.environ.get('INTEGRATION_TIEBREAKER', 'gemini').lower(),
+        help='Tiebreaker LLM when no consensus (default: gemini)'
+    )
+    
+    # Log integration rounds
+    parser.add_argument(
+        '--log-rounds',
+        choices=['true', 'false'],
+        default=os.environ.get('LOG_INTEGRATION_ROUNDS', 'true').lower(),
+        help='Log integration round details (default: true)'
+    )
+    
+    return parser.parse_args()
+
+
+def get_config_source(arg_name, env_name):
+    """Determine the source of a configuration value."""
+    for arg in sys.argv:
+        if arg.startswith(arg_name):
+            return f"{arg_name}"
+    if os.environ.get(env_name):
+        return f"{env_name} env"
+    return "default"
+
+
+# Parse command-line arguments
+args = parse_args()
 
 
 
@@ -55,21 +149,22 @@ coinsToSell = []
 
 coinsToHold = []
 
-# LLM comparison mode: 'gemini', 'claude', 'openai', 'grok', 'perplexity', 'compare', or 'integrate'
-# For compare/integrate, use COMPARE_LLMS to specify which LLMs to use (default: gemini,claude)
-LLM_MODE = os.environ.get('LLM_MODE', 'compare')
-PRIMARY_LLM = os.environ.get('PRIMARY_LLM', 'gemini').lower()  # LLM for discovery and first analysis
-COMPARE_LLMS = os.environ.get('COMPARE_LLMS', 'gemini,claude').lower().split(',')
-REQUIRE_CONSENSUS = os.environ.get('REQUIRE_CONSENSUS', 'true').lower() == 'true'
-INTEGRATION_TIEBREAKER = os.environ.get('INTEGRATION_TIEBREAKER', 'gemini')  # 'gemini', 'claude', 'openai', 'grok', 'perplexity', or 'none'
-LOG_INTEGRATION_ROUNDS = os.environ.get('LOG_INTEGRATION_ROUNDS', 'true').lower() == 'true'
+# Configuration from CLI args (with env var fallback)
+TRADING_MODE = args.trading_mode
+WHATIF_MODE = TRADING_MODE == 'whatif'
+LLM_MODE = args.llm_mode
+PRIMARY_LLM = args.primary_llm
+COMPARE_LLMS = [llm.strip() for llm in args.compare_llms.split(',')]
+REQUIRE_CONSENSUS = args.require_consensus == 'true'
+INTEGRATION_TIEBREAKER = args.tiebreaker
+LOG_INTEGRATION_ROUNDS = args.log_rounds == 'true'
 
 # Coin choice: specify coins directly instead of LLM discovery (max 5)
-ANALYZE_COINS_RAW = os.environ.get('ANALYZE_COINS', '').strip()
+ANALYZE_COINS_RAW = args.coins.strip()
 ANALYZE_COINS = [c.strip().upper() for c in ANALYZE_COINS_RAW.split(',') if c.strip()][:5]
 USE_COIN_DISCOVERY = len(ANALYZE_COINS) == 0
 if len([c.strip() for c in ANALYZE_COINS_RAW.split(',') if c.strip()]) > 5:
-    print(f"Warning: ANALYZE_COINS limited to 5 coins, ignoring extras")
+    print(f"Warning: --coins limited to 5 coins, ignoring extras")
 
 
 
@@ -703,17 +798,55 @@ coinsToExclude = {'PEPE'}
 
 
 
-doPython=True  # This makes the thing do no actual trading, should be renamed
+# What-if mode tracking
+whatif_buys = 0
+whatif_sells = 0
 
 trader = BlobbyTrader()
 
+# === STARTUP BANNER ===
+print("\n" + "="*50)
+print("=== TRADING BOT ===")
+print("="*50)
+
+# Show trading mode with source
+trading_mode_source = get_config_source('--trading-mode', 'TRADING_MODE')
+if WHATIF_MODE:
+    print(f"Trading Mode: WHAT-IF (no real trades) [{trading_mode_source}]")
+else:
+    print(f"Trading Mode: LIVE (trades will execute) [{trading_mode_source}]")
+
+# Show LLM configuration
+llm_mode_source = get_config_source('--llm-mode', 'LLM_MODE')
+print(f"LLM Mode: {LLM_MODE} [{llm_mode_source}]")
+
+primary_llm_source = get_config_source('--primary-llm', 'PRIMARY_LLM')
+print(f"Primary LLM: {PRIMARY_LLM} [{primary_llm_source}]")
+
+if LLM_MODE in ['compare', 'integrate']:
+    compare_llms_source = get_config_source('--compare-llms', 'COMPARE_LLMS')
+    print(f"Compare LLMs: {COMPARE_LLMS} [{compare_llms_source}]")
+
+coins_source = get_config_source('--coins', 'ANALYZE_COINS')
+if USE_COIN_DISCOVERY:
+    print(f"Coin Selection: Discovery Mode [{coins_source}]")
+else:
+    print(f"Coin Selection: {', '.join(ANALYZE_COINS)} [{coins_source}]")
+
+consensus_source = get_config_source('--require-consensus', 'REQUIRE_CONSENSUS')
+print(f"Require Consensus: {REQUIRE_CONSENSUS} [{consensus_source}]")
+
+if LLM_MODE in ['compare', 'integrate']:
+    tiebreaker_source = get_config_source('--tiebreaker', 'INTEGRATION_TIEBREAKER')
+    print(f"Tiebreaker: {INTEGRATION_TIEBREAKER} [{tiebreaker_source}]")
+
+print("="*50 + "\n")
+
 # === COIN CHOICE MODE: Analyze specified coins directly ===
 if not USE_COIN_DISCOVERY:
-    print("\n" + "="*50)
     print("=== COIN CHOICE MODE ===")
-    print(f"Using specified coins: {ANALYZE_COINS}")
-    print("Skipping LLM discovery phase")
-    print("="*50 + "\n")
+    print(f"Analyzing specified coins: {ANALYZE_COINS}")
+    print("")
     
     for i, coin_symbol in enumerate(ANALYZE_COINS):
         print(f"\n--- Analyzing coin {i+1}/{len(ANALYZE_COINS)}: {coin_symbol} ---")
@@ -754,10 +887,13 @@ if not USE_COIN_DISCOVERY:
         if final_action and 'BUY' in final_action:
             coinsToBuy.append(coin_symbol)
         
-        if doPython:
-            if coin_symbol not in coinsToExclude:
-                if final_action and 'BUY' in final_action:
+        if final_action and 'BUY' in final_action:
+            if not WHATIF_MODE:
+                if coin_symbol not in coinsToExclude:
                     buy_something(coin_symbol)
+            else:
+                whatif_buys += 1
+                print(f"[WHAT-IF] Would execute BUY for {coin_symbol}")
 
 # === DISCOVERY MODE: LLM discovers coins ===
 else:
@@ -817,10 +953,13 @@ else:
                 discovery_llm=PRIMARY_LLM
             )
         
-        if doPython:
-            if extracted_content not in coinsToExclude:
-                if final_action and 'BUY' in final_action:
+        if final_action and 'BUY' in final_action:
+            if not WHATIF_MODE:
+                if extracted_content not in coinsToExclude:
                     buy_something(followUp_coin1)
+            else:
+                whatif_buys += 1
+                print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
     else:
         print("Could not extract coin 1 from response")
 
@@ -867,10 +1006,13 @@ else:
                 discovery_llm=PRIMARY_LLM
             )
         
-        if doPython:
-            if extracted_content not in coinsToExclude:
-                if final_action and 'BUY' in final_action:
+        if final_action and 'BUY' in final_action:
+            if not WHATIF_MODE:
+                if extracted_content not in coinsToExclude:
                     buy_something(followUp_coin1)
+            else:
+                whatif_buys += 1
+                print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
     else:
         print("Could not extract coin 2 from response")
 
@@ -920,10 +1062,12 @@ else:
             
             if final_action and 'BUY' in final_action:
                 coinsToBuy.append(followUp_coin1)
-            if doPython:
-                if extracted_content not in coinsToExclude:
-                    if final_action and 'BUY' in final_action:
+                if not WHATIF_MODE:
+                    if extracted_content not in coinsToExclude:
                         buy_something(followUp_coin1)
+                else:
+                    whatif_buys += 1
+                    print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
         else:
             print("Could not extract coin 3 from response")
 
@@ -972,25 +1116,35 @@ else:
         
         if final_action and 'BUY' in final_action:
             coinsToBuy.append(followUp_coin1)
-        if doPython:
-            if extracted_content not in coinsToExclude:
-                if final_action and 'BUY' in final_action:
+            if not WHATIF_MODE:
+                if extracted_content not in coinsToExclude:
                     buy_something(followUp_coin1)
+            else:
+                whatif_buys += 1
+                print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
     else:
         print("No social media recommendation found in response")
 
 # Print summary
 print("\n" + "="*50)
-print(f"LLM MODE: {LLM_MODE}")
-print(f"PRIMARY LLM: {PRIMARY_LLM}")
+print("=== RUN SUMMARY ===")
+print("="*50)
+print(f"Trading Mode: {TRADING_MODE.upper()}")
+print(f"LLM Mode: {LLM_MODE}")
+print(f"Primary LLM: {PRIMARY_LLM}")
 if USE_COIN_DISCOVERY:
-    print("COIN CHOICE: LLM Discovery")
+    print("Coin Selection: Discovery Mode")
 else:
-    print(f"COIN CHOICE: {', '.join(ANALYZE_COINS)} (specified)")
+    print(f"Coin Selection: {', '.join(ANALYZE_COINS)}")
 if LLM_MODE in ['compare', 'integrate']:
-    print(f"COMPARE LLMS: {COMPARE_LLMS}")
-print(f"REQUIRE CONSENSUS: {REQUIRE_CONSENSUS}")
-if LLM_MODE in ['compare', 'integrate']:
-    print(f"TIEBREAKER: {INTEGRATION_TIEBREAKER}")
+    print(f"Compare LLMs: {COMPARE_LLMS}")
+    print(f"Require Consensus: {REQUIRE_CONSENSUS}")
+    print(f"Tiebreaker: {INTEGRATION_TIEBREAKER}")
 print(f"Coins to buy: {coinsToBuy}")
+
+# What-if summary
+if WHATIF_MODE:
+    print("\n--- WHAT-IF SUMMARY ---")
+    print(f"Simulated BUY orders: {whatif_buys}")
+    print("No actual trades were executed.")
 print("="*50)

@@ -191,6 +191,32 @@
       "llm_source": "grok",
       "mode": "integrate,",
       "consensus": null
+    },
+    {
+      "id": "rec_20260414_055436_PEPE",
+      "timestamp": "2026-04-14T05:54:36.448184Z",
+      "coin_symbol": "PEPE",
+      "recommendation": "SELL",
+      "price_at_recommendation": 3.64e-06,
+      "bid_price": 3.64e-06,
+      "ask_price": 3.64e-06,
+      "llm_source": "grok",
+      "mode": "integrate",
+      "consensus": false,
+      "discovery_llm": null
+    },
+    {
+      "id": "rec_20260414_055628_SHIB",
+      "timestamp": "2026-04-14T05:56:28.762086Z",
+      "coin_symbol": "SHIB",
+      "recommendation": "BUY",
+      "price_at_recommendation": 5.87e-06,
+      "bid_price": 5.87e-06,
+      "ask_price": 5.87e-06,
+      "llm_source": "grok",
+      "mode": "integrate",
+      "consensus": false,
+      "discovery_llm": null
     }
   ]
 }

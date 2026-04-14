@@ -12,8 +12,25 @@ The main trading bot that analyzes cryptocurrency coins and makes buy/sell/hold 
 
 **Usage:**
 ```bash
-python geminigroundlin15.py
+python geminigroundlin15.py [OPTIONS]
 ```
+
+**Command-Line Options:**
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--trading-mode` | `live`, `whatif` | `live` | Trading mode: `live` executes real trades, `whatif` simulates only |
+| `--llm-mode` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, `integrate` | `compare` | LLM mode for recommendations |
+| `--primary-llm` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | Primary LLM for discovery |
+| `--compare-llms` | comma-separated | `gemini,claude` | LLMs for compare/integrate mode |
+| `--coins` | comma-separated | *(empty)* | Specific coins to analyze (max 5), or empty for discovery mode |
+| `--require-consensus` | `true`, `false` | `true` | Require LLM consensus for action |
+| `--tiebreaker` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `none` | `gemini` | Tiebreaker LLM when no consensus |
+| `--log-rounds` | `true`, `false` | `true` | Log integration round details |
+
+**Configuration Precedence:**
+CLI arguments take precedence over environment variables. If neither is set, the default value is used.
+The startup banner shows the source of each configuration value (e.g., `[--trading-mode]`, `[TRADING_MODE env]`, or `[default]`).
 
 **What it does:**
 1. Discovers coins to analyze (via LLM or specified list)
@@ -21,12 +38,13 @@ python geminigroundlin15.py
 3. Queries LLM(s) for trading recommendations
 4. Optionally compares or integrates recommendations from multiple LLMs
 5. Records recommendations to history (for later analysis)
-6. Executes trades on Coinbase (when `doPython=True`)
+6. Executes trades on Coinbase (in `live` mode) or simulates them (in `whatif` mode)
 
 **Output:**
 - Console output with LLM responses and recommendations
-- Trade executions on Coinbase
+- Trade executions on Coinbase (live mode only)
 - History records saved to `./history/recommendations.json`
+- What-if summary showing simulated trades (whatif mode only)
 
 ---
 
@@ -56,10 +74,14 @@ python tradeanalyzer.py
 
 ## Environment Variables
 
+> **Note:** All configuration environment variables can also be set via command-line arguments.
+> CLI arguments take precedence over environment variables. See the Command-Line Options table above.
+
 ### Trading Bot Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `TRADING_MODE` | `live` | Trading mode: `live` executes real trades, `whatif` simulates only |
 | `LLM_MODE` | `compare` | Mode of operation: `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, or `integrate` |
 | `PRIMARY_LLM` | `gemini` | LLM used for coin discovery and first analysis |
 | `COMPARE_LLMS` | `gemini,claude` | Comma-separated list of LLMs to use in compare/integrate modes |
@@ -253,34 +275,46 @@ tradingbot/
 
 ## Quick Start Examples
 
+### Run in What-If Mode (safe testing, no real trades)
+```bash
+python geminigroundlin15.py --trading-mode=whatif
+```
+
 ### Run with Gemini only
 ```bash
-export LLM_MODE=gemini
-python geminigroundlin15.py
+python geminigroundlin15.py --llm-mode=gemini
 ```
 
 ### Run with Claude + Gemini comparison
 ```bash
-export LLM_MODE=compare
-export COMPARE_LLMS=gemini,claude
 export CLAUDE_API_KEY=sk-ant-...
-python geminigroundlin15.py
+python geminigroundlin15.py --llm-mode=compare --compare-llms=gemini,claude
 ```
 
 ### Run with all 5 LLMs in integration mode
 ```bash
-export LLM_MODE=integrate
-export COMPARE_LLMS=gemini,claude,openai,grok,perplexity
 export CLAUDE_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 export XAI_API_KEY=xai-...
 export PERPLEXITY_API_KEY=pplx-...
-python geminigroundlin15.py
+python geminigroundlin15.py --llm-mode=integrate --compare-llms=gemini,claude,openai,grok,perplexity
 ```
 
 ### Analyze specific coins instead of discovery
 ```bash
-export ANALYZE_COINS=BTC,ETH,DOGE
+python geminigroundlin15.py --coins=BTC,ETH,DOGE
+```
+
+### Combine options: What-If mode with specific coins
+```bash
+python geminigroundlin15.py --trading-mode=whatif --coins=PEPE,BONK --llm-mode=compare
+```
+
+### Using environment variables (legacy style)
+```bash
+export TRADING_MODE=whatif
+export LLM_MODE=compare
+export ANALYZE_COINS=BTC,ETH
 python geminigroundlin15.py
 ```
 
