@@ -217,6 +217,97 @@
       "mode": "integrate",
       "consensus": false,
       "discovery_llm": null
+    },
+    {
+      "id": "rec_20260414_214550_PEPE",
+      "timestamp": "2026-04-14T21:45:50.058852Z",
+      "coin_symbol": "PEPE",
+      "recommendation": "BUY",
+      "price_at_recommendation": 3.6e-06,
+      "bid_price": 3.6e-06,
+      "ask_price": 3.6e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null,
+      "discovery_llm": "grok"
+    },
+    {
+      "id": "rec_20260414_214727_DOGE",
+      "timestamp": "2026-04-14T21:47:27.926812Z",
+      "coin_symbol": "DOGE",
+      "recommendation": "BUY",
+      "price_at_recommendation": 0.09321,
+      "bid_price": 0.09321,
+      "ask_price": 0.09321,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null,
+      "discovery_llm": "grok"
+    },
+    {
+      "id": "rec_20260414_215712_PEPE",
+      "timestamp": "2026-04-14T21:57:12.305669Z",
+      "coin_symbol": "PEPE",
+      "recommendation": "BUY",
+      "price_at_recommendation": 3.6e-06,
+      "bid_price": 3.6e-06,
+      "ask_price": 3.6e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null,
+      "discovery_llm": "grok"
+    },
+    {
+      "id": "rec_20260414_215830_SHIB",
+      "timestamp": "2026-04-14T21:58:30.447026Z",
+      "coin_symbol": "SHIB",
+      "recommendation": "HOLD",
+      "price_at_recommendation": 5.86e-06,
+      "bid_price": 5.86e-06,
+      "ask_price": 5.86e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null,
+      "discovery_llm": "grok"
+    },
+    {
+      "id": "rec_20260414_220023_FLOKI",
+      "timestamp": "2026-04-14T22:00:23.161191Z",
+      "coin_symbol": "FLOKI",
+      "recommendation": "BUY",
+      "price_at_recommendation": 2.81e-05,
+      "bid_price": 2.81e-05,
+      "ask_price": 2.81e-05,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null,
+      "discovery_llm": "grok"
+    },
+    {
+      "id": "rec_20260414_220200_PEPE",
+      "timestamp": "2026-04-14T22:02:00.584971Z",
+      "coin_symbol": "PEPE",
+      "recommendation": "BUY",
+      "price_at_recommendation": 3.6e-06,
+      "bid_price": 3.6e-06,
+      "ask_price": 3.6e-06,
+      "llm_source": "grok",
+      "mode": "compare,",
+      "consensus": null,
+      "discovery_llm": "grok"
+    },
+    {
+      "id": "rec_20260414_220639_FARTCOIN",
+      "timestamp": "2026-04-14T22:06:39.077384Z",
+      "coin_symbol": "FARTCOIN",
+      "recommendation": "BUY",
+      "price_at_recommendation": 0.1934,
+      "bid_price": 0.1934,
+      "ask_price": 0.1934,
+      "llm_source": "grok",
+      "mode": "integrate,",
+      "consensus": null,
+      "discovery_llm": "grok"
     }
   ]
 }

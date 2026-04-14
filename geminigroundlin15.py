@@ -918,11 +918,16 @@ else:
 
     #print(f"Text after '{delimiter_char}': '{result}'")
 
-    start = "("
-
-    end = ")"
-
+    # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
+    start = "**"
+    end = "**"
     extracted_content = get_text_between_strings(result, start, end)
+    
+    # Fallback to parentheses if no ** markers found
+    if not extracted_content:
+        start = "("
+        end = ")"
+        extracted_content = get_text_between_strings(result, start, end)
 
     print(f"Extracted content: {extracted_content}")
 
@@ -971,11 +976,16 @@ else:
 
     #print(f"Text after '{delimiter_char}': '{result}'")
 
-    start = "("
-
-    end = ")"
-
+    # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
+    start = "**"
+    end = "**"
     extracted_content = get_text_between_strings(result, start, end)
+    
+    # Fallback to parentheses if no ** markers found
+    if not extracted_content:
+        start = "("
+        end = ")"
+        extracted_content = get_text_between_strings(result, start, end)
 
     print(f"Extracted content: {extracted_content}")
 
@@ -1024,11 +1034,16 @@ else:
 
     #print(f"Text after '{delimiter_char}': '{result}'")
 
-    start = "("
-
-    end = ")"
-
+    # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
+    start = "**"
+    end = "**"
     extracted_content = get_text_between_strings(result, start, end)
+    
+    # Fallback to parentheses if no ** markers found
+    if not extracted_content:
+        start = "("
+        end = ")"
+        extracted_content = get_text_between_strings(result, start, end)
 
     print(f"Extracted content: {extracted_content}")
 
@@ -1072,6 +1087,7 @@ else:
             print("Could not extract coin 3 from response")
 
     # get the text after the string that indicates the social media recommendation
+    # Format is +++COIN1+++ +++COIN2+++ - after first +++, coin is before next +++
 
     delimiter_char = "+++"
 
@@ -1079,11 +1095,24 @@ else:
 
     print(f"Text after '{delimiter_char}': '{result}'")
 
-    start = "("
-
-    end = ")"
-
-    extracted_content = get_text_between_strings(result, start, end)
+    # Social media format: after first +++, coin symbol is before the next +++
+    # e.g., "+++PEPE+++ +++DOGE+++" -> after first +++ we get "PEPE+++ +++DOGE+++"
+    # So extract from start of result to the first +++
+    extracted_content = None
+    if result:
+        next_delimiter = result.find("+++")
+        if next_delimiter > 0:
+            extracted_content = result[:next_delimiter].strip()
+    
+    # Fallback to ** or () if no +++ format found
+    if not extracted_content:
+        start = "**"
+        end = "**"
+        extracted_content = get_text_between_strings(result, start, end)
+    if not extracted_content:
+        start = "("
+        end = ")"
+        extracted_content = get_text_between_strings(result, start, end)
 
     print(f"Extracted content: {extracted_content}")
 
