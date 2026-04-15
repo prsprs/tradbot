@@ -37,7 +37,7 @@ class GrokTrader:
     def send_recommendation_request(self):
         """Get cryptocurrency meme coin recommendations from Grok."""
         return self._call_responses_api(
-            "Using real-time web search for current market data and sentiment, what 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around these choices at the end of your response."
+            "Using real-time web search for current market data and sentiment, what 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
         )
     
     def send_coin_check_request(self, coin_symbol):

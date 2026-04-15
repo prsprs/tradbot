@@ -166,6 +166,19 @@ USE_COIN_DISCOVERY = len(ANALYZE_COINS) == 0
 if len([c.strip() for c in ANALYZE_COINS_RAW.split(',') if c.strip()]) > 5:
     print(f"Warning: --coins limited to 5 coins, ignoring extras")
 
+def is_valid_coin_symbol(text):
+    """Check if text looks like a valid coin symbol (2-10 alphanumeric chars)."""
+    if not text:
+        return False
+    text = text.strip()
+    # Valid symbols are 2-10 alphanumeric characters
+    if len(text) < 2 or len(text) > 10:
+        return False
+    # Must be alphanumeric only
+    if not text.replace('-', '').isalnum():
+        return False
+    return True
+
 
 
 
@@ -180,7 +193,7 @@ def sendRecommendationRequest():
 
     model="models/gemini-2.5-pro",
 
-    contents="What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around these choices at the end of your response.",
+    contents="What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results.",
 
     config=config,
 
@@ -905,6 +918,19 @@ else:
 
     print (f"--------------ABOVE IS CONTENT OF INITIAL {PRIMARY_LLM.upper()} RESPONSE----")
 
+    # Check for explicit failure marker from LLM
+    if '***FAILED***' in primary_response_text:
+        print("\n" + "="*50)
+        print("=== DISCOVERY FAILED ===")
+        print("="*50)
+        print(f"The {PRIMARY_LLM.upper()} LLM explicitly indicated it cannot provide recommendations.")
+        print("\nConsider:")
+        print("  - Using a different PRIMARY_LLM (e.g., gemini, grok)")
+        print("  - Using COIN CHOICE MODE with --analyze-coins")
+        print("="*50)
+        import sys
+        sys.exit(1)
+
     print ("------WE DOUBLE CHECK THE INITIAL RESPONSE WITH NEW QUERIES")
 
     print ("----------")
@@ -921,15 +947,31 @@ else:
     # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
     start = "**"
     end = "**"
-    extracted_content = get_text_between_strings(result, start, end)
+    extracted_content = get_text_between_strings(result, start, end) if result else None
     
     # Fallback to parentheses if no ** markers found
     if not extracted_content:
         start = "("
         end = ")"
-        extracted_content = get_text_between_strings(result, start, end)
+        extracted_content = get_text_between_strings(result, start, end) if result else None
 
     print(f"Extracted content: {extracted_content}")
+
+    # Check for discovery failure - validate extracted content looks like a coin symbol
+    if not is_valid_coin_symbol(extracted_content):
+        print("\n" + "="*50)
+        print("=== DISCOVERY FAILED ===")
+        print("="*50)
+        print(f"The {PRIMARY_LLM.upper()} LLM did not return valid coin recommendations.")
+        print(f"Extracted content: '{extracted_content}' is not a valid coin symbol.")
+        print("\nThis typically happens when the LLM cannot access real-time data")
+        print("or refuses to provide trading recommendations.")
+        print("\nConsider:")
+        print("  - Using a different PRIMARY_LLM (e.g., gemini, grok)")
+        print("  - Using COIN CHOICE MODE with --analyze-coins")
+        print("="*50)
+        import sys
+        sys.exit(1)
 
     if extracted_content:
         googleTrendsRequest(extracted_content)
@@ -959,6 +1001,7 @@ else:
             )
         
         if final_action and 'BUY' in final_action:
+            coinsToBuy.append(followUp_coin1)
             if not WHATIF_MODE:
                 if extracted_content not in coinsToExclude:
                     buy_something(followUp_coin1)
@@ -1017,6 +1060,7 @@ else:
             )
         
         if final_action and 'BUY' in final_action:
+            coinsToBuy.append(followUp_coin1)
             if not WHATIF_MODE:
                 if extracted_content not in coinsToExclude:
                     buy_something(followUp_coin1)
