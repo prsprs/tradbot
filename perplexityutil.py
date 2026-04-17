@@ -46,17 +46,31 @@ class PerplexityTrader:
         )
         return response.choices[0].message.content
     
-    def send_trend_check_request(self, coin_symbol):
+    def send_trend_check_request(self, coin_symbol, trends_data=None):
         """Check coin recommendation based on live trend analysis."""
         if coin_symbol is None:
             return None
+        
+        # Build trends section if data is available
+        trends_section = ""
+        if trends_data:
+            trends_section = f"""
+
+Here is the actual Google Trends data we collected:
+
+---BEGIN GOOGLE TRENDS DATA---
+{trends_data}
+---END GOOGLE TRENDS DATA---
+
+Use this data in your analysis. """
+        
         response = self.client.chat.completions.create(
             model=self.model,
             max_tokens=4096,
             messages=[
                 {
                     "role": "user",
-                    "content": f"Based on analysis of recent social media trends and Google Trends data, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Use live data. Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+                    "content": f"Based on analysis of recent social media trends and Google Trends data, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Use live data.{trends_section}Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
                 }
             ]
         )
@@ -88,10 +102,23 @@ Conclude your analysis with a left angle bracket, followed by two asterisks, fol
         )
         return response.choices[0].message.content
 
-    def send_integrated_trend_check(self, coin_symbol, peer_analysis):
+    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None):
         """Round 2: Check coin with live trends + peer LLM analysis."""
         if coin_symbol is None:
             return None
+        
+        # Build trends section if data is available
+        trends_section = ""
+        if trends_data:
+            trends_section = f"""
+Here is the actual Google Trends data we collected:
+
+---BEGIN GOOGLE TRENDS DATA---
+{trends_data}
+---END GOOGLE TRENDS DATA---
+
+"""
+        
         response = self.client.chat.completions.create(
             model=self.model,
             max_tokens=4096,
@@ -99,14 +126,14 @@ Conclude your analysis with a left angle bracket, followed by two asterisks, fol
                 {
                     "role": "user",
                     "content": f"""Based on analysis of recent social media and search trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Use live data.
-
+{trends_section}
 Additionally, consider the following analysis from another AI system:
 
 ---BEGIN PEER ANALYSIS---
 {peer_analysis}
 ---END PEER ANALYSIS---
 
-After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
+After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
 
 Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
                 }

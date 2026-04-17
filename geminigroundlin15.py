@@ -131,17 +131,31 @@ args = parse_args()
 pytrends = TrendReq(hl='en-US', tz=360)
 
 def googleTrendsRequest(keyword):
-    """Fetches Google Trends data for a given keyword."""
+    """Fetches Google Trends data for a given keyword. Returns the data as a string for LLM context."""
     try:
         pytrends.build_payload([keyword], cat=0, timeframe='now 4-H', geo='', gprop='')
         interest_over_time_df = pytrends.interest_over_time()
         if not interest_over_time_df.empty:
             print(f"Google Trends data for {keyword}:")
             print(interest_over_time_df)
+            # Return summary for LLM context
+            recent_values = interest_over_time_df[keyword].tail(10).tolist()
+            avg_interest = interest_over_time_df[keyword].mean()
+            max_interest = interest_over_time_df[keyword].max()
+            min_interest = interest_over_time_df[keyword].min()
+            trend_summary = f"Google Trends data for {keyword} (last 4 hours):\n"
+            trend_summary += f"- Average interest: {avg_interest:.1f}\n"
+            trend_summary += f"- Max interest: {max_interest}\n"
+            trend_summary += f"- Min interest: {min_interest}\n"
+            trend_summary += f"- Recent 10 values: {recent_values}\n"
+            trend_summary += f"- Total data points: {len(interest_over_time_df)}"
+            return trend_summary
         else:
             print(f"No Google Trends data found for {keyword}")
+            return None
     except Exception as e:
         print(f"Error fetching Google Trends data for {keyword}: {e}")
+        return None
 
 coinsToBuy = []
 
@@ -188,18 +202,16 @@ def is_valid_coin_symbol(text):
 
 
 def sendRecommendationRequest():
-
-    response = client.models.generate_content(
-
-    model="models/gemini-2.5-pro",
-
-    contents="What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results.",
-
-    config=config,
-
-)
-
-    return response
+    try:
+        response = client.models.generate_content(
+            model="models/gemini-2.5-pro",
+            contents="What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results.",
+            config=config,
+        )
+        return response
+    except Exception as e:
+        print(f"[ERROR] Gemini API error in sendRecommendationRequest: {e}")
+        return None
 
 
 
@@ -207,27 +219,48 @@ def sendCoinCheckRequest(coin):
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
     
-    followUpResponse = client.models.generate_content(
-        model="models/gemini-2.5-pro",
-        contents=f'Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket',
-        config=config,
-    )
-    return followUpResponse
+    try:
+        followUpResponse = client.models.generate_content(
+            model="models/gemini-2.5-pro",
+            contents=f'Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket',
+            config=config,
+        )
+        return followUpResponse
+    except Exception as e:
+        print(f"[ERROR] Gemini API error in sendCoinCheckRequest for {coin}: {e}")
+        return None
 
 
 
 
 
-def sendTrendCheckRequest(coin):
+def sendTrendCheckRequest(coin, trends_data=None):
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
     
-    followUpResponse = client.models.generate_content(
-        model="models/gemini-2.5-pro",
-        contents=f'Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket',
-        config=config,
-    )
-    return followUpResponse
+    # Build trends section if data is available
+    trends_section = ""
+    if trends_data:
+        trends_section = f"""
+
+Here is the actual Google Trends data we collected:
+
+---BEGIN GOOGLE TRENDS DATA---
+{trends_data}
+---END GOOGLE TRENDS DATA---
+
+Use this data in your analysis. """
+    
+    try:
+        followUpResponse = client.models.generate_content(
+            model="models/gemini-2.5-pro",
+            contents=f'Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now?{trends_section}Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket',
+            config=config,
+        )
+        return followUpResponse
+    except Exception as e:
+        print(f"[ERROR] Gemini API error in sendTrendCheckRequest for {coin}: {e}")
+        return None
 
 
 def sendIntegratedCoinCheckRequest(coin_symbol, peer_analysis):
@@ -248,38 +281,59 @@ After reviewing the peer analysis, provide your final recommendation. You may ag
 
 Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
     
-    followUpResponse = client.models.generate_content(
-        model="models/gemini-2.5-pro",
-        contents=prompt,
-        config=config,
-    )
-    return followUpResponse
+    try:
+        followUpResponse = client.models.generate_content(
+            model="models/gemini-2.5-pro",
+            contents=prompt,
+            config=config,
+        )
+        return followUpResponse
+    except Exception as e:
+        print(f"[ERROR] Gemini API error in sendIntegratedCoinCheckRequest for {coin_symbol}: {e}")
+        return None
 
 
-def sendIntegratedTrendCheckRequest(coin_symbol, peer_analysis):
+def sendIntegratedTrendCheckRequest(coin_symbol, peer_analysis, trends_data=None):
     """Round 2: Check coin with Google Trends + peer LLM analysis."""
     if coin_symbol is None:
         return None
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
-    prompt = f"""Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin_symbol} right now?
+    
+    # Build trends section if data is available
+    trends_section = ""
+    if trends_data:
+        trends_section = f"""
+Here is the actual Google Trends data we collected:
 
+---BEGIN GOOGLE TRENDS DATA---
+{trends_data}
+---END GOOGLE TRENDS DATA---
+
+"""
+    
+    prompt = f"""Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin_symbol} right now?
+{trends_section}
 Additionally, consider the following analysis from another AI system:
 
 ---BEGIN PEER ANALYSIS---
 {peer_analysis}
 ---END PEER ANALYSIS---
 
-After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
+After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
 
 Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
     
-    followUpResponse = client.models.generate_content(
-        model="models/gemini-2.5-pro",
-        contents=prompt,
-        config=config,
-    )
-    return followUpResponse
+    try:
+        followUpResponse = client.models.generate_content(
+            model="models/gemini-2.5-pro",
+            contents=prompt,
+            config=config,
+        )
+        return followUpResponse
+    except Exception as e:
+        print(f"[ERROR] Gemini API error in sendIntegratedTrendCheckRequest for {coin_symbol}: {e}")
+        return None
 
 
 def get_primary_recommendation():
@@ -288,7 +342,7 @@ def get_primary_recommendation():
     
     if PRIMARY_LLM == 'gemini':
         response = sendRecommendationRequest()
-        return response.text
+        return response.text if response else None
     elif PRIMARY_LLM == 'claude' and claude_trader:
         return claude_trader.send_recommendation_request()
     elif PRIMARY_LLM == 'openai' and openai_trader:
@@ -300,27 +354,27 @@ def get_primary_recommendation():
     else:
         print(f"Warning: PRIMARY_LLM '{PRIMARY_LLM}' not available, falling back to Gemini")
         response = sendRecommendationRequest()
-        return response.text
+        return response.text if response else None
 
 
-def get_primary_trend_check(coin_symbol):
+def get_primary_trend_check(coin_symbol, trends_data=None):
     """Get trend check from the PRIMARY_LLM."""
     global claude_trader, openai_trader, grok_trader, perplexity_trader
     
     if PRIMARY_LLM == 'gemini':
-        response = sendTrendCheckRequest(coin_symbol)
+        response = sendTrendCheckRequest(coin_symbol, trends_data)
         return response.text if response else None
     elif PRIMARY_LLM == 'claude' and claude_trader:
-        return claude_trader.send_trend_check_request(coin_symbol)
+        return claude_trader.send_trend_check_request(coin_symbol, trends_data)
     elif PRIMARY_LLM == 'openai' and openai_trader:
-        return openai_trader.send_trend_check_request(coin_symbol)
+        return openai_trader.send_trend_check_request(coin_symbol, trends_data)
     elif PRIMARY_LLM == 'grok' and grok_trader:
-        return grok_trader.send_trend_check_request(coin_symbol)
+        return grok_trader.send_trend_check_request(coin_symbol, trends_data)
     elif PRIMARY_LLM == 'perplexity' and perplexity_trader:
-        return perplexity_trader.send_trend_check_request(coin_symbol)
+        return perplexity_trader.send_trend_check_request(coin_symbol, trends_data)
     else:
         print(f"Warning: PRIMARY_LLM '{PRIMARY_LLM}' not available, falling back to Gemini")
-        response = sendTrendCheckRequest(coin_symbol)
+        response = sendTrendCheckRequest(coin_symbol, trends_data)
         return response.text if response else None
 
 
@@ -427,7 +481,7 @@ def get_text_after_delimiter(text_string, delimiter):
 
         return ""
 
-def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None):
+def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None, trends_data=None):
     """Get response from specified LLM.
     
     Args:
@@ -435,6 +489,7 @@ def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None)
         coin_symbol: The coin symbol to analyze
         use_trend_check: If True, use trend check; otherwise use coin check
         peer_analysis: Optional peer analysis for integration mode Round 2
+        trends_data: Optional Google Trends data to include in prompt (integrate mode only)
     
     Returns:
         tuple: (response_text, parsed_recommendation)
@@ -445,61 +500,61 @@ def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None)
         if llm_name == 'claude' and claude_trader:
             if peer_analysis:
                 if use_trend_check:
-                    response_text = claude_trader.send_integrated_trend_check(coin_symbol, peer_analysis)
+                    response_text = claude_trader.send_integrated_trend_check(coin_symbol, peer_analysis, trends_data)
                 else:
                     response_text = claude_trader.send_integrated_coin_check(coin_symbol, peer_analysis)
             else:
                 if use_trend_check:
-                    response_text = claude_trader.send_trend_check_request(coin_symbol)
+                    response_text = claude_trader.send_trend_check_request(coin_symbol, trends_data)
                 else:
                     response_text = claude_trader.send_coin_check_request(coin_symbol)
                     
         elif llm_name == 'openai' and openai_trader:
             if peer_analysis:
                 if use_trend_check:
-                    response_text = openai_trader.send_integrated_trend_check(coin_symbol, peer_analysis)
+                    response_text = openai_trader.send_integrated_trend_check(coin_symbol, peer_analysis, trends_data)
                 else:
                     response_text = openai_trader.send_integrated_coin_check(coin_symbol, peer_analysis)
             else:
                 if use_trend_check:
-                    response_text = openai_trader.send_trend_check_request(coin_symbol)
+                    response_text = openai_trader.send_trend_check_request(coin_symbol, trends_data)
                 else:
                     response_text = openai_trader.send_coin_check_request(coin_symbol)
                     
         elif llm_name == 'grok' and grok_trader:
             if peer_analysis:
                 if use_trend_check:
-                    response_text = grok_trader.send_integrated_trend_check(coin_symbol, peer_analysis)
+                    response_text = grok_trader.send_integrated_trend_check(coin_symbol, peer_analysis, trends_data)
                 else:
                     response_text = grok_trader.send_integrated_coin_check(coin_symbol, peer_analysis)
             else:
                 if use_trend_check:
-                    response_text = grok_trader.send_trend_check_request(coin_symbol)
+                    response_text = grok_trader.send_trend_check_request(coin_symbol, trends_data)
                 else:
                     response_text = grok_trader.send_coin_check_request(coin_symbol)
                     
         elif llm_name == 'perplexity' and perplexity_trader:
             if peer_analysis:
                 if use_trend_check:
-                    response_text = perplexity_trader.send_integrated_trend_check(coin_symbol, peer_analysis)
+                    response_text = perplexity_trader.send_integrated_trend_check(coin_symbol, peer_analysis, trends_data)
                 else:
                     response_text = perplexity_trader.send_integrated_coin_check(coin_symbol, peer_analysis)
             else:
                 if use_trend_check:
-                    response_text = perplexity_trader.send_trend_check_request(coin_symbol)
+                    response_text = perplexity_trader.send_trend_check_request(coin_symbol, trends_data)
                 else:
                     response_text = perplexity_trader.send_coin_check_request(coin_symbol)
                     
         elif llm_name == 'gemini':
             if peer_analysis:
                 if use_trend_check:
-                    resp = sendIntegratedTrendCheckRequest(coin_symbol, peer_analysis)
+                    resp = sendIntegratedTrendCheckRequest(coin_symbol, peer_analysis, trends_data)
                 else:
                     resp = sendIntegratedCoinCheckRequest(coin_symbol, peer_analysis)
                 response_text = resp.text if resp else None
             else:
                 if use_trend_check:
-                    resp = sendTrendCheckRequest(coin_symbol)
+                    resp = sendTrendCheckRequest(coin_symbol, trends_data)
                 else:
                     resp = sendCoinCheckRequest(coin_symbol)
                 response_text = resp.text if resp else None
@@ -511,13 +566,14 @@ def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None)
     return response_text, rec
 
 
-def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_check=False):
+def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_check=False, trends_data=None):
     """Process a coin recommendation with optional LLM comparison or integration.
     
     Args:
         coin_symbol: The coin symbol to analyze
         primary_response_text: The full response text from PRIMARY_LLM Round 1
         use_trend_check: If True, use trend check; otherwise use coin check
+        trends_data: Optional Google Trends data to include in integrate mode prompts
     
     Returns:
         tuple: (action, consensus) where:
@@ -573,8 +629,9 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             r1_recs[PRIMARY_LLM] = primary_rec
         
         # Query other LLMs in COMPARE_LLMS (skip PRIMARY_LLM since we already have it)
+        # Pass trends_data to Round 1 so all LLMs have the same data to work with
         if 'gemini' in COMPARE_LLMS and PRIMARY_LLM != 'gemini':
-            resp, rec = get_llm_response('gemini', coin_symbol, use_trend_check)
+            resp, rec = get_llm_response('gemini', coin_symbol, use_trend_check, None, trends_data)
             if resp:
                 r1_responses['gemini'] = resp
                 r1_recs['gemini'] = rec
@@ -583,7 +640,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                     print(resp)
         
         if 'claude' in COMPARE_LLMS and PRIMARY_LLM != 'claude' and claude_trader:
-            resp, rec = get_llm_response('claude', coin_symbol, use_trend_check)
+            resp, rec = get_llm_response('claude', coin_symbol, use_trend_check, None, trends_data)
             if resp:
                 r1_responses['claude'] = resp
                 r1_recs['claude'] = rec
@@ -592,7 +649,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                     print(resp)
         
         if 'openai' in COMPARE_LLMS and PRIMARY_LLM != 'openai' and openai_trader:
-            resp, rec = get_llm_response('openai', coin_symbol, use_trend_check)
+            resp, rec = get_llm_response('openai', coin_symbol, use_trend_check, None, trends_data)
             if resp:
                 r1_responses['openai'] = resp
                 r1_recs['openai'] = rec
@@ -601,7 +658,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                     print(resp)
         
         if 'grok' in COMPARE_LLMS and PRIMARY_LLM != 'grok' and grok_trader:
-            resp, rec = get_llm_response('grok', coin_symbol, use_trend_check)
+            resp, rec = get_llm_response('grok', coin_symbol, use_trend_check, None, trends_data)
             if resp:
                 r1_responses['grok'] = resp
                 r1_recs['grok'] = rec
@@ -610,7 +667,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                     print(resp)
         
         if 'perplexity' in COMPARE_LLMS and PRIMARY_LLM != 'perplexity' and perplexity_trader:
-            resp, rec = get_llm_response('perplexity', coin_symbol, use_trend_check)
+            resp, rec = get_llm_response('perplexity', coin_symbol, use_trend_check, None, trends_data)
             if resp:
                 r1_responses['perplexity'] = resp
                 r1_recs['perplexity'] = rec
@@ -658,7 +715,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                         peer_analyses.append(f"[{other_llm.upper()}]: {other_resp}")
                 combined_peer = "\n\n".join(peer_analyses)
                 
-                resp, rec = get_llm_response(llm, coin_symbol, use_trend_check, combined_peer)
+                resp, rec = get_llm_response(llm, coin_symbol, use_trend_check, combined_peer, trends_data)
                 r2_recs[llm] = rec
                 
                 if LOG_INTEGRATION_ROUNDS:
@@ -806,7 +863,7 @@ config = types.GenerateContentConfig(
 # Coinbase credentials are loaded from JSON file (cdp_api_key.json)
 # Can be overridden with COINBASE_CREDENTIALS_FILE env var
 
-coinsToExclude = {'PEPE'}
+coinsToExclude = {'TRUMP'}
 
 
 
@@ -864,13 +921,13 @@ if not USE_COIN_DISCOVERY:
     for i, coin_symbol in enumerate(ANALYZE_COINS):
         print(f"\n--- Analyzing coin {i+1}/{len(ANALYZE_COINS)}: {coin_symbol} ---")
         
-        # Run Google Trends check
-        googleTrendsRequest(coin_symbol)
+        # Run Google Trends check and capture data for integrate mode
+        trends_data = googleTrendsRequest(coin_symbol)
         
         # Get analysis from PRIMARY_LLM (first coin uses trend check, rest use coin check)
         use_trend = (i == 0)
         if use_trend:
-            followUpResponseText = get_primary_trend_check(coin_symbol)
+            followUpResponseText = get_primary_trend_check(coin_symbol, trends_data)
         else:
             followUpResponseText = get_primary_coin_check(coin_symbol)
         
@@ -881,8 +938,8 @@ if not USE_COIN_DISCOVERY:
         followUp_rec = get_text_between_strings(followUpResponseText, "-PRS-", "**>") if followUpResponseText else None
         print(f"Coin and rec: {followUp_coin}, {followUp_rec}")
         
-        # Apply comparison/integration if enabled
-        final_action, consensus = process_coin_with_comparison(coin_symbol, followUpResponseText, use_trend_check=use_trend)
+        # Apply comparison/integration if enabled (pass trends_data for integrate mode)
+        final_action, consensus = process_coin_with_comparison(coin_symbol, followUpResponseText, use_trend_check=use_trend, trends_data=trends_data)
         
         # Record recommendation to history (discovery_llm=None since coin was user-specified)
         if final_action:
@@ -974,8 +1031,8 @@ else:
         sys.exit(1)
 
     if extracted_content:
-        googleTrendsRequest(extracted_content)
-        followUpResponseText = get_primary_trend_check(extracted_content)
+        trends_data = googleTrendsRequest(extracted_content)
+        followUpResponseText = get_primary_trend_check(extracted_content, trends_data)
         print(followUpResponseText)
         start = "<**"
         end = "-PRS-"
@@ -985,8 +1042,8 @@ else:
         followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
         print("Trend check coin and rec1: ", followUp_coin1, followUp_rec1)
         
-        # Use comparison/integration if enabled - pass full response text for integration mode
-        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
+        # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
+        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True, trends_data=trends_data)
         
         # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
         if final_action:
@@ -1033,7 +1090,7 @@ else:
     print(f"Extracted content: {extracted_content}")
 
     if extracted_content:
-        googleTrendsRequest(extracted_content)
+        trends_data = googleTrendsRequest(extracted_content)
         followUpResponseText = get_primary_coin_check(extracted_content)
         print(followUpResponseText)
         start = "<**"
@@ -1044,8 +1101,8 @@ else:
         followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
         print("coin and rec1: ", followUp_coin1, followUp_rec1)
         
-        # Use comparison/integration if enabled - pass full response text for integration mode
-        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
+        # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
+        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False, trends_data=trends_data)
         
         # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
         if final_action:
@@ -1092,7 +1149,7 @@ else:
     print(f"Extracted content: {extracted_content}")
 
     if extracted_content:
-        googleTrendsRequest(extracted_content)
+        trends_data = googleTrendsRequest(extracted_content)
         followUpResponseText = get_primary_coin_check(extracted_content)
         print(followUpResponseText)
         start = "<**"
@@ -1104,8 +1161,8 @@ else:
             followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
             print("coin and rec1: ", followUp_coin1, followUp_rec1)
             
-            # Use comparison/integration if enabled - pass full response text for integration mode
-            final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False)
+            # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
+            final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False, trends_data=trends_data)
             
             # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
             if final_action:
@@ -1161,8 +1218,8 @@ else:
     print(f"Extracted content: {extracted_content}")
 
     if extracted_content:
-        googleTrendsRequest(extracted_content)
-        followUpResponseText = get_primary_trend_check(extracted_content)
+        trends_data = googleTrendsRequest(extracted_content)
+        followUpResponseText = get_primary_trend_check(extracted_content, trends_data)
         print(followUpResponseText)
         start = "<**"
         end = "-PRS-"
@@ -1172,8 +1229,8 @@ else:
         followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
         print("Trend check coin and rec1: ", followUp_coin1, followUp_rec1)
         
-        # Use comparison/integration if enabled - pass full response text for integration mode
-        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True)
+        # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
+        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True, trends_data=trends_data)
         
         # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
         if final_action:
