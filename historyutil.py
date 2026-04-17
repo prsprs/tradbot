@@ -142,7 +142,8 @@ def record_recommendation(
                 discovery_llm=discovery_llm
             )
             save_recommendation(rec_record)
-            print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ ${price:.6f}")
+            timestamp_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
+            print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ ${price:.6f} at {timestamp_str}")
             return rec_record
         else:
             print(f"[HISTORY] Could not get price for {coin_symbol}, skipping record")

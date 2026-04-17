@@ -145,9 +145,17 @@ def analyze_recommendations(recs: List[Dict], trader=None) -> List[Dict]:
             change_pct = ((current_price - rec_price) / rec_price) * 100
             outcome, outcome_display = calculate_outcome(recommendation, change_pct)
         
+        # Format timestamp for display
+        timestamp_raw = rec.get('timestamp', '')
+        try:
+            ts = datetime.fromisoformat(timestamp_raw.replace('Z', ''))
+            timestamp_display = ts.strftime('%Y-%m-%d %H:%M UTC')
+        except (ValueError, AttributeError):
+            timestamp_display = timestamp_raw
+        
         results.append({
             'recommendation_id': rec.get('id', ''),
-            'timestamp': rec.get('timestamp', ''),
+            'timestamp': timestamp_raw,
             'coin': coin,
             'recommendation': recommendation,
             'rec_price': rec_price,
@@ -160,8 +168,8 @@ def analyze_recommendations(recs: List[Dict], trader=None) -> List[Dict]:
             'consensus': rec.get('consensus')
         })
         
-        # Print each result
-        print(f"{coin}, {recommendation.capitalize()}, {outcome_display}")
+        # Print each result with timestamp
+        print(f"{coin}, {recommendation.capitalize()}, {outcome_display}, {timestamp_display}")
     
     return results
 
