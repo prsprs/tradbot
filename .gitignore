@@ -31,3 +31,6 @@ Thumbs.db
 cdp_api_key.json
 cdp_api_key*.json
 *.pem
+
+# History files (user-specific data)
+history/recommendations.json
