@@ -1,0 +1,11 @@
+# Requirements for the Multi-LLM Advisory System (llm_compare.py)
+#
+# Core dependencies
+google-genai>=1.0.0
+anthropic>=0.18.0
+openai>=1.0.0
+pytrends>=4.9.0
+
+# Already included from main trading bot
+# pandas
+# requests

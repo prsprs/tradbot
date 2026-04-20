@@ -34,3 +34,7 @@ cdp_api_key*.json
 
 # History files (user-specific data)
 history/recommendations.json
+history/*.csv
+
+# Temp files
+*.tmp
