@@ -26,6 +26,8 @@ from lunarcrushutil import filter_from_cache, cache_exists, get_cache_age
 
 from polymarketutil import filter_coins_by_polymarket
 
+from santimentutil import auto_refresh_cache, discover_coins_santiment
+
 from pytrends.request import TrendReq
 
 import pandas as pd
@@ -130,6 +132,13 @@ Environment variables can also be used (CLI takes precedence):
         help='Log integration round details (default: true)'
     )
     
+    # Discovery method
+    parser.add_argument(
+        '--discovery',
+        default=os.environ.get('DISCOVERY', 'llm'),
+        help='Discovery method: llm, santiment, or both comma-separated (default: llm)'
+    )
+    
     return parser.parse_args()
 
 
@@ -215,6 +224,18 @@ POLYMARKET_FILTER = args.polymarket_filter == 'true'
 
 # Check if filtering is requested
 USE_COIN_FILTERING = len(CHAINS) > 0 or len(CATEGORIES) > 0 or POLYMARKET_FILTER
+
+# Discovery methods: llm, santiment, or both
+DISCOVERY_RAW = args.discovery.strip().lower()
+DISCOVERY_METHODS = [m.strip() for m in DISCOVERY_RAW.split(',') if m.strip()]
+# Validate discovery methods
+VALID_DISCOVERY = {'llm', 'santiment'}
+for method in DISCOVERY_METHODS:
+    if method not in VALID_DISCOVERY:
+        print(f"[ERROR] Invalid discovery method: '{method}'. Valid: llm, santiment")
+        sys.exit(1)
+USE_LLM_DISCOVERY = 'llm' in DISCOVERY_METHODS
+USE_SANTIMENT_DISCOVERY = 'santiment' in DISCOVERY_METHODS
 
 def is_valid_coin_symbol(text):
     """Check if text looks like a valid coin symbol."""
@@ -999,7 +1020,9 @@ if LLM_MODE in ['compare', 'integrate']:
 
 coins_source = get_config_source('--coins', 'ANALYZE_COINS')
 if USE_COIN_DISCOVERY:
+    discovery_source = get_config_source('--discovery', 'DISCOVERY')
     print(f"Coin Selection: Discovery Mode [{coins_source}]")
+    print(f"Discovery Methods: {', '.join(DISCOVERY_METHODS)} [{discovery_source}]")
 else:
     print(f"Coin Selection: {', '.join(ANALYZE_COINS)} [{coins_source}]")
 
@@ -1029,9 +1052,115 @@ if LLM_MODE in ['compare', 'integrate']:
 
 print("="*50 + "\n")
 
-# === APPLY COIN FILTERING ===
-# If filters are set and no specific coins provided, get filtered Coinbase coins
-if USE_COIN_FILTERING and USE_COIN_DISCOVERY:
+# === AUTO-REFRESH CACHE IF SANTIMENT DISCOVERY ENABLED ===
+if USE_COIN_DISCOVERY and USE_SANTIMENT_DISCOVERY:
+    print("=== SANTIMENT DISCOVERY: AUTO-REFRESH CACHE ===")
+    try:
+        all_coinbase = trader.list_all_coins()
+        auto_refresh_cache(all_coinbase, verbose=True)
+        print("")
+    except Exception as e:
+        print(f"[WARNING] Cache refresh failed: {e}")
+        print("Continuing with existing cache if available...")
+        print("")
+
+
+def extract_coins_from_llm_response(response_text):
+    """Extract up to 3 coin symbols from LLM discovery response.
+    
+    Returns:
+        List of valid coin symbols extracted from the response
+    """
+    coins = []
+    
+    if not response_text or '***FAILED***' in response_text:
+        return coins
+    
+    # Extract coin 1 (after "1.")
+    result = get_text_after_delimiter(response_text, "1.")
+    if result:
+        symbol = get_text_between_strings(result, "**", "**")
+        # Fall back to () if ** extraction didn't give a valid symbol
+        if not is_valid_coin_symbol(symbol):
+            symbol = get_text_between_strings(result, "(", ")")
+        if is_valid_coin_symbol(symbol):
+            coins.append(symbol.upper())
+    
+    # Extract coin 2 (after "2.")
+    result = get_text_after_delimiter(response_text, "2.")
+    if result:
+        symbol = get_text_between_strings(result, "**", "**")
+        if not is_valid_coin_symbol(symbol):
+            symbol = get_text_between_strings(result, "(", ")")
+        if is_valid_coin_symbol(symbol):
+            coins.append(symbol.upper())
+    
+    # Extract coin 3 (after "3.")
+    result = get_text_after_delimiter(response_text, "3.")
+    if result:
+        symbol = get_text_between_strings(result, "**", "**")
+        if not is_valid_coin_symbol(symbol):
+            symbol = get_text_between_strings(result, "(", ")")
+        if is_valid_coin_symbol(symbol):
+            coins.append(symbol.upper())
+    
+    return coins
+
+
+def run_llm_discovery():
+    """Run LLM-based coin discovery.
+    
+    Returns:
+        List of discovered coin symbols (up to 3)
+    """
+    print("=== LLM DISCOVERY ===")
+    print(f"Asking {PRIMARY_LLM.upper()} for coin recommendations...")
+    
+    response_text = get_primary_recommendation()
+    if not response_text:
+        print("[WARNING] LLM returned no response")
+        return []
+    
+    print(response_text)
+    print(f"--------------ABOVE IS CONTENT OF {PRIMARY_LLM.upper()} RESPONSE----")
+    
+    if '***FAILED***' in response_text:
+        print("[WARNING] LLM explicitly indicated it cannot provide recommendations")
+        return []
+    
+    coins = extract_coins_from_llm_response(response_text)
+    print(f"LLM discovered coins: {coins}")
+    return coins
+
+
+def run_santiment_discovery():
+    """Run Santiment-based coin discovery (ranked by volume change).
+    
+    Returns:
+        List of discovered coin symbols (up to 3)
+    """
+    print("=== SANTIMENT DISCOVERY ===")
+    print("Finding coins with highest 24h volume change...")
+    
+    try:
+        all_coinbase = trader.list_all_coins()
+        coins = discover_coins_santiment(
+            all_coinbase,
+            chains=CHAINS if CHAINS else None,
+            categories=CATEGORIES if CATEGORIES else None,
+            limit=3,
+            verbose=True
+        )
+        print(f"Santiment discovered coins: {coins}")
+        return coins
+    except Exception as e:
+        print(f"[WARNING] Santiment discovery failed: {e}")
+        return []
+
+
+# === APPLY COIN FILTERING (legacy - when filters set but no santiment discovery) ===
+# If filters are set, no specific coins provided, and NOT using santiment discovery
+if USE_COIN_FILTERING and USE_COIN_DISCOVERY and not USE_SANTIMENT_DISCOVERY:
     print("=== FILTERED DISCOVERY MODE ===")
     print("Filters specified - getting filtered coin list from Coinbase...")
     try:
@@ -1102,295 +1231,118 @@ if not USE_COIN_DISCOVERY:
                 whatif_buys += 1
                 print(f"[WHAT-IF] Would execute BUY for {coin_symbol}")
 
-# === DISCOVERY MODE: LLM discovers coins ===
+# === HYBRID DISCOVERY MODE ===
 else:
-    # Make the request using PRIMARY_LLM
-    primary_response_text = get_primary_recommendation()
-
-    # Print the grounded response
-    print(primary_response_text)
-
-    print (f"--------------ABOVE IS CONTENT OF INITIAL {PRIMARY_LLM.upper()} RESPONSE----")
-
-    # Check for explicit failure marker from LLM
-    if '***FAILED***' in primary_response_text:
+    print("=== HYBRID DISCOVERY MODE ===")
+    
+    # Collect discovered coins from enabled sources
+    llm_coins = []
+    santiment_coins = []
+    
+    # Run LLM discovery if enabled
+    if USE_LLM_DISCOVERY:
+        llm_coins = run_llm_discovery()
+        print("")
+    
+    # Run Santiment discovery if enabled
+    if USE_SANTIMENT_DISCOVERY:
+        santiment_coins = run_santiment_discovery()
+        print("")
+    
+    # Union and deduplicate (LLM coins first, then Santiment)
+    discovered_coins = []
+    seen = set()
+    
+    # Add LLM coins first
+    for coin in llm_coins:
+        if coin.upper() not in seen:
+            discovered_coins.append(coin.upper())
+            seen.add(coin.upper())
+    
+    # Add Santiment coins (deduplicating)
+    for coin in santiment_coins:
+        if coin.upper() not in seen:
+            discovered_coins.append(coin.upper())
+            seen.add(coin.upper())
+    
+    # Cap at 6 coins (3 LLM + 3 Santiment max)
+    if len(discovered_coins) > 6:
+        print(f"Capping discovered coins from {len(discovered_coins)} to 6")
+        discovered_coins = discovered_coins[:6]
+    
+    print("="*50)
+    print(f"DISCOVERED COINS: {discovered_coins}")
+    if llm_coins:
+        print(f"  From LLM: {llm_coins}")
+    if santiment_coins:
+        print(f"  From Santiment: {santiment_coins}")
+    print("="*50 + "\n")
+    
+    # Check if we discovered any coins
+    if not discovered_coins:
         print("\n" + "="*50)
         print("=== DISCOVERY FAILED ===")
         print("="*50)
-        print(f"The {PRIMARY_LLM.upper()} LLM explicitly indicated it cannot provide recommendations.")
+        print("No coins were discovered from any source.")
         print("\nConsider:")
         print("  - Using a different PRIMARY_LLM (e.g., gemini, grok)")
-        print("  - Using COIN CHOICE MODE with --analyze-coins")
+        print("  - Adding santiment to discovery methods: --discovery=llm,santiment")
+        print("  - Using COIN CHOICE MODE with --coins")
         print("="*50)
-        import sys
         sys.exit(1)
-
-    print ("------WE DOUBLE CHECK THE INITIAL RESPONSE WITH NEW QUERIES")
-
-    print ("----------")
-
-    my_string = primary_response_text
-
-    # get the text following the first numbered recommendation
-    delimiter_char = "1."
-
-    result = get_text_after_delimiter(primary_response_text, delimiter_char)
-
-    #print(f"Text after '{delimiter_char}': '{result}'")
-
-    # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
-    start = "**"
-    end = "**"
-    extracted_content = get_text_between_strings(result, start, end) if result else None
     
-    # Fallback to parentheses if no ** markers found
-    if not extracted_content:
-        start = "("
-        end = ")"
-        extracted_content = get_text_between_strings(result, start, end) if result else None
-
-    print(f"Extracted content: {extracted_content}")
-
-    # Check for discovery failure - validate extracted content looks like a coin symbol
-    if not is_valid_coin_symbol(extracted_content):
-        print("\n" + "="*50)
-        print("=== DISCOVERY FAILED ===")
-        print("="*50)
-        print(f"The {PRIMARY_LLM.upper()} LLM did not return valid coin recommendations.")
-        print(f"Extracted content: '{extracted_content}' is not a valid coin symbol.")
-        print("\nThis typically happens when the LLM cannot access real-time data")
-        print("or refuses to provide trading recommendations.")
-        print("\nConsider:")
-        print("  - Using a different PRIMARY_LLM (e.g., gemini, grok)")
-        print("  - Using COIN CHOICE MODE with --analyze-coins")
-        print("="*50)
-        import sys
-        sys.exit(1)
-
-    if extracted_content:
-        trends_data = googleTrendsRequest(extracted_content)
-        followUpResponseText = get_primary_trend_check(extracted_content, trends_data)
-        print(followUpResponseText)
-        start = "<**"
-        end = "-PRS-"
-        followUp_coin1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        start = "-PRS-"
-        end = "**>"
-        followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        print("Trend check coin and rec1: ", followUp_coin1, followUp_rec1)
+    # Analyze each discovered coin
+    for i, coin_symbol in enumerate(discovered_coins):
+        # Determine discovery source for this coin
+        discovery_source = None
+        if coin_symbol in [c.upper() for c in llm_coins]:
+            discovery_source = PRIMARY_LLM
+        elif coin_symbol in [c.upper() for c in santiment_coins]:
+            discovery_source = "santiment"
         
-        # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
-        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True, trends_data=trends_data)
+        print(f"\n--- Analyzing discovered coin {i+1}/{len(discovered_coins)}: {coin_symbol} (from {discovery_source}) ---")
         
-        # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
-        if final_action:
-            record_recommendation(
-                coin_symbol=extracted_content,
-                recommendation=final_action,
-                trader=trader,
-                llm_source=PRIMARY_LLM,
-                mode=LLM_MODE,
-                consensus=consensus,
-                discovery_llm=PRIMARY_LLM
-            )
+        # Run Google Trends check
+        trends_data = googleTrendsRequest(coin_symbol)
         
-        if final_action and 'BUY' in final_action:
-            coinsToBuy.append(followUp_coin1)
-            if not WHATIF_MODE:
-                if extracted_content not in coinsToExclude:
-                    buy_something(followUp_coin1)
-            else:
-                whatif_buys += 1
-                print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
-    else:
-        print("Could not extract coin 1 from response")
-
-    # get the text following the second  numbered recommendation
-
-    delimiter_char = "2."
-
-    result = get_text_after_delimiter(primary_response_text, delimiter_char)
-
-    #print(f"Text after '{delimiter_char}': '{result}'")
-
-    # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
-    start = "**"
-    end = "**"
-    extracted_content = get_text_between_strings(result, start, end)
-    
-    # Fallback to parentheses if no ** markers found
-    if not extracted_content:
-        start = "("
-        end = ")"
-        extracted_content = get_text_between_strings(result, start, end)
-
-    print(f"Extracted content: {extracted_content}")
-
-    if extracted_content:
-        trends_data = googleTrendsRequest(extracted_content)
-        followUpResponseText = get_primary_coin_check(extracted_content)
-        print(followUpResponseText)
-        start = "<**"
-        end = "-PRS-"
-        followUp_coin1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        start = "-PRS-"
-        end = "**>"
-        followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        print("coin and rec1: ", followUp_coin1, followUp_rec1)
-        
-        # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
-        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False, trends_data=trends_data)
-        
-        # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
-        if final_action:
-            record_recommendation(
-                coin_symbol=extracted_content,
-                recommendation=final_action,
-                trader=trader,
-                llm_source=PRIMARY_LLM,
-                mode=LLM_MODE,
-                consensus=consensus,
-                discovery_llm=PRIMARY_LLM
-            )
-        
-        if final_action and 'BUY' in final_action:
-            coinsToBuy.append(followUp_coin1)
-            if not WHATIF_MODE:
-                if extracted_content not in coinsToExclude:
-                    buy_something(followUp_coin1)
-            else:
-                whatif_buys += 1
-                print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
-    else:
-        print("Could not extract coin 2 from response")
-
-    # get the text following the third  numbered recommendation
-
-    delimiter_char = "3."
-
-    result = get_text_after_delimiter(primary_response_text, delimiter_char)
-
-    #print(f"Text after '{delimiter_char}': '{result}'")
-
-    # Extract coin symbol from **SYMBOL** format (preferred) or (SYMBOL) format (fallback)
-    start = "**"
-    end = "**"
-    extracted_content = get_text_between_strings(result, start, end)
-    
-    # Fallback to parentheses if no ** markers found
-    if not extracted_content:
-        start = "("
-        end = ")"
-        extracted_content = get_text_between_strings(result, start, end)
-
-    print(f"Extracted content: {extracted_content}")
-
-    if extracted_content:
-        trends_data = googleTrendsRequest(extracted_content)
-        followUpResponseText = get_primary_coin_check(extracted_content)
-        print(followUpResponseText)
-        start = "<**"
-        end = "-PRS-"
-        followUp_coin1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        if followUp_coin1 is not None:
-            start = "-PRS-"
-            end = "**>"
-            followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-            print("coin and rec1: ", followUp_coin1, followUp_rec1)
-            
-            # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
-            final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=False, trends_data=trends_data)
-            
-            # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
-            if final_action:
-                record_recommendation(
-                    coin_symbol=extracted_content,
-                    recommendation=final_action,
-                    trader=trader,
-                    llm_source=PRIMARY_LLM,
-                    mode=LLM_MODE,
-                    consensus=consensus,
-                    discovery_llm=PRIMARY_LLM
-                )
-            
-            if final_action and 'BUY' in final_action:
-                coinsToBuy.append(followUp_coin1)
-                if not WHATIF_MODE:
-                    if extracted_content not in coinsToExclude:
-                        buy_something(followUp_coin1)
-                else:
-                    whatif_buys += 1
-                    print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
+        # Get analysis from PRIMARY_LLM (first coin uses trend check, rest use coin check)
+        use_trend = (i == 0)
+        if use_trend:
+            followUpResponseText = get_primary_trend_check(coin_symbol, trends_data)
         else:
-            print("Could not extract coin 3 from response")
-
-    # get the text after the string that indicates the social media recommendation
-    # Format is +++COIN1+++ +++COIN2+++ - after first +++, coin is before next +++
-
-    delimiter_char = "+++"
-
-    result = get_text_after_delimiter(primary_response_text, delimiter_char)
-
-    print(f"Text after '{delimiter_char}': '{result}'")
-
-    # Social media format: after first +++, coin symbol is before the next +++
-    # e.g., "+++PEPE+++ +++DOGE+++" -> after first +++ we get "PEPE+++ +++DOGE+++"
-    # So extract from start of result to the first +++
-    extracted_content = None
-    if result:
-        next_delimiter = result.find("+++")
-        if next_delimiter > 0:
-            extracted_content = result[:next_delimiter].strip()
-    
-    # Fallback to ** or () if no +++ format found
-    if not extracted_content:
-        start = "**"
-        end = "**"
-        extracted_content = get_text_between_strings(result, start, end)
-    if not extracted_content:
-        start = "("
-        end = ")"
-        extracted_content = get_text_between_strings(result, start, end)
-
-    print(f"Extracted content: {extracted_content}")
-
-    if extracted_content:
-        trends_data = googleTrendsRequest(extracted_content)
-        followUpResponseText = get_primary_trend_check(extracted_content, trends_data)
+            followUpResponseText = get_primary_coin_check(coin_symbol)
+        
         print(followUpResponseText)
-        start = "<**"
-        end = "-PRS-"
-        followUp_coin1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        start = "-PRS-"
-        end = "**>"
-        followUp_rec1 = get_text_between_strings(followUpResponseText, start, end) if followUpResponseText else None
-        print("Trend check coin and rec1: ", followUp_coin1, followUp_rec1)
         
-        # Use comparison/integration if enabled - pass full response text and trends_data for integration mode
-        final_action, consensus = process_coin_with_comparison(extracted_content, followUpResponseText, use_trend_check=True, trends_data=trends_data)
+        # Parse recommendation
+        followUp_coin = get_text_between_strings(followUpResponseText, "<**", "-PRS-") if followUpResponseText else None
+        followUp_rec = get_text_between_strings(followUpResponseText, "-PRS-", "**>") if followUpResponseText else None
+        print(f"Coin and rec: {followUp_coin}, {followUp_rec}")
         
-        # Record recommendation to history (discovery_llm=PRIMARY_LLM since coin was discovered)
+        # Apply comparison/integration if enabled
+        final_action, consensus = process_coin_with_comparison(coin_symbol, followUpResponseText, use_trend_check=use_trend, trends_data=trends_data)
+        
+        # Record recommendation to history
         if final_action:
             record_recommendation(
-                coin_symbol=extracted_content,
+                coin_symbol=coin_symbol,
                 recommendation=final_action,
                 trader=trader,
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
                 consensus=consensus,
-                discovery_llm=PRIMARY_LLM
+                discovery_llm=discovery_source
             )
         
+        # Track and execute trade if recommended
         if final_action and 'BUY' in final_action:
-            coinsToBuy.append(followUp_coin1)
+            coinsToBuy.append(coin_symbol)
             if not WHATIF_MODE:
-                if extracted_content not in coinsToExclude:
-                    buy_something(followUp_coin1)
+                if coin_symbol not in coinsToExclude:
+                    buy_something(coin_symbol)
             else:
                 whatif_buys += 1
-                print(f"[WHAT-IF] Would execute BUY for {extracted_content}")
-    else:
-        print("No social media recommendation found in response")
+                print(f"[WHAT-IF] Would execute BUY for {coin_symbol}")
 
 # Print summary
 print("\n" + "="*50)
@@ -1400,7 +1352,7 @@ print(f"Trading Mode: {TRADING_MODE.upper()}")
 print(f"LLM Mode: {LLM_MODE}")
 print(f"Primary LLM: {PRIMARY_LLM}")
 if USE_COIN_DISCOVERY:
-    print("Coin Selection: Discovery Mode")
+    print(f"Coin Selection: Discovery Mode ({', '.join(DISCOVERY_METHODS)})")
 else:
     print(f"Coin Selection: {', '.join(ANALYZE_COINS)}")
 if CHAINS:

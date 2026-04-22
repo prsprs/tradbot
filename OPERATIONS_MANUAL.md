@@ -23,7 +23,8 @@ python geminigroundlin15.py [OPTIONS]
 | `--llm-mode` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, `integrate` | `compare` | LLM mode for recommendations |
 | `--primary-llm` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | Primary LLM for discovery |
 | `--compare-llms` | comma-separated | `gemini,claude` | LLMs for compare/integrate mode |
-| `--coins` | comma-separated | *(empty)* | Specific coins to analyze (max 5), or empty for discovery mode |
+| `--coins` | comma-separated | *(empty)* | Specific coins to analyze (max 6), or empty for discovery mode |
+| `--discovery` | comma-separated | `llm` | Discovery method(s): `llm`, `santiment`, or both (e.g., `llm,santiment`) |
 | `--chains` | comma-separated | *(empty)* | Filter coins by blockchain (e.g., `solana,base`). Requires cache file |
 | `--categories` | comma-separated | *(empty)* | Filter coins by category (e.g., `meme-coins,defi`). Requires cache file |
 | `--polymarket-filter` | `true`, `false` | `false` | Only analyze coins with active Polymarket prediction markets |
@@ -53,16 +54,20 @@ The startup banner shows the source of each configuration value (e.g., `[--tradi
 
 ### 2. Coin Cache Refresh (`refresh_coin_cache.py`)
 
-On-demand script that fetches Coinbase-tradeable coins and enriches them with LunarCrush category and blockchain data. Creates a local cache file used by the trading bot for filtering.
+On-demand script that fetches Coinbase-tradeable coins and enriches them with category and blockchain data. Creates a local cache file used by the trading bot for filtering.
 
 **Usage:**
 ```bash
-LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py
+# Using Santiment (free, recommended)
+python refresh_coin_cache.py --source=santiment
+
+# Using LunarCrush (requires paid Builder plan)
+LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py --source=lunarcrush
 ```
 
 **What it does:**
 1. Fetches all tradeable coins from Coinbase
-2. For each coin, fetches category and blockchain data from LunarCrush API
+2. For each coin, fetches category and blockchain data from selected source
 3. Creates a backup of any existing cache (`coin_cache.backup.json`)
 4. Writes enriched data to `coin_cache.json`
 5. Prints summary of categories and blockchains found
@@ -71,14 +76,11 @@ LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py
 - `coin_cache.json` - Main cache file used by trading bot
 - `coin_cache.backup.json` - Backup of previous cache (for recovery)
 
-**Cost-Saving Strategy:**
-LunarCrush requires a paid subscription ($5/day or $90/month). To minimize costs:
-1. Subscribe to LunarCrush for 1 day ($5)
-2. Run `refresh_coin_cache.py` to generate the cache
-3. Cancel subscription (or let daily expire)
-4. Trading bot uses cached data for free (no API key needed)
+**Data Sources:**
+- **Santiment** (default): Free API, single bulk GraphQL query. Recommended.
+- **LunarCrush**: Requires paid Builder plan ($300+/month). Legacy option.
 
-Refresh the cache periodically (e.g., weekly) when new coins are listed or categories change.
+**Note:** When using `--discovery=santiment` or `--discovery=llm,santiment`, the trading bot automatically refreshes the cache at startup to ensure fresh volume metrics.
 
 **Example Output:**
 ```
@@ -158,9 +160,10 @@ python tradeanalyzer.py
 | `REQUIRE_CONSENSUS` | `true` | If `true`, only act when all LLMs agree (compare/integrate modes) |
 | `INTEGRATION_TIEBREAKER` | `gemini` | LLM to use as tiebreaker when no consensus: `gemini`, `claude`, `openai`, `grok`, `perplexity`, or `none` |
 | `LOG_INTEGRATION_ROUNDS` | `true` | If `true`, log detailed Round 1/2 responses in integrate mode |
-| `ANALYZE_COINS` | *(empty)* | Comma-separated list of coins to analyze (max 5). If empty, LLM discovers coins |
+| `ANALYZE_COINS` | *(empty)* | Comma-separated list of coins to analyze (max 6). If empty, uses discovery mode |
+| `DISCOVERY` | `llm` | Discovery method(s): `llm`, `santiment`, or both comma-separated |
 | `CHAINS` | *(empty)* | Filter by blockchain networks (e.g., `solana,base`). Requires cache file |
-| `CATEGORIES` | *(empty)* | Filter by LunarCrush categories (e.g., `meme-coins,defi`). Requires cache file |
+| `CATEGORIES` | *(empty)* | Filter by categories (e.g., `meme-coins,defi`). Requires cache file |
 | `POLYMARKET_FILTER` | `false` | If `true`, only analyze coins with active Polymarket prediction markets |
 
 ### API Keys
@@ -430,6 +433,36 @@ python geminigroundlin15.py --polymarket-filter=true
 ```bash
 python geminigroundlin15.py --categories=meme-coins --chains=solana --polymarket-filter=true
 ```
+
+---
+
+## Discovery Mode Options
+
+The trading bot supports multiple discovery methods for finding coins to analyze.
+
+### LLM-only discovery (default)
+```bash
+python geminigroundlin15.py --discovery=llm
+```
+Asks the primary LLM to recommend 3 coins to analyze.
+
+### Santiment discovery (volume-based)
+```bash
+python geminigroundlin15.py --discovery=santiment
+```
+Finds coins with highest 24h volume change from Santiment API. Auto-refreshes cache at startup.
+
+### Hybrid discovery (both methods)
+```bash
+python geminigroundlin15.py --discovery=llm,santiment
+```
+Combines LLM recommendations (3 coins) with Santiment volume movers (3 coins). Deduplicates and caps at 6 coins total.
+
+### Santiment discovery with filters
+```bash
+python geminigroundlin15.py --discovery=santiment --categories=memecoin --chains=solana
+```
+Discovers top volume movers within filtered category/chain. Auto-refreshes cache.
 
 ---
 
