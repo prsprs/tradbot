@@ -78,3 +78,63 @@ class BlobbyTrader:
         """Generate a unique order ID."""
         import uuid
         return str(uuid.uuid4())
+    
+    def list_all_products(self, quote_currency='USD', product_type='SPOT'):
+        """List all available products (trading pairs) on Coinbase.
+        
+        Args:
+            quote_currency: Filter by quote currency (default: 'USD')
+            product_type: Filter by product type (default: 'SPOT')
+            
+        Returns:
+            List of product dictionaries, or empty list on error
+        """
+        try:
+            response = self.client.get_products(product_type=product_type)
+            # Response is a ListProductsResponse object with 'products' attribute
+            products = response.products if hasattr(response, 'products') else []
+            
+            if quote_currency:
+                products = [p for p in products if getattr(p, 'quote_currency_id', None) == quote_currency]
+            
+            return products
+        except Exception as e:
+            print(f"Error listing products: {e}")
+            return []
+    
+    def list_all_coins(self, quote_currency='USD'):
+        """List all coin symbols available for trading on Coinbase.
+        
+        Args:
+            quote_currency: Filter by quote currency (default: 'USD')
+            
+        Returns:
+            List of coin symbols (e.g., ['BTC', 'ETH', 'DOGE', ...])
+        """
+        products = self.list_all_products(quote_currency=quote_currency)
+        coins = [getattr(p, 'base_currency_id', None) for p in products]
+        coins = [c for c in coins if c]
+        return sorted(set(coins))
+    
+    def list_coins_by_category(self, category: str, quote_currency='USD'):
+        """List coins available on Coinbase filtered by CoinGecko category.
+        
+        Args:
+            category: Category to filter by (e.g., 'meme', 'base ecosystem', 'solana ecosystem')
+            quote_currency: Filter by quote currency (default: 'USD')
+            
+        Returns:
+            List of coin symbols matching the category
+        """
+        from coingeckoutil import filter_coins_by_category
+        
+        all_coins = self.list_all_coins(quote_currency=quote_currency)
+        if not all_coins:
+            return []
+        
+        # Filter by category using CoinGecko
+        # Note: This is rate-limited and may take time for large lists
+        print(f"Filtering {len(all_coins)} coins by category '{category}'...")
+        filtered = filter_coins_by_category(all_coins, [category])
+        print(f"Found {len(filtered)} coins in category '{category}'")
+        return filtered

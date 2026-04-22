@@ -181,7 +181,7 @@ if len([c.strip() for c in ANALYZE_COINS_RAW.split(',') if c.strip()]) > 5:
     print(f"Warning: --coins limited to 5 coins, ignoring extras")
 
 def is_valid_coin_symbol(text):
-    """Check if text looks like a valid coin symbol (2-10 alphanumeric chars)."""
+    """Check if text looks like a valid coin symbol."""
     if not text:
         return False
     text = text.strip()
@@ -194,18 +194,14 @@ def is_valid_coin_symbol(text):
     return True
 
 
-
-
-
-
-
-
-
 def sendRecommendationRequest():
+    """Get coin recommendations from Gemini."""
+    prompt = "What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+    
     try:
         response = client.models.generate_content(
             model="models/gemini-2.5-pro",
-            contents="What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results.",
+            contents=prompt,
             config=config,
         )
         return response

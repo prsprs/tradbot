@@ -17,14 +17,16 @@ class PerplexityTrader:
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
     
     def send_recommendation_request(self):
-        """Get cryptocurrency meme coin recommendations from Perplexity with live web search."""
+        """Get cryptocurrency recommendations from Perplexity with live web search."""
+        prompt = "What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+        
         response = self.client.chat.completions.create(
             model=self.model,
             max_tokens=4096,
             messages=[
                 {
                     "role": "user",
-                    "content": "What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+                    "content": prompt
                 }
             ]
         )

@@ -11,6 +11,149 @@ Polymarket is a decentralized prediction market where users bet on event outcome
 1. **Crowd sentiment** - Aggregated probability of price movements
 2. **Betting volume** - Interest level in specific cryptocurrencies
 3. **Whale activity** - Large positions that may signal informed trading
+4. **Market-validated coin selection** - Alternative to category filtering (see below)
+
+## Polymarket as Alternative to Category Filtering
+
+### The Problem
+
+Traditional category filtering (meme coins, DeFi, AI) requires external APIs:
+- CoinGecko: Rate limited (402/429 errors)
+- LunarCrush: $24/month
+- CoinMarketCap: $29+/month
+
+### Polymarket Solution: Market-Validated Selection
+
+Instead of filtering by semantic categories, use Polymarket to identify **coins worth trading** based on market activity:
+
+**Key Insight:** If Polymarket has active prediction markets for a coin, it indicates:
+- Significant market interest
+- Trading liquidity
+- Price volatility worth betting on
+
+**Smart Money Discovery** takes this further by identifying which coins successful traders (>60% win rate) are betting on.
+
+### Comparison to Traditional Categorization
+
+| Approach | Question Answered | Signal Type |
+|----------|------------------|-------------|
+| Category Filter | "Which coins are meme coins?" | Semantic label |
+| Polymarket Markets | "Which coins do people bet on?" | Market interest |
+| Smart Money Discovery | "Which coins do winners bet on?" | Informed money flow |
+
+### When to Use Polymarket for Coin Selection
+
+**Good fit:**
+- You want market-validated signals, not just labels
+- You're okay with ~50-100 coin coverage
+- You want free API access
+- Smart money tracking adds value to your strategy
+
+**Not a good fit:**
+- You need comprehensive "all meme coins" list
+- You need 500+ coin coverage
+- You need specific category filtering (AI coins, gaming tokens)
+
+### Integration with Other APIs
+
+Polymarket works well in combination:
+1. **LunarCrush + Polymarket**: Category filter + market validation
+2. **DEXScreener + Polymarket**: Chain filter + market validation
+3. **Standalone**: Replace LLM discovery with smart money discovery
+
+See `COIN_CATEGORIZATION_FEATURE.md` for detailed comparison of all approaches.
+
+---
+
+## POLYMARKET_FILTER Parameter
+
+### Environment Variable
+
+```python
+# Only analyze coins with active Polymarket prediction markets
+POLYMARKET_FILTER = os.environ.get('POLYMARKET_FILTER', 'false').lower() == 'true'
+```
+
+### How It Works
+
+When `POLYMARKET_FILTER=true`:
+1. Query Polymarket Gamma API for all active crypto events
+2. Extract coin symbols from event titles via pattern matching
+3. Filter the coin list to only include coins with active markets
+4. Result: Market-validated coin selection
+
+### Implementation
+
+```python
+def get_coins_with_markets(self) -> Set[str]:
+    """Get all coin symbols that have active Polymarket prediction markets."""
+    response = requests.get(
+        "https://gamma-api.polymarket.com/events",
+        params={"active": "true", "closed": "false", "limit": 500}
+    )
+    response.raise_for_status()
+    events = response.json()
+    
+    # Extract coins from event titles
+    coin_patterns = [
+        ('BTC', r'bitcoin|\bbtc\b'),
+        ('ETH', r'ethereum|\beth\b'),
+        ('SOL', r'solana|\bsol\b'),
+        ('DOGE', r'dogecoin|\bdoge\b'),
+        ('XRP', r'\bxrp\b'),
+        ('BNB', r'\bbnb\b'),
+        ('ADA', r'cardano|\bada\b'),
+        ('SHIB', r'shiba|\bshib\b'),
+        ('PEPE', r'\bpepe\b'),
+        ('BONK', r'\bbonk\b'),
+        ('WIF', r'dogwifhat|\bwif\b'),
+        ('FLOKI', r'\bfloki\b'),
+        ('TRUMP', r'trump.*token|trump.*coin'),
+    ]
+    
+    coins = set()
+    for event in events:
+        title = event.get("title", "").lower()
+        for symbol, pattern in coin_patterns:
+            if re.search(pattern, title):
+                coins.add(symbol)
+    
+    return coins
+```
+
+### Pipeline Position
+
+```
+Coinbase coins → LunarCrush (CHAINS/CATEGORIES) → Polymarket (POLYMARKET_FILTER) → Final list
+```
+
+The Polymarket filter is the **final filter** in the pipeline, applied after LunarCrush category/chain filtering.
+
+### Usage Examples
+
+```bash
+# Only coins with active prediction markets (no other filters)
+POLYMARKET_FILTER=true python geminigroundlin15.py
+
+# Meme coins that also have Polymarket markets
+CATEGORIES=meme-coins POLYMARKET_FILTER=true python geminigroundlin15.py
+
+# Solana meme coins with Polymarket validation
+CHAINS=solana CATEGORIES=meme-coins POLYMARKET_FILTER=true python geminigroundlin15.py
+```
+
+### Current Coverage (as of testing)
+
+| Coin | Active Markets |
+|------|---------------|
+| BTC | 10 |
+| ETH | 2 |
+| SOL | 1 |
+| DOGE | 1 |
+| XRP | 1 |
+| BNB | 1 |
+
+**Note:** Coverage is limited (~10-20 coins). This filter is most useful as a **validation layer** after category filtering, not as a primary discovery mechanism.
 
 ## Polymarket Crypto Markets
 
@@ -941,24 +1084,29 @@ Use existing whale tracking services via their APIs or scraping.
 
 ## Implementation Phases
 
-### Phase 1: Basic Integration
-- [ ] Create `polymarketutil.py` with market search
-- [ ] Implement `get_bullish_sentiment()` for major coins
-- [ ] Add `USE_POLYMARKET` environment variable
+### Phase 1: POLYMARKET_FILTER Integration (Priority)
+- [ ] Create `polymarketutil.py` with `get_coins_with_markets()` method
+- [ ] Add `POLYMARKET_FILTER` environment variable
+- [ ] Integrate as final filter in coin selection pipeline (after LunarCrush)
+- [ ] Test with `CATEGORIES=meme-coins POLYMARKET_FILTER=true`
+
+### Phase 2: Sentiment Integration
+- [ ] Add `get_bullish_sentiment()` for sentiment checking
+- [ ] Add `USE_POLYMARKET` environment variable for sentiment display
 - [ ] Basic console output of sentiment data
 
-### Phase 2: Decision Integration
+### Phase 3: Decision Integration
 - [ ] Implement `should_buy_with_polymarket()` logic
 - [ ] Add threshold configuration variables
 - [ ] Integrate with buy decision flow
 - [ ] Update summary output
 
-### Phase 3: LLM Enhancement
+### Phase 4: LLM Enhancement
 - [ ] Feed Polymarket data to LLM prompts
 - [ ] Add Polymarket context to all LLM utilities
 - [ ] Test impact on LLM recommendations
 
-### Phase 4: Smart Money Discovery
+### Phase 5: Smart Money Discovery
 - [ ] Implement `get_top_traders()` method
 - [ ] Implement `get_trader_crypto_positions()` method
 - [ ] Implement `discover_smart_money_coins()` method
@@ -966,7 +1114,7 @@ Use existing whale tracking services via their APIs or scraping.
 - [ ] Integrate with coin selection flow (priority over LLM discovery)
 - [ ] Add trader scoring algorithm
 
-### Phase 5: Advanced Features
+### Phase 6: Advanced Features
 - [ ] Real-time whale trade tracking
 - [ ] Historical sentiment analysis
 - [ ] Market creation alerts
