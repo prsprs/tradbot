@@ -2,20 +2,181 @@
 LunarCrush Utility - Coin categorization and filtering using LunarCrush API.
 
 Provides category and blockchain filtering for cryptocurrency coins.
-Requires a LunarCrush API key ($90/month or $5/day Individual plan).
+Supports both live API calls and cached data from coin_cache.json.
 
-Environment Variables:
-    LUNARCRUSH_API_KEY: Your LunarCrush API key (required)
+For live API calls:
+    Requires LUNARCRUSH_API_KEY environment variable ($90/month or $5/day)
+
+For cached data:
+    Run refresh_coin_cache.py to generate coin_cache.json
 """
 
 import os
+import json
+from datetime import datetime, timezone
+from typing import List, Set, Optional, Dict, Any, Tuple
+
 import requests
-from typing import List, Set, Optional, Dict, Any
 
 
 # LunarCrush API configuration
 LUNARCRUSH_API_KEY = os.environ.get('LUNARCRUSH_API_KEY', '')
 BASE_URL = "https://lunarcrush.com/api4/public"
+
+# Cache configuration
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_FILE = os.path.join(SCRIPT_DIR, "coin_cache.json")
+
+
+# =============================================================================
+# CACHE FUNCTIONS
+# =============================================================================
+
+def cache_exists() -> bool:
+    """Check if the coin cache file exists."""
+    return os.path.isfile(CACHE_FILE)
+
+
+def load_cache() -> Optional[Dict[str, Any]]:
+    """Load the coin cache from disk.
+    
+    Returns:
+        Cache dict with 'refreshed_at' and 'coins' keys, or None if not found.
+    """
+    if not cache_exists():
+        return None
+    
+    try:
+        with open(CACHE_FILE, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"[WARNING] Failed to load cache: {e}")
+        return None
+
+
+def get_cache_age() -> Optional[str]:
+    """Get human-readable age of the cache.
+    
+    Returns:
+        String like "2 days ago" or "3 hours ago", or None if cache doesn't exist.
+    """
+    cache = load_cache()
+    if not cache or 'refreshed_at' not in cache:
+        return None
+    
+    try:
+        refreshed = datetime.fromisoformat(cache['refreshed_at'].replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        delta = now - refreshed
+        
+        days = delta.days
+        hours = delta.seconds // 3600
+        
+        if days > 0:
+            return f"{days} day{'s' if days != 1 else ''} ago"
+        elif hours > 0:
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        else:
+            minutes = delta.seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    except (ValueError, TypeError):
+        return "unknown age"
+
+
+def get_cache_timestamp() -> Optional[str]:
+    """Get the ISO timestamp when cache was refreshed.
+    
+    Returns:
+        ISO timestamp string, or None if cache doesn't exist.
+    """
+    cache = load_cache()
+    if cache and 'refreshed_at' in cache:
+        return cache['refreshed_at']
+    return None
+
+
+def filter_from_cache(coinbase_coins: List[str],
+                      chains: Optional[List[str]] = None,
+                      categories: Optional[List[str]] = None) -> Tuple[List[str], List[str]]:
+    """Filter Coinbase coins using cached LunarCrush data.
+    
+    Args:
+        coinbase_coins: List of coin symbols from Coinbase
+        chains: List of blockchain networks to filter by (OR logic)
+        categories: List of categories to filter by (OR logic)
+        
+    Returns:
+        Tuple of (filtered_coins, skipped_coins):
+            - filtered_coins: Coins matching the filter criteria
+            - skipped_coins: Coins not in cache (for logging)
+            
+    Raises:
+        FileNotFoundError: If cache file doesn't exist
+    """
+    cache = load_cache()
+    if cache is None:
+        raise FileNotFoundError(
+            f"Cache file not found: {CACHE_FILE}\n"
+            f"Run 'python refresh_coin_cache.py' to create it."
+        )
+    
+    coins_data = cache.get("coins", {})
+    cache_age = get_cache_age()
+    
+    print(f"\n=== CACHE-BASED FILTERING ===")
+    print(f"Cache refreshed: {cache_age}")
+    if chains:
+        print(f"Chain filter: {chains}")
+    if categories:
+        print(f"Category filter: {categories}")
+    
+    filtered: List[str] = []
+    skipped: List[str] = []
+    
+    for coin in coinbase_coins:
+        symbol = coin.upper()
+        
+        # Check if coin is in cache
+        if symbol not in coins_data:
+            skipped.append(symbol)
+            continue
+        
+        coin_info = coins_data[symbol]
+        coin_categories = [c.lower() for c in coin_info.get("categories", [])]
+        coin_blockchains = [b.lower() for b in coin_info.get("blockchains", [])]
+        
+        # Check category match (OR logic)
+        category_match = True
+        if categories:
+            category_match = any(
+                cat.lower() in coin_categories
+                for cat in categories
+            )
+        
+        # Check chain match (OR logic)
+        chain_match = True
+        if chains:
+            chain_match = any(
+                chain.lower() in coin_blockchains
+                for chain in chains
+            )
+        
+        # Include if matches both filters (when specified)
+        if category_match and chain_match:
+            filtered.append(coin)
+    
+    # Log results
+    print(f"Coinbase coins: {len(coinbase_coins)}")
+    print(f"After filtering: {len(filtered)}")
+    
+    if skipped:
+        print(f"Skipped (not in cache): {len(skipped)}")
+        if len(skipped) <= 10:
+            print(f"  → {skipped}")
+    
+    print("=" * 30)
+    
+    return filtered, skipped
 
 
 class LunarCrushClient:

@@ -1002,18 +1002,18 @@ LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py
 | 7 | **Polymarket in refresh script too?** | Cache Polymarket data, or always query live (free) | Consistency vs freshness (markets change fast) |
 | 8 | **Cache file in git?** | Yes (share categorization), No (ephemeral data) | Collaboration vs repo cleanliness |
 
-### Recommended Defaults (pending your input)
+### Decisions
 
-| Question | Recommended Default | Rationale |
-|----------|---------------------|-----------|
-| Cache format | JSON | Easier to parse, supports nested data |
-| Cache location | Project root (`./coin_cache.json`) | Simple, visible |
-| Stale warning | 7 days | Balance between freshness and annoyance |
-| Missing coin | Include it (no filtering applied) | Don't block new listings |
-| Social metrics | Yes (galaxy_score, alt_rank) | Useful for future enhancements |
-| Rate limits | Sequential, 100ms delay | Safe default |
-| Polymarket | Query live (free) | Markets change too fast to cache |
-| Git | Add to .gitignore | Contains API-derived data |
+| # | Question | **Decision** |
+|---|----------|--------------|
+| 1 | Cache file format? | **JSON** |
+| 2 | Cache file location? | **Same dir as script** (`./coin_cache.json`) |
+| 3 | Stale cache warning? | **No warning, but display cache age in trading bot output** |
+| 4 | Coin not in cache? | **If `--coins` specified: skip cache entirely. In discovery mode: skip coin, note reason in output** |
+| 5 | Include social metrics? | **No** - just categories and blockchains |
+| 6 | Handle LunarCrush API rate limits? | **N/A** - only 1-2 paginated API calls needed per refresh |
+| 7 | Polymarket in refresh script? | **No** - query live (free API, data changes frequently) |
+| 8 | Cache file in git? | **No** - add to .gitignore. If file missing when `--chains`/`--categories` specified, show clear error with instructions to run refresh script |
 
 ---
 

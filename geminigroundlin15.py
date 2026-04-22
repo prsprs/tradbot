@@ -22,7 +22,7 @@ from perplexityutil import PerplexityTrader
 
 from historyutil import record_recommendation
 
-from lunarcrushutil import filter_coinbase_coins as lunarcrush_filter
+from lunarcrushutil import filter_from_cache, cache_exists, get_cache_age
 
 from polymarketutil import filter_coins_by_polymarket
 
@@ -901,6 +901,8 @@ coinsToExclude = {'TRUMP'}
 def apply_coin_filters(coins: list) -> list:
     """Apply chain, category, and Polymarket filters to a list of coins.
     
+    Uses cached LunarCrush data from coin_cache.json for filtering.
+    
     Args:
         coins: List of coin symbols to filter
         
@@ -909,21 +911,33 @@ def apply_coin_filters(coins: list) -> list:
     """
     filtered = coins
     
-    # Step 1: Apply LunarCrush filters (chains and/or categories)
+    # Step 1: Apply LunarCrush filters from cache (chains and/or categories)
     if CHAINS or CATEGORIES:
-        print(f"\n=== COIN FILTERING ===")
-        print(f"Input coins: {len(filtered)}")
+        # Check if cache exists
+        if not cache_exists():
+            print("\n" + "="*60)
+            print("[ERROR] Coin cache file not found!")
+            print("="*60)
+            print("\nThe --chains and --categories filters require coin_cache.json")
+            print("which contains LunarCrush category/blockchain data.")
+            print("\nTo create the cache, run:")
+            print("  LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py")
+            print("\nNote: LunarCrush requires a paid subscription ($5/day or $90/month)")
+            print("Try promo code ARCH30 for 30% off.")
+            print("="*60 + "\n")
+            sys.exit(1)
+        
         try:
-            filtered = lunarcrush_filter(
+            filtered, skipped = filter_from_cache(
                 filtered,
                 chains=CHAINS if CHAINS else None,
                 categories=CATEGORIES if CATEGORIES else None
             )
-        except (ValueError, RuntimeError) as e:
-            print(f"[ERROR] {e}")
-            raise
+        except FileNotFoundError as e:
+            print(f"\n[ERROR] {e}")
+            sys.exit(1)
     
-    # Step 2: Apply Polymarket filter
+    # Step 2: Apply Polymarket filter (always live - free API)
     if POLYMARKET_FILTER:
         filtered = filter_coins_by_polymarket(filtered, verbose=True)
     
@@ -996,6 +1010,12 @@ if CHAINS:
 if CATEGORIES:
     categories_source = get_config_source('--categories', 'CATEGORIES')
     print(f"Category Filter: {', '.join(CATEGORIES)} [{categories_source}]")
+if CHAINS or CATEGORIES:
+    cache_age = get_cache_age()
+    if cache_age:
+        print(f"Cache Age: {cache_age}")
+    else:
+        print(f"Cache Age: NOT FOUND (run refresh_coin_cache.py)")
 if POLYMARKET_FILTER:
     polymarket_source = get_config_source('--polymarket-filter', 'POLYMARKET_FILTER')
     print(f"Polymarket Filter: Enabled [{polymarket_source}]")
