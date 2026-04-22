@@ -1018,10 +1018,162 @@ LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py
 
 ---
 
+## API Testing Results (2026-04-22)
+
+### LunarCrush API
+
+| Plan | Price | `/coins/list/v2` Endpoint |
+|------|-------|---------------------------|
+| Individual (Daily) | $5/day | ❌ **Not included** - returns 402 |
+| Individual (Monthly) | $90/month | ❌ **Not included** |
+| Builder | ~$300/month | ✅ Required for coins endpoint |
+
+**Finding:** The Individual plan ($5/day or $90/month) does NOT include access to the `/coins/list/v2` endpoint needed to fetch coin categories and blockchains. The error message states: *"This endpoint requires a Builder, Scale, or Enterprise subscription."*
+
+### CoinGecko API (Alternative)
+
+| Endpoint | Free Tier | Data Provided |
+|----------|-----------|---------------|
+| `/coins/categories/list` | ✅ Works | List of all category IDs |
+| `/coins/{id}` | ✅ Works | Categories, platforms/blockchains per coin |
+| `/coins/markets?category=X` | ❌ 404 | Bulk filter by category (paid only) |
+| `/coins/list` | ✅ Works | Symbol-to-ID mapping (17,549 coins) |
+
+**Findings:**
+- Free tier does **not expire** - permanently available with rate limits (~10-30 calls/min)
+- Individual coin details include `categories` array and `detail_platforms` (blockchains)
+- **Problem:** Symbol mapping is ambiguous - e.g., 18 different coins have symbol `PEPE`
+- Would require additional logic to disambiguate (match by name or market cap)
+- Cache refresh would take ~10-25 minutes due to rate limits (~250 coins individually)
+
+### Santiment API (Best Alternative)
+
+Tested: 2026-04-22
+
+| Feature | Result |
+|---------|--------|
+| **Bulk query** | ✅ Single GraphQL query returns ALL 2,830 projects |
+| **Categories** | ✅ `marketSegments` field (Memecoin, Layer 1, DeFi, AI, etc.) |
+| **Blockchain** | ✅ `infrastructure` field (ETH, Solana, BEP20, BTC, etc.) |
+| **Authentication** | ✅ None required for basic queries |
+| **API calls needed** | **1** (vs 250+ individual calls for CoinGecko) |
+| **Free tier** | 1,000 calls/month, 1 year historical data |
+
+**Sample query:**
+```graphql
+{ allProjects { slug name ticker marketSegments infrastructure } }
+```
+
+**Sample results:**
+| Ticker | Categories | Blockchain |
+|--------|------------|------------|
+| PEPE | Ethereum, Memecoin | ETH |
+| DOGE | Cryptocurrency, Memecoin | Dogecoin |
+| BONK | Solana, Memecoin | Solana |
+| WIF | Memecoin, Solana | Solana |
+| SOL | Blockchain Network, Layer 1 | Solana |
+
+**Minor issues:**
+- Some duplicate tickers (e.g., BTC/ETH have Grayscale ETF entries) - filter by `infrastructure != None`
+- Symbol disambiguation still needed to map Coinbase symbols to Santiment slugs
+- Uses "slugs" not symbols (e.g., `dogwifhat` not `WIF`)
+
+### Recommendation
+
+**Santiment free API is the best option:**
+- Single bulk query gets all data (no rate limit concerns)
+- Free tier sufficient for cache refresh
+- Categories and blockchain data included
+- No paid subscription required
+
+---
+
+## Hybrid Discovery Mode Design (2026-04-22)
+
+### Overview
+
+Currently, coin discovery can be done via:
+1. **LLM Discovery** - Ask LLM "what 3 meme coins should I buy?" (current default)
+2. **Filtered Discovery** - Filter Coinbase coins by category/chain, take first 5 (crude)
+
+**New approach:** Combine both methods and use Santiment metrics for intelligent ranking.
+
+### Proposed `--discovery` Parameter
+
+```bash
+--discovery=llm              # LLM-only discovery (current default behavior)
+--discovery=santiment        # Santiment-based discovery (filter + rank by metrics)
+--discovery=llm,santiment    # Union of both methods
+```
+
+Environment variable: `DISCOVERY=llm,santiment`
+
+### Santiment Discovery Logic
+
+When `santiment` is in the discovery list:
+
+1. **Pre-processing:** Auto-refresh `coin_cache.json` from Santiment API (free, ~2 seconds)
+2. **Filter:** Apply `--chains` and `--categories` filters (if specified)
+3. **Rank:** Sort filtered coins by `volumeChange24h` descending (momentum indicator)
+4. **Select:** Take top N coins (configurable, default 3)
+
+### Santiment Data Fields for Ranking
+
+| Field | Description | Use Case |
+|-------|-------------|----------|
+| `volumeChange24h` | 24h volume change % | **Primary ranking** - momentum |
+| `rank` | Overall market rank | Secondary - filter out micro-caps |
+| `isTrending` | Boolean trending flag | Boost factor |
+| `marketcapUsd` | Market cap | Filter minimum threshold |
+| `volumeUsd` | 24h volume | Filter minimum liquidity |
+
+### Combined Discovery (Union)
+
+When `--discovery=llm,santiment`:
+
+1. Run LLM discovery → get N coins
+2. Run Santiment discovery → get M coins  
+3. Union both lists, deduplicate
+4. Analyze all unique coins (may exceed 5 if no overlap)
+
+### Auto-Refresh Cache Behavior
+
+Since Santiment discovery depends on **real-time metrics** (volume change), the cache must be fresh:
+
+| Condition | Behavior |
+|-----------|----------|
+| `santiment` in discovery | Auto-refresh cache at startup |
+| Cache exists but stale | Refresh (threshold TBD) |
+| API fails | Fall back to existing cache with warning |
+
+### Design Decisions (2026-04-22)
+
+| # | Question | **Decision** |
+|---|----------|--------------|
+| 1 | Max coins to analyze? | **Cap at 6** (3 LLM + 3 Santiment when using both). Deduplicate union. |
+| 2 | Ranking metric selection? | **Keep simple for MVP** - use `volumeChange24h` only |
+| 3 | Minimum thresholds? | **Skip for MVP** |
+| 4 | Cache staleness threshold? | **Always refresh** when santiment in discovery. Create backup before refresh (same as standalone tool). |
+| 5 | LLM prompt modification? | **Keep LLM unconstrained**, filter post-hoc. Don't know how good LLM is at categorizing. |
+| 6 | Discovery default? | **Keep `llm` as default** (backward compatible) |
+
+### Implementation Order
+
+1. Add `--discovery` parameter parsing
+2. Add cache auto-refresh when `santiment` in discovery
+3. Implement Santiment ranking logic (volumeChange24h)
+4. Implement union logic for combined discovery
+5. Update startup banner to show discovery method
+6. Update OPERATIONS_MANUAL
+
+---
+
 ## Updated MVP Decisions
 
 | Decision | Original | **Revised** |
 |----------|----------|-------------|
-| **LunarCrush Cost** | Approved (~$90/month) | **On-demand refresh (~$5-15/month)** |
-| **Caching** | No caching for MVP | **Cache required for cost savings** |
+| **LunarCrush Cost** | Approved (~$90/month) | **Free (Santiment)** |
+| **Caching** | No caching for MVP | **Cache required, auto-refresh** |
 | **Fallback on Error** | Fail with error | **Fall back to cache if API fails** |
+| **Data Source** | LunarCrush | **Santiment free API** (single bulk query) |
+| **Discovery Mode** | LLM only | **LLM, Santiment, or both** |

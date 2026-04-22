@@ -24,6 +24,9 @@ python geminigroundlin15.py [OPTIONS]
 | `--primary-llm` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | Primary LLM for discovery |
 | `--compare-llms` | comma-separated | `gemini,claude` | LLMs for compare/integrate mode |
 | `--coins` | comma-separated | *(empty)* | Specific coins to analyze (max 5), or empty for discovery mode |
+| `--chains` | comma-separated | *(empty)* | Filter coins by blockchain (e.g., `solana,base`). Requires cache file |
+| `--categories` | comma-separated | *(empty)* | Filter coins by category (e.g., `meme-coins,defi`). Requires cache file |
+| `--polymarket-filter` | `true`, `false` | `false` | Only analyze coins with active Polymarket prediction markets |
 | `--require-consensus` | `true`, `false` | `true` | Require LLM consensus for action |
 | `--tiebreaker` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `none` | `gemini` | Tiebreaker LLM when no consensus |
 | `--log-rounds` | `true`, `false` | `true` | Log integration round details |
@@ -48,7 +51,74 @@ The startup banner shows the source of each configuration value (e.g., `[--tradi
 
 ---
 
-### 2. Trade Analyzer (`tradeanalyzer.py`)
+### 2. Coin Cache Refresh (`refresh_coin_cache.py`)
+
+On-demand script that fetches Coinbase-tradeable coins and enriches them with LunarCrush category and blockchain data. Creates a local cache file used by the trading bot for filtering.
+
+**Usage:**
+```bash
+LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py
+```
+
+**What it does:**
+1. Fetches all tradeable coins from Coinbase
+2. For each coin, fetches category and blockchain data from LunarCrush API
+3. Creates a backup of any existing cache (`coin_cache.backup.json`)
+4. Writes enriched data to `coin_cache.json`
+5. Prints summary of categories and blockchains found
+
+**Output:**
+- `coin_cache.json` - Main cache file used by trading bot
+- `coin_cache.backup.json` - Backup of previous cache (for recovery)
+
+**Cost-Saving Strategy:**
+LunarCrush requires a paid subscription ($5/day or $90/month). To minimize costs:
+1. Subscribe to LunarCrush for 1 day ($5)
+2. Run `refresh_coin_cache.py` to generate the cache
+3. Cancel subscription (or let daily expire)
+4. Trading bot uses cached data for free (no API key needed)
+
+Refresh the cache periodically (e.g., weekly) when new coins are listed or categories change.
+
+**Example Output:**
+```
+==================================================
+COIN CACHE REFRESH
+==================================================
+
+Fetching Coinbase tradeable coins...
+  Found 250 coins on Coinbase
+Fetching LunarCrush coin data...
+  Page 1: 1000 coins (total: 1000)
+  Page 2: 500 coins (total: 1500)
+  Total LunarCrush coins: 1500
+
+Building cache...
+  Matched in LunarCrush: 220
+  Not in LunarCrush: 30
+Backed up existing cache to ./coin_cache.backup.json
+Saved to ./coin_cache.json
+
+==================================================
+CACHE SUMMARY
+==================================================
+Refreshed: 2026-04-22T04:30:00+00:00
+Total coins: 250
+Matched with LunarCrush: 220
+
+Top categories:
+  meme-coins: 45
+  defi: 38
+  layer-1: 25
+  ...
+==================================================
+
+Cache refresh complete!
+```
+
+---
+
+### 3. Trade Analyzer (`tradeanalyzer.py`)
 
 Standalone program that analyzes historical recommendation accuracy by comparing past recommendations to current prices.
 
@@ -89,6 +159,9 @@ python tradeanalyzer.py
 | `INTEGRATION_TIEBREAKER` | `gemini` | LLM to use as tiebreaker when no consensus: `gemini`, `claude`, `openai`, `grok`, `perplexity`, or `none` |
 | `LOG_INTEGRATION_ROUNDS` | `true` | If `true`, log detailed Round 1/2 responses in integrate mode |
 | `ANALYZE_COINS` | *(empty)* | Comma-separated list of coins to analyze (max 5). If empty, LLM discovers coins |
+| `CHAINS` | *(empty)* | Filter by blockchain networks (e.g., `solana,base`). Requires cache file |
+| `CATEGORIES` | *(empty)* | Filter by LunarCrush categories (e.g., `meme-coins,defi`). Requires cache file |
+| `POLYMARKET_FILTER` | `false` | If `true`, only analyze coins with active Polymarket prediction markets |
 
 ### API Keys
 
@@ -112,6 +185,7 @@ python tradeanalyzer.py
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `COINGECKO_API_KEY` | *(empty)* | Optional CoinGecko Pro API key (free tier works without it) |
+| `LUNARCRUSH_API_KEY` | *(empty)* | LunarCrush API key (only needed when running `refresh_coin_cache.py`) |
 
 ---
 
@@ -255,8 +329,11 @@ Location: Project root (or path specified by `COINBASE_CREDENTIALS_FILE`)
 ```
 tradingbot/
 ├── geminigroundlin15.py      # Main trading bot
+├── refresh_coin_cache.py     # LunarCrush cache refresh tool
 ├── tradeanalyzer.py          # Recommendation analyzer
 ├── historyutil.py            # History recording utility
+├── lunarcrushutil.py         # LunarCrush cache utilities
+├── polymarketutil.py         # Polymarket filtering utilities
 ├── coingeckoutil.py          # CoinGecko fallback pricing
 ├── coinbaseutil2.py          # Coinbase trading client
 ├── claudeutil.py             # Claude LLM client
@@ -264,6 +341,8 @@ tradingbot/
 ├── grokutil.py               # Grok LLM client
 ├── perplexityutil.py         # Perplexity LLM client
 ├── cdp_api_key.json          # Coinbase credentials (gitignored)
+├── coin_cache.json           # LunarCrush coin data cache (gitignored)
+├── coin_cache.backup.json    # Backup of previous cache (gitignored)
 └── history/
     ├── recommendations.json  # Accumulated recommendation history
     ├── analysis_24h_*.csv    # 24-hour analysis results
@@ -321,6 +400,35 @@ python geminigroundlin15.py
 ### Run the analyzer
 ```bash
 python tradeanalyzer.py
+```
+
+### Filter by category (e.g., meme coins only)
+```bash
+# First, ensure cache exists (one-time setup)
+LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py
+
+# Then run with category filter
+python geminigroundlin15.py --categories=meme-coins
+```
+
+### Filter by blockchain (e.g., Solana coins only)
+```bash
+python geminigroundlin15.py --chains=solana
+```
+
+### Combine category and chain filters
+```bash
+python geminigroundlin15.py --categories=meme-coins --chains=solana
+```
+
+### Filter to coins with active Polymarket prediction markets
+```bash
+python geminigroundlin15.py --polymarket-filter=true
+```
+
+### Combine all filters (meme coins on Solana with Polymarket markets)
+```bash
+python geminigroundlin15.py --categories=meme-coins --chains=solana --polymarket-filter=true
 ```
 
 ---

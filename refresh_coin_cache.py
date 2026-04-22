@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """
-Refresh Coin Cache - Fetches Coinbase coins and enriches with LunarCrush data.
+Refresh Coin Cache - Fetches Coinbase coins and enriches with category/blockchain data.
 
 This script generates coin_cache.json which contains category and blockchain
 information for all Coinbase-tradeable coins. Run this script periodically
 (e.g., weekly) to keep the cache fresh.
 
-Requires:
-    LUNARCRUSH_API_KEY environment variable
+Data Sources:
+    --source=santiment   (default) Free API, single bulk GraphQL query
+    --source=lunarcrush  Requires LUNARCRUSH_API_KEY, Builder plan ($300+/mo)
 
 Usage:
-    LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py
+    # Using LunarCrush (requires paid Builder plan)
+    LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py --source=lunarcrush
+    
+    # Using Santiment (free)
+    python refresh_coin_cache.py --source=santiment
 
 Output:
     coin_cache.json in the same directory as this script
 """
 
+import argparse
 import os
 import sys
 import json
@@ -25,6 +31,9 @@ from typing import Dict, List, Any, Optional
 import requests
 
 from coinbaseutil2 import BlobbyTrader
+
+# Supported data sources
+SOURCES = ['lunarcrush', 'santiment']
 
 
 # Configuration
@@ -43,6 +52,10 @@ def get_coinbase_coins() -> List[str]:
     print(f"  Found {len(coins)} coins on Coinbase")
     return coins
 
+
+# =============================================================================
+# LUNARCRUSH DATA SOURCE
+# =============================================================================
 
 def get_lunarcrush_coins() -> Dict[str, Dict[str, Any]]:
     """Fetch all coins from LunarCrush with their categories and blockchains.
@@ -118,12 +131,92 @@ def get_lunarcrush_coins() -> Dict[str, Dict[str, Any]]:
     return all_coins
 
 
-def build_cache(coinbase_coins: List[str], lunarcrush_data: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Build the cache combining Coinbase availability with LunarCrush data.
+# =============================================================================
+# SANTIMENT DATA SOURCE
+# =============================================================================
+
+SANTIMENT_API_URL = "https://api.santiment.net/graphql"
+
+def get_santiment_coins() -> Dict[str, Dict[str, Any]]:
+    """Fetch all coins from Santiment with their categories and blockchains.
+    
+    Uses a single GraphQL bulk query to get all projects.
+    
+    Returns:
+        Dict mapping symbol (ticker) to coin data (categories, blockchains)
+    """
+    print("Fetching Santiment coin data...")
+    
+    query = """
+    {
+        allProjects {
+            slug
+            name
+            ticker
+            marketSegments
+            infrastructure
+        }
+    }
+    """
+    
+    try:
+        response = requests.post(
+            SANTIMENT_API_URL,
+            json={"query": query},
+            headers={"Content-Type": "application/json"},
+            timeout=60
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        print(f"\n[ERROR] Santiment API request failed: {e}")
+        sys.exit(1)
+    
+    data = response.json()
+    projects = data.get("data", {}).get("allProjects", [])
+    
+    all_coins: Dict[str, Dict[str, Any]] = {}
+    
+    for project in projects:
+        ticker = project.get("ticker", "").upper()
+        infrastructure = project.get("infrastructure")
+        
+        # Skip entries without ticker or infrastructure (e.g., ETFs)
+        if not ticker or not infrastructure:
+            continue
+        
+        # Skip if we already have this ticker (keep first match, usually highest market cap)
+        if ticker in all_coins:
+            continue
+        
+        # Parse categories from marketSegments
+        segments = project.get("marketSegments", []) or []
+        categories = [s.lower() for s in segments if s]
+        
+        # Parse blockchain from infrastructure
+        blockchains = [infrastructure.lower()] if infrastructure else []
+        
+        all_coins[ticker] = {
+            "name": project.get("name", ""),
+            "slug": project.get("slug", ""),
+            "categories": categories,
+            "blockchains": blockchains
+        }
+    
+    print(f"  Total Santiment coins: {len(all_coins)}")
+    return all_coins
+
+
+# =============================================================================
+# CACHE BUILDING
+# =============================================================================
+
+def build_cache(coinbase_coins: List[str], source_data: Dict[str, Dict[str, Any]], source: str) -> Dict[str, Any]:
+    """Build the cache combining Coinbase availability with source data.
     
     Args:
         coinbase_coins: List of symbols tradeable on Coinbase
-        lunarcrush_data: Dict of LunarCrush coin data keyed by symbol
+        source_data: Dict of coin data keyed by symbol
+        source: Name of the data source used
         
     Returns:
         Cache dict ready to write to JSON
@@ -137,16 +230,16 @@ def build_cache(coinbase_coins: List[str], lunarcrush_data: Dict[str, Dict[str, 
     for symbol in coinbase_coins:
         symbol_upper = symbol.upper()
         
-        if symbol_upper in lunarcrush_data:
-            lc_data = lunarcrush_data[symbol_upper]
+        if symbol_upper in source_data:
+            src_data = source_data[symbol_upper]
             coins_cache[symbol_upper] = {
-                "name": lc_data["name"],
-                "categories": lc_data["categories"],
-                "blockchains": lc_data["blockchains"]
+                "name": src_data["name"],
+                "categories": src_data["categories"],
+                "blockchains": src_data["blockchains"]
             }
             matched += 1
         else:
-            # Coin on Coinbase but not in LunarCrush - include with empty data
+            # Coin on Coinbase but not in source - include with empty data
             coins_cache[symbol_upper] = {
                 "name": symbol_upper,
                 "categories": [],
@@ -154,13 +247,14 @@ def build_cache(coinbase_coins: List[str], lunarcrush_data: Dict[str, Dict[str, 
             }
             unmatched += 1
     
-    print(f"  Matched in LunarCrush: {matched}")
-    print(f"  Not in LunarCrush: {unmatched}")
+    print(f"  Matched in {source}: {matched}")
+    print(f"  Not in {source}: {unmatched}")
     
     cache = {
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
         "coinbase_count": len(coinbase_coins),
-        "lunarcrush_matched": matched,
+        "matched": matched,
         "coins": coins_cache
     }
     
@@ -202,6 +296,7 @@ def save_cache(cache: Dict[str, Any]) -> None:
 def print_summary(cache: Dict[str, Any]) -> None:
     """Print summary of cached data."""
     coins = cache["coins"]
+    source = cache.get("source", "unknown")
     
     # Count by category
     category_counts: Dict[str, int] = {}
@@ -218,9 +313,10 @@ def print_summary(cache: Dict[str, Any]) -> None:
     print("\n" + "="*50)
     print("CACHE SUMMARY")
     print("="*50)
+    print(f"Source: {source}")
     print(f"Refreshed: {cache['refreshed_at']}")
     print(f"Total coins: {len(coins)}")
-    print(f"Matched with LunarCrush: {cache['lunarcrush_matched']}")
+    print(f"Matched: {cache.get('matched', cache.get('lunarcrush_matched', 0))}")
     
     if category_counts:
         print(f"\nTop categories:")
@@ -235,20 +331,55 @@ def print_summary(cache: Dict[str, Any]) -> None:
     print("="*50)
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Refresh coin cache with category and blockchain data.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Using Santiment (free, recommended)
+  python refresh_coin_cache.py --source=santiment
+  
+  # Using LunarCrush (requires paid Builder plan)
+  LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py --source=lunarcrush
+"""
+    )
+    
+    parser.add_argument(
+        '--source',
+        choices=SOURCES,
+        default='santiment',
+        help='Data source for category/blockchain info (default: santiment)'
+    )
+    
+    return parser.parse_args()
+
+
 def main():
     """Main entry point."""
+    args = parse_args()
+    source = args.source
+    
     print("="*50)
     print("COIN CACHE REFRESH")
+    print(f"Source: {source}")
     print("="*50 + "\n")
     
     # Step 1: Get Coinbase coins
     coinbase_coins = get_coinbase_coins()
     
-    # Step 2: Get LunarCrush data
-    lunarcrush_data = get_lunarcrush_coins()
+    # Step 2: Get source data based on selected source
+    if source == 'lunarcrush':
+        source_data = get_lunarcrush_coins()
+    elif source == 'santiment':
+        source_data = get_santiment_coins()
+    else:
+        print(f"[ERROR] Unknown source: {source}")
+        sys.exit(1)
     
     # Step 3: Build cache
-    cache = build_cache(coinbase_coins, lunarcrush_data)
+    cache = build_cache(coinbase_coins, source_data, source)
     
     # Step 4: Save cache
     save_cache(cache)
