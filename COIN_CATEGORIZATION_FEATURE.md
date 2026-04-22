@@ -837,3 +837,190 @@ This allows users to verify pattern matching is working correctly (addresses fal
 - [ ] Test all filter combinations
 - [ ] Document available categories and chains
 - [ ] Add usage examples to README
+
+---
+
+## REVISED APPROACH: Cache-Based LunarCrush Integration
+
+### Problem with Live API Approach
+
+LunarCrush pricing is expensive for continuous use:
+- **Daily:** $5/day
+- **Monthly:** $90/month (with ARCH30: ~$63/month)
+- **Annual:** ~$24/month ($288/year)
+
+For a trading bot that runs multiple times per day, even daily billing adds up quickly.
+
+### Solution: On-Demand Cache Refresh
+
+Instead of live API calls, use a **cached coin database** that is refreshed on-demand:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     CACHE-BASED ARCHITECTURE                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  REFRESH SCRIPT (run manually when needed)                                  │
+│  ┌────────────────────────────────────────────────────────────────────────┐│
+│  │  python refresh_coin_cache.py                                          ││
+│  │                                                                        ││
+│  │  1. Get all Coinbase tradeable coins                                   ││
+│  │  2. For each coin, fetch LunarCrush data:                              ││
+│  │     - Categories (meme-coins, defi, layer-1, etc.)                     ││
+│  │     - Blockchains (solana, ethereum, base, etc.)                       ││
+│  │     - Social metrics (optional: galaxy_score, alt_rank)                ││
+│  │  3. Write to coin_cache.json                                           ││
+│  │                                                                        ││
+│  │  Cost: Only pay for LunarCrush on days you run this script             ││
+│  └────────────────────────────────────────────────────────────────────────┘│
+│                              │                                               │
+│                              ▼                                               │
+│  CACHE FILE (coin_cache.json)                                               │
+│  ┌────────────────────────────────────────────────────────────────────────┐│
+│  │  {                                                                     ││
+│  │    "refreshed_at": "2026-04-22T00:30:00Z",                             ││
+│  │    "coins": {                                                          ││
+│  │      "BTC": {                                                          ││
+│  │        "categories": ["layer-1", "pow"],                               ││
+│  │        "blockchains": ["bitcoin"],                                     ││
+│  │        "galaxy_score": 78.5                                            ││
+│  │      },                                                                ││
+│  │      "BONK": {                                                         ││
+│  │        "categories": ["meme-coins"],                                   ││
+│  │        "blockchains": ["solana"],                                      ││
+│  │        "galaxy_score": 65.2                                            ││
+│  │      },                                                                ││
+│  │      ...                                                               ││
+│  │    }                                                                   ││
+│  │  }                                                                     ││
+│  └────────────────────────────────────────────────────────────────────────┘│
+│                              │                                               │
+│                              ▼                                               │
+│  TRADING BOT (reads from cache, no LunarCrush API needed)                   │
+│  ┌────────────────────────────────────────────────────────────────────────┐│
+│  │  python geminigroundlin15.py --categories=meme-coins --chains=solana   ││
+│  │                                                                        ││
+│  │  1. Load coin_cache.json                                               ││
+│  │  2. Filter coins by categories/chains from cache                       ││
+│  │  3. Cross-reference with live Coinbase availability                    ││
+│  │  4. Apply Polymarket filter (if enabled)                               ││
+│  │  5. Run LLM analysis                                                   ││
+│  │                                                                        ││
+│  │  Cost: $0 for LunarCrush (uses cached data)                            ││
+│  └────────────────────────────────────────────────────────────────────────┘│
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Cache File Format
+
+**Option A: Simple JSON**
+```json
+{
+  "refreshed_at": "2026-04-22T00:30:00Z",
+  "lunarcrush_version": "v4",
+  "coins": {
+    "BTC": {
+      "name": "Bitcoin",
+      "categories": ["layer-1", "pow"],
+      "blockchains": ["bitcoin"],
+      "galaxy_score": 78.5,
+      "alt_rank": 1
+    },
+    "BONK": {
+      "name": "Bonk",
+      "categories": ["meme-coins"],
+      "blockchains": ["solana"],
+      "galaxy_score": 65.2,
+      "alt_rank": 156
+    }
+  }
+}
+```
+
+**Option B: CSV (easier to inspect/edit manually)**
+```csv
+symbol,name,categories,blockchains,galaxy_score,alt_rank
+BTC,Bitcoin,"layer-1,pow",bitcoin,78.5,1
+BONK,Bonk,meme-coins,solana,65.2,156
+```
+
+### Refresh Script Usage
+
+```bash
+# Subscribe to LunarCrush for 1 day ($5)
+# Run refresh script
+LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py
+
+# Output:
+# Fetching Coinbase coins... 250 found
+# Enriching with LunarCrush data... 
+#   BTC: layer-1, pow | bitcoin
+#   ETH: layer-1, pos, defi | ethereum
+#   ...
+# Saved to coin_cache.json (250 coins, 2026-04-22T00:30:00Z)
+
+# Cancel LunarCrush subscription (or let daily expire)
+# Trading bot runs for free using cached data
+```
+
+### Cost Comparison
+
+| Scenario | Live API | Cache Approach |
+|----------|----------|----------------|
+| Run bot 4x/day for 30 days | $90/month | $5-15/month (refresh 1-3x) |
+| Run bot 1x/day for 30 days | $90/month | $5/month (refresh 1x) |
+| Run bot during volatile periods only | $90/month | $5/event |
+
+### Implementation Changes
+
+1. **New file: `refresh_coin_cache.py`**
+   - Fetches Coinbase coins
+   - Enriches each with LunarCrush category/chain data
+   - Writes to `coin_cache.json`
+
+2. **Modify: `lunarcrushutil.py`**
+   - Add `load_cache()` function
+   - Add `filter_from_cache()` function
+   - Keep live API functions for refresh script
+
+3. **Modify: `geminigroundlin15.py`**
+   - Check for cache file existence
+   - Use cache for filtering instead of live API
+   - Warn if cache is stale (configurable threshold)
+
+### Open Questions
+
+| # | Question | Options | Impact |
+|---|----------|---------|--------|
+| 1 | **Cache file format?** | JSON vs CSV | JSON easier to parse, CSV easier to inspect |
+| 2 | **Cache file location?** | Same dir as script vs `~/.tradingbot/` vs configurable | Portability vs cleanliness |
+| 3 | **Stale cache warning threshold?** | 1 day, 7 days, 30 days, or no warning | User experience vs flexibility |
+| 4 | **What if coin not in cache?** | Skip it, include it anyway, or error | New Coinbase listings between refreshes |
+| 5 | **Include social metrics in cache?** | Just categories/chains, or also galaxy_score/alt_rank | File size vs future filtering options |
+| 6 | **Handle LunarCrush API rate limits?** | Sequential with delay, batch requests, or fail fast | Refresh speed vs reliability |
+| 7 | **Polymarket in refresh script too?** | Cache Polymarket data, or always query live (free) | Consistency vs freshness (markets change fast) |
+| 8 | **Cache file in git?** | Yes (share categorization), No (ephemeral data) | Collaboration vs repo cleanliness |
+
+### Recommended Defaults (pending your input)
+
+| Question | Recommended Default | Rationale |
+|----------|---------------------|-----------|
+| Cache format | JSON | Easier to parse, supports nested data |
+| Cache location | Project root (`./coin_cache.json`) | Simple, visible |
+| Stale warning | 7 days | Balance between freshness and annoyance |
+| Missing coin | Include it (no filtering applied) | Don't block new listings |
+| Social metrics | Yes (galaxy_score, alt_rank) | Useful for future enhancements |
+| Rate limits | Sequential, 100ms delay | Safe default |
+| Polymarket | Query live (free) | Markets change too fast to cache |
+| Git | Add to .gitignore | Contains API-derived data |
+
+---
+
+## Updated MVP Decisions
+
+| Decision | Original | **Revised** |
+|----------|----------|-------------|
+| **LunarCrush Cost** | Approved (~$90/month) | **On-demand refresh (~$5-15/month)** |
+| **Caching** | No caching for MVP | **Cache required for cost savings** |
+| **Fallback on Error** | Fail with error | **Fall back to cache if API fails** |
