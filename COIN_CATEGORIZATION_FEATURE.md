@@ -110,7 +110,7 @@ The trading bot needs to filter coins by category (meme, DeFi, AI, Base ecosyste
 - Less established than CoinGecko/CMC
 
 **Cost:** 
-- Individual: **$24/month** (API access included)
+- Individual: **$5/day or $90/month** (API access included)
 - Developer/Enterprise: Contact for pricing
 
 **Rate Limits:** Not explicitly documented, but appears generous
@@ -417,13 +417,13 @@ The `/metas/trending/v1` endpoint returns category metadata:
 | CoinGecko Free | Severe | Real-time | Free | ✅ Yes | ❌ No | Easy |
 | CoinGecko Pro | High | Real-time | $129+/mo | ✅ Yes | ❌ No | Easy |
 | CoinMarketCap | Moderate | Real-time | $29+/mo | ✅ Yes | ❌ No | Easy |
-| **LunarCrush** | **Generous** | **Real-time** | **$24/mo** | **✅ Yes** | **✅ Yes** | **Easy** |
+| **LunarCrush** | **Generous** | **Real-time** | **$90/mo** | **✅ Yes** | **✅ Yes** | **Easy** |
 | Polymarket | Generous | Real-time | Free | ⚠️ Indirect | ❌ No | Medium |
 | LLM Knowledge | None | Cutoff date | Included | ⚠️ Unreliable | ⚠️ Unreliable | Easy |
 | Static List | None | Manual | Free | ✅ Yes | ✅ Yes | Easy |
 | DEXScreener+Coinbase | Generous | Real-time | Free | ❌ No | ✅ Yes | Medium |
 
-**Winner for category + chain filtering: LunarCrush at $24/month**
+**Winner for category + chain filtering: LunarCrush at $90/month**
 
 **Alternative approach: Polymarket Smart Money** - Not a category filter, but market-validated coin selection based on what successful traders are betting on. Free, but limited coin coverage (~50-100 coins with markets).
 
@@ -433,7 +433,7 @@ The `/metas/trending/v1` endpoint returns category metadata:
 
 ### Option 1: LunarCrush + Polymarket (Best Signal Quality)
 
-**Cost:** $24/month (LunarCrush) + Free (Polymarket)
+**Cost:** $90/month (LunarCrush) + Free (Polymarket)
 
 **Flow:**
 ```
@@ -472,7 +472,7 @@ The `/metas/trending/v1` endpoint returns category metadata:
 
 ### Option 3: LunarCrush + DEXScreener + Polymarket (Full Stack)
 
-**Cost:** $24/month
+**Cost:** $90/month
 
 **Flow:**
 ```
@@ -756,7 +756,7 @@ Analyzing: ['SOL', 'DOGE', 'BONK', 'WIF']
 
 | Decision | Resolution |
 |----------|------------|
-| **LunarCrush Cost** | Approved (~$30/month) |
+| **LunarCrush Cost** | Approved (~$90/month) |
 | **Caching** | No caching for MVP - real-time queries only |
 | **Category Validation** | Accept any string LunarCrush supports - pass through to API |
 | **Chain Validation** | Accept any string LunarCrush supports - pass through to API |
@@ -811,7 +811,7 @@ This allows users to verify pattern matching is working correctly (addresses fal
 ## Current State
 
 - Coinbase API: Working (lists all tradeable coins, no chain info)
-- LunarCrush: **Implemented** - requires API key ($24/month)
+- LunarCrush: **Implemented** - requires API key ($90/month or $5/day)
 - Polymarket: **Implemented** - free API with keyword matching
 - CHAINS parameter: **Implemented**
 - CATEGORIES parameter: **Implemented**

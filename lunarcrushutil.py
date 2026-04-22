@@ -2,7 +2,7 @@
 LunarCrush Utility - Coin categorization and filtering using LunarCrush API.
 
 Provides category and blockchain filtering for cryptocurrency coins.
-Requires a LunarCrush API key ($24/month Individual plan).
+Requires a LunarCrush API key ($90/month or $5/day Individual plan).
 
 Environment Variables:
     LUNARCRUSH_API_KEY: Your LunarCrush API key (required)
