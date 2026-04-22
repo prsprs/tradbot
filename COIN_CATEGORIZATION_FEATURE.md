@@ -1014,6 +1014,7 @@ LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py
 | 6 | Handle LunarCrush API rate limits? | **N/A** - only 1-2 paginated API calls needed per refresh |
 | 7 | Polymarket in refresh script? | **No** - query live (free API, data changes frequently) |
 | 8 | Cache file in git? | **No** - add to .gitignore. If file missing when `--chains`/`--categories` specified, show clear error with instructions to run refresh script |
+| 9 | Cache backup? | **Yes** - always keep one backup (`coin_cache.backup.json`) before overwriting. Protects against corruption or failed refreshes |
 
 ---
 

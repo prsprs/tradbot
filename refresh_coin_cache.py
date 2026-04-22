@@ -30,6 +30,7 @@ from coinbaseutil2 import BlobbyTrader
 # Configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, "coin_cache.json")
+CACHE_BACKUP_FILE = os.path.join(SCRIPT_DIR, "coin_cache.backup.json")
 LUNARCRUSH_API_KEY = os.environ.get('LUNARCRUSH_API_KEY', '')
 LUNARCRUSH_BASE_URL = "https://lunarcrush.com/api4/public"
 
@@ -166,11 +167,36 @@ def build_cache(coinbase_coins: List[str], lunarcrush_data: Dict[str, Dict[str, 
     return cache
 
 
+def backup_existing_cache() -> bool:
+    """Create a backup of the existing cache file before overwriting.
+    
+    Returns:
+        True if backup was created, False if no existing cache to backup.
+    """
+    if not os.path.isfile(CACHE_FILE):
+        return False
+    
+    try:
+        # Copy current cache to backup
+        with open(CACHE_FILE, 'r') as f:
+            existing_cache = f.read()
+        with open(CACHE_BACKUP_FILE, 'w') as f:
+            f.write(existing_cache)
+        print(f"Backed up existing cache to {CACHE_BACKUP_FILE}")
+        return True
+    except IOError as e:
+        print(f"[WARNING] Failed to create backup: {e}")
+        return False
+
+
 def save_cache(cache: Dict[str, Any]) -> None:
-    """Save cache to JSON file."""
+    """Save cache to JSON file, creating a backup of any existing cache first."""
+    # Create backup of existing cache before overwriting
+    backup_existing_cache()
+    
     with open(CACHE_FILE, 'w') as f:
         json.dump(cache, f, indent=2)
-    print(f"\nSaved to {CACHE_FILE}")
+    print(f"Saved to {CACHE_FILE}")
 
 
 def print_summary(cache: Dict[str, Any]) -> None:
