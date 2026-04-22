@@ -22,6 +22,10 @@ from perplexityutil import PerplexityTrader
 
 from historyutil import record_recommendation
 
+from lunarcrushutil import filter_coinbase_coins as lunarcrush_filter
+
+from polymarketutil import filter_coins_by_polymarket
+
 from pytrends.request import TrendReq
 
 import pandas as pd
@@ -78,6 +82,28 @@ Environment variables can also be used (CLI takes precedence):
         '--coins',
         default=os.environ.get('ANALYZE_COINS', ''),
         help='Comma-separated coins to analyze (max 5), or empty for discovery mode'
+    )
+    
+    # Chain filter (LunarCrush)
+    parser.add_argument(
+        '--chains',
+        default=os.environ.get('CHAINS', ''),
+        help='Comma-separated blockchain filter (e.g., solana,base). Requires LUNARCRUSH_API_KEY'
+    )
+    
+    # Category filter (LunarCrush)
+    parser.add_argument(
+        '--categories',
+        default=os.environ.get('CATEGORIES', ''),
+        help='Comma-separated category filter (e.g., meme-coins,defi). Requires LUNARCRUSH_API_KEY'
+    )
+    
+    # Polymarket filter
+    parser.add_argument(
+        '--polymarket-filter',
+        choices=['true', 'false'],
+        default=os.environ.get('POLYMARKET_FILTER', 'false').lower(),
+        help='Only analyze coins with active Polymarket prediction markets (default: false)'
     )
     
     # Require consensus
@@ -179,6 +205,16 @@ ANALYZE_COINS = [c.strip().upper() for c in ANALYZE_COINS_RAW.split(',') if c.st
 USE_COIN_DISCOVERY = len(ANALYZE_COINS) == 0
 if len([c.strip() for c in ANALYZE_COINS_RAW.split(',') if c.strip()]) > 5:
     print(f"Warning: --coins limited to 5 coins, ignoring extras")
+
+# Chain and category filters (LunarCrush)
+CHAINS_RAW = args.chains.strip()
+CHAINS = [c.strip().lower() for c in CHAINS_RAW.split(',') if c.strip()]
+CATEGORIES_RAW = args.categories.strip()
+CATEGORIES = [c.strip().lower() for c in CATEGORIES_RAW.split(',') if c.strip()]
+POLYMARKET_FILTER = args.polymarket_filter == 'true'
+
+# Check if filtering is requested
+USE_COIN_FILTERING = len(CHAINS) > 0 or len(CATEGORIES) > 0 or POLYMARKET_FILTER
 
 def is_valid_coin_symbol(text):
     """Check if text looks like a valid coin symbol."""
@@ -862,6 +898,60 @@ config = types.GenerateContentConfig(
 coinsToExclude = {'TRUMP'}
 
 
+def apply_coin_filters(coins: list) -> list:
+    """Apply chain, category, and Polymarket filters to a list of coins.
+    
+    Args:
+        coins: List of coin symbols to filter
+        
+    Returns:
+        Filtered list of coins matching all specified criteria
+    """
+    filtered = coins
+    
+    # Step 1: Apply LunarCrush filters (chains and/or categories)
+    if CHAINS or CATEGORIES:
+        print(f"\n=== COIN FILTERING ===")
+        print(f"Input coins: {len(filtered)}")
+        try:
+            filtered = lunarcrush_filter(
+                filtered,
+                chains=CHAINS if CHAINS else None,
+                categories=CATEGORIES if CATEGORIES else None
+            )
+        except (ValueError, RuntimeError) as e:
+            print(f"[ERROR] {e}")
+            raise
+    
+    # Step 2: Apply Polymarket filter
+    if POLYMARKET_FILTER:
+        filtered = filter_coins_by_polymarket(filtered, verbose=True)
+    
+    if CHAINS or CATEGORIES or POLYMARKET_FILTER:
+        print(f"\nFinal filtered coins: {len(filtered)}")
+        if filtered:
+            print(f"  → {filtered[:20]}{'...' if len(filtered) > 20 else ''}")
+        print("=" * 50)
+    
+    return filtered
+
+
+def get_filtered_coinbase_coins() -> list:
+    """Get all Coinbase coins with optional filtering applied.
+    
+    Returns:
+        List of coin symbols after applying chain/category/Polymarket filters.
+    """
+    # Get all tradeable coins from Coinbase
+    all_coins = trader.list_all_coins()
+    print(f"Coinbase tradeable coins: {len(all_coins)}")
+    
+    if not USE_COIN_FILTERING:
+        return all_coins
+    
+    return apply_coin_filters(all_coins)
+
+
 
 
 # What-if mode tracking
@@ -899,6 +989,17 @@ if USE_COIN_DISCOVERY:
 else:
     print(f"Coin Selection: {', '.join(ANALYZE_COINS)} [{coins_source}]")
 
+# Show filter settings
+if CHAINS:
+    chains_source = get_config_source('--chains', 'CHAINS')
+    print(f"Chain Filter: {', '.join(CHAINS)} [{chains_source}]")
+if CATEGORIES:
+    categories_source = get_config_source('--categories', 'CATEGORIES')
+    print(f"Category Filter: {', '.join(CATEGORIES)} [{categories_source}]")
+if POLYMARKET_FILTER:
+    polymarket_source = get_config_source('--polymarket-filter', 'POLYMARKET_FILTER')
+    print(f"Polymarket Filter: Enabled [{polymarket_source}]")
+
 consensus_source = get_config_source('--require-consensus', 'REQUIRE_CONSENSUS')
 print(f"Require Consensus: {REQUIRE_CONSENSUS} [{consensus_source}]")
 
@@ -907,6 +1008,26 @@ if LLM_MODE in ['compare', 'integrate']:
     print(f"Tiebreaker: {INTEGRATION_TIEBREAKER} [{tiebreaker_source}]")
 
 print("="*50 + "\n")
+
+# === APPLY COIN FILTERING ===
+# If filters are set and no specific coins provided, get filtered Coinbase coins
+if USE_COIN_FILTERING and USE_COIN_DISCOVERY:
+    print("=== FILTERED DISCOVERY MODE ===")
+    print("Filters specified - getting filtered coin list from Coinbase...")
+    try:
+        filtered_coins = get_filtered_coinbase_coins()
+        if not filtered_coins:
+            print("\n[ERROR] No coins match the specified filters.")
+            print("Check your CHAINS/CATEGORIES values or try different filters.")
+            sys.exit(1)
+        # Use filtered coins as ANALYZE_COINS (limit to 5 for analysis)
+        ANALYZE_COINS = filtered_coins[:5]
+        USE_COIN_DISCOVERY = False  # Switch to coin choice mode with filtered coins
+        print(f"\nSelected top {len(ANALYZE_COINS)} coins for analysis: {ANALYZE_COINS}")
+        print("")
+    except Exception as e:
+        print(f"\n[ERROR] Coin filtering failed: {e}")
+        sys.exit(1)
 
 # === COIN CHOICE MODE: Analyze specified coins directly ===
 if not USE_COIN_DISCOVERY:
@@ -1262,6 +1383,12 @@ if USE_COIN_DISCOVERY:
     print("Coin Selection: Discovery Mode")
 else:
     print(f"Coin Selection: {', '.join(ANALYZE_COINS)}")
+if CHAINS:
+    print(f"Chain Filter: {', '.join(CHAINS)}")
+if CATEGORIES:
+    print(f"Category Filter: {', '.join(CATEGORIES)}")
+if POLYMARKET_FILTER:
+    print("Polymarket Filter: Enabled")
 if LLM_MODE in ['compare', 'integrate']:
     print(f"Compare LLMs: {COMPARE_LLMS}")
     print(f"Require Consensus: {REQUIRE_CONSENSUS}")

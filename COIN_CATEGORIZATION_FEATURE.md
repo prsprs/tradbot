@@ -811,11 +811,11 @@ This allows users to verify pattern matching is working correctly (addresses fal
 ## Current State
 
 - Coinbase API: Working (lists all tradeable coins, no chain info)
-- LunarCrush: Requires API key ($24/month) - not yet implemented
-- Polymarket: Free API tested - coin extraction via keyword matching works
-- CHAINS parameter: Not implemented
-- CATEGORIES parameter: Not implemented
-- POLYMARKET_FILTER parameter: Not implemented
+- LunarCrush: **Implemented** - requires API key ($24/month)
+- Polymarket: **Implemented** - free API with keyword matching
+- CHAINS parameter: **Implemented**
+- CATEGORIES parameter: **Implemented**
+- POLYMARKET_FILTER parameter: **Implemented**
 
 ---
 
@@ -823,15 +823,15 @@ This allows users to verify pattern matching is working correctly (addresses fal
 
 ### Phase 1: LunarCrush Integration
 - [ ] Sign up for LunarCrush Individual plan
-- [ ] Create `lunarcrushutil.py` with `get_coins()` method
+- [x] Create `lunarcrushutil.py` with `get_coins()` method
 - [ ] Verify category and chain slug names
-- [ ] Add CHAINS and CATEGORIES environment variables
-- [ ] Integrate with main script coin selection flow
+- [x] Add CHAINS and CATEGORIES environment variables
+- [x] Integrate with main script coin selection flow
 
 ### Phase 2: Polymarket Filter
-- [ ] Add `get_coins_with_markets()` to `polymarketutil.py`
-- [ ] Add POLYMARKET_FILTER environment variable
-- [ ] Integrate as final filter in pipeline
+- [x] Add `get_coins_with_markets()` to `polymarketutil.py`
+- [x] Add POLYMARKET_FILTER environment variable
+- [x] Integrate as final filter in pipeline
 
 ### Phase 3: Testing & Documentation
 - [ ] Test all filter combinations
