@@ -131,6 +131,10 @@ def analyze_recommendations(recs: List[Dict], trader=None) -> List[Dict]:
     results = []
     
     for rec in recs:
+        # Skip non-trading records (e.g., general LLM compare records)
+        if 'coin_symbol' not in rec or 'price_at_recommendation' not in rec:
+            continue
+        
         coin = rec.get('coin_symbol', 'UNKNOWN')
         rec_price = rec.get('price_at_recommendation', 0)
         recommendation = rec.get('recommendation', 'UNKNOWN')

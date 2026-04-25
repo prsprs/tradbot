@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 class HistoryRecorder:
     """Records recommendations to a JSON history file."""
     
-    def __init__(self, history_file: str = "./history/recommendations.json"):
+    def __init__(self, history_file: str = "./history/llm_compare_history.json"):
         """Initialize the history recorder.
         
         Args:
