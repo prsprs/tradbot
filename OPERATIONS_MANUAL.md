@@ -480,3 +480,191 @@ python tradeanalyzer.py
 # Compare output structure against test_expected_output.csv
 # Note: Actual prices will vary, so outcome values may differ
 ```
+
+---
+
+## DEX Trading (Solana via Jupiter)
+
+The trading bot supports decentralized exchange (DEX) trading on Solana using the Jupiter aggregator and Phantom wallet via WalletConnect.
+
+### Overview
+
+DEX mode allows trading Solana-native tokens (BONK, WIF, POPCAT, etc.) that aren't available on Coinbase. It uses:
+- **Jupiter**: DEX aggregator for optimal swap routing and price quotes
+- **WalletConnect**: Industry-standard protocol for connecting to Phantom wallet
+- **Phantom**: Popular Solana wallet for transaction signing
+
+### Setup Requirements
+
+#### 1. Install DEX Dependencies
+
+```bash
+pip install -r requirements_dex.txt
+```
+
+This installs:
+- `httpx` - HTTP client for Jupiter API
+- `pywalletconnect` - WalletConnect v2 client
+
+#### 2. Get Jupiter API Key
+
+1. Go to https://developers.jup.ag/portal
+2. Sign up for free tier (or paid for higher rate limits)
+3. Create an API key
+4. Set environment variable:
+
+```bash
+export JUPITER_API_KEY="your-jupiter-api-key"
+```
+
+#### 3. Get WalletConnect Project ID (for actual trades)
+
+1. Go to https://cloud.walletconnect.com
+2. Create a free account
+3. Create a new project
+4. Copy the Project ID
+5. Set environment variable:
+
+```bash
+export WALLETCONNECT_PROJECT_ID="your-project-id"
+```
+
+**Note:** WalletConnect is only required for executing actual trades. Price fetching and what-if mode work with just the Jupiter API key.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JUPITER_API_KEY` | Yes | Jupiter API key for quotes and prices |
+| `WALLETCONNECT_PROJECT_ID` | For trades | WalletConnect project ID for Phantom connection |
+| `DEX_MODE` | No | Set to `true` to enable DEX mode (alternative to `--dex` flag) |
+| `DEX_SLIPPAGE` | No | Slippage tolerance as percentage (default: `1.0` = 1%) |
+| `DEX_CACHE_DIR` | No | Directory for token cache (default: `./dex_cache/`) |
+
+### Command-Line Options
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--dex` | flag | `false` | Enable DEX mode (Solana via Jupiter + Phantom) |
+| `--slippage` | float | `1.0` | DEX slippage tolerance as percentage |
+
+### Usage Examples
+
+#### Test DEX price fetching (no wallet needed)
+
+```bash
+export JUPITER_API_KEY="your-key"
+python -c "from dex.jupiterutil import JupiterClient; j = JupiterClient(); print(j.get_price('BONK'))"
+```
+
+#### Run in DEX what-if mode (no wallet needed)
+
+```bash
+export JUPITER_API_KEY="your-key"
+python geminigroundlin15.py --dex --trading-mode=whatif --coins=BONK,WIF
+```
+
+#### Run in DEX live mode (requires Phantom wallet)
+
+```bash
+export JUPITER_API_KEY="your-key"
+export WALLETCONNECT_PROJECT_ID="your-project-id"
+python geminigroundlin15.py --dex --trading-mode=live --coins=BONK
+```
+
+When running in live mode:
+1. A WalletConnect URI will be displayed
+2. Open Phantom mobile app → Settings → Connect Dapp
+3. Scan the QR code or paste the URI
+4. Approve connection
+5. Approve each trade transaction in Phantom
+
+#### Adjust slippage tolerance
+
+```bash
+python geminigroundlin15.py --dex --slippage=2.0 --coins=BONK
+```
+
+### Supported Tokens
+
+The following well-known Solana tokens are pre-configured:
+
+| Symbol | Name | Decimals |
+|--------|------|----------|
+| SOL | Solana | 9 |
+| USDC | USD Coin | 6 |
+| USDT | Tether | 6 |
+| BONK | Bonk | 5 |
+| WIF | dogwifhat | 6 |
+| POPCAT | Popcat | 9 |
+| PEPE | Pepe | 9 |
+| FLOKI | Floki | 9 |
+
+Other tokens are resolved via Jupiter's token search API.
+
+### Trade Analyzer with DEX
+
+The trade analyzer (`tradeanalyzer.py`) automatically:
+- Detects DEX recommendations by the `exchange` field
+- Fetches current prices from Jupiter for Solana tokens
+- Reports per-exchange statistics (CEX vs DEX accuracy)
+
+```bash
+export JUPITER_API_KEY="your-key"
+python tradeanalyzer.py
+```
+
+Example output includes:
+```
+--- PER-EXCHANGE STATISTICS ---
+cex: 45/60 correct (75.0%), 5 unknown, 10 hold
+solana-dex: 8/12 correct (66.7%), 2 unknown, 3 hold
+```
+
+### Module Structure
+
+```
+dex/
+├── __init__.py        # Module exports (SolanaDEXTrader)
+├── token_cache.py     # Jupiter token list caching
+├── jupiterutil.py     # Jupiter API client (quotes, prices, swaps)
+├── walletconnect.py   # WalletConnect session management
+└── trader.py          # SolanaDEXTrader class
+```
+
+### API Endpoints Used
+
+| Endpoint | Purpose |
+|----------|---------|
+| `https://api.jup.ag/tokens/v2/search` | Token search and metadata |
+| `https://api.jup.ag/tokens/v2/tag?query=verified` | Verified token list |
+| `https://api.jup.ag/swap/v1/quote` | Get swap quotes |
+| `https://api.jup.ag/swap/v2/build` | Build swap transactions |
+
+### Troubleshooting
+
+**"Jupiter API key required"**
+- Set `JUPITER_API_KEY` environment variable
+
+**"WalletConnect project ID required"**
+- Set `WALLETCONNECT_PROJECT_ID` environment variable (only needed for live trades)
+
+**404 errors from Jupiter**
+- Verify API key is valid at https://developers.jup.ag/portal
+- Check you're using the correct endpoint versions (v1 for quotes, v2 for tokens)
+
+**Token not found**
+- Ensure the token symbol is correct (case-insensitive)
+- Verify the token exists on Jupiter: `curl -s "https://api.jup.ag/tokens/v2/search?query=SYMBOL" --header "x-api-key: YOUR_KEY"`
+
+**Wallet connection timeout**
+- Ensure Phantom app is open and on the same network
+- Try regenerating the WalletConnect URI
+
+### Security Considerations
+
+- **Never share your Jupiter API key** - it's tied to your rate limits
+- **Never share your WalletConnect project ID** - it identifies your app
+- **Review all transactions in Phantom** before signing
+- **Start with what-if mode** to verify recommendations before live trading
+- **Use small amounts initially** when testing live DEX trades

@@ -36,18 +36,36 @@ except ImportError:
     COINGECKO_AVAILABLE = False
     print("Warning: coingeckoutil not available for fallback pricing")
 
+# Try to import DEX Jupiter client for Solana prices
+try:
+    from dex.jupiterutil import JupiterClient
+    JUPITER_AVAILABLE = True
+except ImportError:
+    JUPITER_AVAILABLE = False
 
-def get_current_price(coin_symbol: str, trader=None) -> Optional[float]:
-    """Get current price from Coinbase, fallback to CoinGecko.
+
+def get_current_price(coin_symbol: str, trader=None, exchange: str = None) -> Optional[float]:
+    """Get current price from appropriate exchange, fallback to CoinGecko.
     
     Args:
-        coin_symbol: Coin symbol (e.g., 'DOGE', 'SHIB')
+        coin_symbol: Coin symbol (e.g., 'DOGE', 'SHIB', 'BONK')
         trader: Optional BlobbyTrader instance for Coinbase
+        exchange: Exchange type ('cex', 'solana-dex', or None for auto)
     
     Returns:
         Current price in USD, or None if unavailable.
     """
-    # Try Coinbase first
+    # For DEX recommendations, try Jupiter first
+    if exchange == 'solana-dex' and JUPITER_AVAILABLE:
+        try:
+            jupiter = JupiterClient()
+            price_data = jupiter.get_price(coin_symbol)
+            if price_data:
+                return price_data[0]  # (price, bid, ask) tuple
+        except Exception as e:
+            print(f"Jupiter error for {coin_symbol}: {e}")
+    
+    # Try Coinbase for CEX or as fallback
     if trader and COINBASE_AVAILABLE:
         try:
             product = trader.get_product_details(f"{coin_symbol}-USD")
@@ -138,8 +156,9 @@ def analyze_recommendations(recs: List[Dict], trader=None) -> List[Dict]:
         coin = rec.get('coin_symbol', 'UNKNOWN')
         rec_price = rec.get('price_at_recommendation', 0)
         recommendation = rec.get('recommendation', 'UNKNOWN')
+        exchange = rec.get('exchange', 'cex')  # Default to cex for legacy records
         
-        current_price = get_current_price(coin, trader)
+        current_price = get_current_price(coin, trader, exchange)
         
         if current_price is None or rec_price == 0:
             outcome = 'UNKNOWN'
@@ -169,7 +188,8 @@ def analyze_recommendations(recs: List[Dict], trader=None) -> List[Dict]:
             'outcome_display': outcome_display,
             'llm_source': rec.get('llm_source', ''),
             'mode': rec.get('mode', ''),
-            'consensus': rec.get('consensus')
+            'consensus': rec.get('consensus'),
+            'exchange': exchange
         })
         
         # Print each result with timestamp
@@ -192,7 +212,7 @@ def export_to_csv(results: List[Dict], filename: str) -> str:
     filepath = os.path.join(HISTORY_DIR, filename)
     fieldnames = ['recommendation_id', 'timestamp', 'coin', 'recommendation', 'rec_price', 
                   'current_price', 'change_pct', 'outcome', 'outcome_display',
-                  'llm_source', 'mode', 'consensus']
+                  'llm_source', 'mode', 'consensus', 'exchange']
     with open(filepath, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -308,6 +328,39 @@ def print_mode_statistics(results: List[Dict]):
                 print(f"{mode}: No judged recommendations (hold: {stats['hold']}, unknown: {stats['unknown']})")
 
 
+def print_exchange_statistics(results: List[Dict]):
+    """Print per-exchange accuracy statistics (CEX vs DEX).
+    
+    Args:
+        results: List of analysis result dictionaries
+    """
+    exchange_stats = {}
+    
+    for r in results:
+        exchange = r.get('exchange', 'cex')
+        if exchange not in exchange_stats:
+            exchange_stats[exchange] = {'correct': 0, 'incorrect': 0, 'unknown': 0, 'hold': 0}
+        
+        if r['recommendation'] == 'HOLD':
+            exchange_stats[exchange]['hold'] += 1
+        elif r['outcome'] == 'CORRECT':
+            exchange_stats[exchange]['correct'] += 1
+        elif r['outcome'] == 'INCORRECT':
+            exchange_stats[exchange]['incorrect'] += 1
+        else:
+            exchange_stats[exchange]['unknown'] += 1
+    
+    if exchange_stats:
+        print("\n--- PER-EXCHANGE STATISTICS ---")
+        for exchange, stats in sorted(exchange_stats.items()):
+            judged = stats['correct'] + stats['incorrect']
+            if judged > 0:
+                accuracy = 100 * stats['correct'] / judged
+                print(f"{exchange}: {stats['correct']}/{judged} correct ({accuracy:.1f}%), {stats['unknown']} unknown, {stats['hold']} hold")
+            else:
+                print(f"{exchange}: No judged recommendations (hold: {stats['hold']}, unknown: {stats['unknown']})")
+
+
 def main():
     """Main entry point for trade analyzer."""
     print("=== TRADING BOT ANALYSIS REPORT ===")
@@ -400,10 +453,11 @@ def main():
     else:
         print("No recommendations in this window.")
     
-    # Per-LLM and per-mode statistics (if we have results)
+    # Per-LLM, per-mode, and per-exchange statistics (if we have results)
     if all_results:
         print_llm_statistics(all_results)
         print_mode_statistics(all_results)
+        print_exchange_statistics(all_results)
     
     # Overall accuracy
     print("\n" + "="*50)

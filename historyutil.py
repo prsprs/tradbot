@@ -60,7 +60,8 @@ def create_recommendation_record(
     llm_source: str,
     mode: str,
     consensus: Optional[bool] = None,
-    discovery_llm: Optional[str] = None
+    discovery_llm: Optional[str] = None,
+    exchange: Optional[str] = None
 ) -> Dict:
     """Create a recommendation record with all required fields.
     
@@ -74,11 +75,12 @@ def create_recommendation_record(
         mode: gemini, claude, openai, grok, perplexity, compare, or integrate
         consensus: Whether all LLMs agreed (for multi-LLM modes), None for single LLM
         discovery_llm: Which LLM discovered this coin (None if coin was specified via ANALYZE_COINS)
+        exchange: Exchange used for trading (cex, solana-dex), None defaults to cex
     
     Returns:
         Dictionary containing the recommendation record.
     """
-    return {
+    record = {
         'id': f"rec_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{coin_symbol}",
         'timestamp': datetime.utcnow().isoformat() + 'Z',
         'coin_symbol': coin_symbol,
@@ -91,6 +93,12 @@ def create_recommendation_record(
         'consensus': consensus,
         'discovery_llm': discovery_llm
     }
+    
+    # Add exchange field if specified (for DEX mode compatibility)
+    if exchange:
+        record['exchange'] = exchange
+    
+    return record
 
 
 def record_recommendation(
@@ -100,7 +108,8 @@ def record_recommendation(
     llm_source: str,
     mode: str,
     consensus: Optional[bool] = None,
-    discovery_llm: Optional[str] = None
+    discovery_llm: Optional[str] = None,
+    exchange: Optional[str] = None
 ) -> Optional[Dict]:
     """Record a recommendation by fetching current price from trader and saving.
     
@@ -109,11 +118,12 @@ def record_recommendation(
     Args:
         coin_symbol: Cryptocurrency symbol (e.g., 'DOGE', 'SHIB')
         recommendation: BUY, SELL, or HOLD
-        trader: BlobbyTrader instance for fetching price data
+        trader: BlobbyTrader or SolanaDEXTrader instance for fetching price data
         llm_source: Which LLM(s) made this recommendation
         mode: gemini, claude, openai, grok, perplexity, compare, or integrate
         consensus: Whether all LLMs agreed (for multi-LLM modes)
         discovery_llm: Which LLM discovered this coin (None if coin was specified via ANALYZE_COINS)
+        exchange: Exchange used for trading (cex, solana-dex), None defaults to cex
     
     Returns:
         The saved recommendation record, or None if price fetch failed.
@@ -139,7 +149,8 @@ def record_recommendation(
                 llm_source=llm_source,
                 mode=mode,
                 consensus=consensus,
-                discovery_llm=discovery_llm
+                discovery_llm=discovery_llm,
+                exchange=exchange
             )
             save_recommendation(rec_record)
             timestamp_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')

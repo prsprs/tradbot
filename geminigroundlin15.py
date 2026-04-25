@@ -139,6 +139,22 @@ Environment variables can also be used (CLI takes precedence):
         help='Discovery method: llm, santiment, or both comma-separated (default: llm)'
     )
     
+    # DEX mode - Solana DEX trading via Jupiter + WalletConnect
+    parser.add_argument(
+        '--dex',
+        action='store_true',
+        default=os.environ.get('DEX_MODE', 'false').lower() == 'true',
+        help='Enable DEX mode: Trade on Solana via Jupiter + Phantom wallet (default: false)'
+    )
+    
+    # DEX slippage tolerance
+    parser.add_argument(
+        '--slippage',
+        type=float,
+        default=float(os.environ.get('DEX_SLIPPAGE', '1.0')),
+        help='DEX slippage tolerance as percentage (default: 1.0 = 1%%)'
+    )
+    
     return parser.parse_args()
 
 
@@ -236,6 +252,11 @@ for method in DISCOVERY_METHODS:
         sys.exit(1)
 USE_LLM_DISCOVERY = 'llm' in DISCOVERY_METHODS
 USE_SANTIMENT_DISCOVERY = 'santiment' in DISCOVERY_METHODS
+
+# DEX mode configuration
+DEX_MODE = args.dex
+DEX_SLIPPAGE = args.slippage
+EXCHANGE_MODE = "solana-dex" if DEX_MODE else "cex"
 
 def is_valid_coin_symbol(text):
     """Check if text looks like a valid coin symbol."""
@@ -807,38 +828,31 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
     return primary_rec, None  # Default fallback
 
 def buy_something(coinToBuy):
-
         print("\n--- Getting coin Product Details BEFORE for: ",(coinToBuy+"-USD") )
 
         usd_product = trader.get_product_details(coinToBuy+"-USD")
 
         if usd_product:
-
                 print(json.dumps(usd_product.to_dict(), indent=2))
-
-
-
         else:
+            print("Could not retrieve product details.")
 
-            print("Could not retrieve  product details.")
-
-        trader.market_order_buy(coinToBuy+'-USD', '25.00')
-
-
+        # Execute buy order (DEX mode handles whatif internally)
+        if DEX_MODE:
+            result = trader.market_order_buy(coinToBuy+'-USD', '25.00', whatif=WHATIF_MODE)
+            if result and result.get('executed'):
+                print(f"[DEX] Trade executed: {result.get('tx_url', 'no tx')}")
+        else:
+            trader.market_order_buy(coinToBuy+'-USD', '25.00')
 
         print("\n--- Getting coin Product Details AFTER for: ",(coinToBuy+"-USD") )
 
         usd_product = trader.get_product_details(coinToBuy+"-USD")
 
         if usd_product:
-
                 print(json.dumps(usd_product.to_dict(), indent=2))
-
-
-
         else:
-
-            print("Could not retrieve  product details.")
+            print("Could not retrieve product details.")
 
 # Configure the Gemini client
 client = genai.Client()
@@ -993,12 +1007,32 @@ def get_filtered_coinbase_coins() -> list:
 whatif_buys = 0
 whatif_sells = 0
 
-trader = BlobbyTrader()
+# Initialize trader based on exchange mode
+if DEX_MODE:
+    try:
+        from dex.trader import SolanaDEXTrader
+        trader = SolanaDEXTrader(slippage_bps=int(DEX_SLIPPAGE * 100))
+        print(f"[DEX] Solana DEX trader initialized (slippage: {DEX_SLIPPAGE}%)")
+    except ImportError as e:
+        print(f"[ERROR] DEX mode requires dex module: {e}")
+        print("[ERROR] Ensure dex/ directory exists with required files")
+        sys.exit(1)
+else:
+    trader = BlobbyTrader()
 
 # === STARTUP BANNER ===
 print("\n" + "="*50)
 print("=== TRADING BOT ===")
 print("="*50)
+
+# Show exchange mode
+if DEX_MODE:
+    dex_source = get_config_source('--dex', 'DEX_MODE')
+    print(f"Exchange: SOLANA DEX (Jupiter + Phantom) [{dex_source}]")
+    slippage_source = get_config_source('--slippage', 'DEX_SLIPPAGE')
+    print(f"Slippage: {DEX_SLIPPAGE}% [{slippage_source}]")
+else:
+    print(f"Exchange: COINBASE CEX")
 
 # Show trading mode with source
 trading_mode_source = get_config_source('--trading-mode', 'TRADING_MODE')
@@ -1216,7 +1250,8 @@ if not USE_COIN_DISCOVERY:
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
                 consensus=consensus,
-                discovery_llm=None
+                discovery_llm=None,
+                exchange=EXCHANGE_MODE
             )
         
         # Track and execute trade if recommended
@@ -1331,7 +1366,8 @@ else:
                 llm_source=PRIMARY_LLM,
                 mode=LLM_MODE,
                 consensus=consensus,
-                discovery_llm=discovery_source
+                discovery_llm=discovery_source,
+                exchange=EXCHANGE_MODE
             )
         
         # Track and execute trade if recommended
@@ -1348,6 +1384,7 @@ else:
 print("\n" + "="*50)
 print("=== RUN SUMMARY ===")
 print("="*50)
+print(f"Exchange: {EXCHANGE_MODE.upper()}")
 print(f"Trading Mode: {TRADING_MODE.upper()}")
 print(f"LLM Mode: {LLM_MODE}")
 print(f"Primary LLM: {PRIMARY_LLM}")
