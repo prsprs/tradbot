@@ -1161,33 +1161,51 @@ def extract_coins_from_llm_response(response_text):
     if not response_text or '***FAILED***' in response_text:
         return coins
     
+    # First try the +++SYMBOL+++ format (requested in prompt)
+    import re
+    plus_matches = re.findall(r'\+\+\+([A-Za-z0-9]+)\+\+\+', response_text)
+    if plus_matches:
+        for match in plus_matches[:3]:
+            if is_valid_coin_symbol(match):
+                coins.append(match.upper())
+        if coins:
+            return coins
+    
+    # Fallback: Helper to extract symbol from numbered item
+    def extract_symbol_from_item(text):
+        if not text:
+            return None
+        # Try **SYMBOL** format first
+        symbol = get_text_between_strings(text, "**", "**")
+        if is_valid_coin_symbol(symbol):
+            return symbol.upper()
+        # Try (SYMBOL) format
+        symbol = get_text_between_strings(text, "(", ")")
+        if is_valid_coin_symbol(symbol):
+            return symbol.upper()
+        # Try first word (e.g., "PEPE - description...")
+        first_word = text.strip().split()[0].strip('.,:-') if text.strip() else None
+        if first_word and is_valid_coin_symbol(first_word):
+            return first_word.upper()
+        return None
+    
     # Extract coin 1 (after "1.")
     result = get_text_after_delimiter(response_text, "1.")
-    if result:
-        symbol = get_text_between_strings(result, "**", "**")
-        # Fall back to () if ** extraction didn't give a valid symbol
-        if not is_valid_coin_symbol(symbol):
-            symbol = get_text_between_strings(result, "(", ")")
-        if is_valid_coin_symbol(symbol):
-            coins.append(symbol.upper())
+    symbol = extract_symbol_from_item(result)
+    if symbol:
+        coins.append(symbol)
     
     # Extract coin 2 (after "2.")
     result = get_text_after_delimiter(response_text, "2.")
-    if result:
-        symbol = get_text_between_strings(result, "**", "**")
-        if not is_valid_coin_symbol(symbol):
-            symbol = get_text_between_strings(result, "(", ")")
-        if is_valid_coin_symbol(symbol):
-            coins.append(symbol.upper())
+    symbol = extract_symbol_from_item(result)
+    if symbol:
+        coins.append(symbol)
     
     # Extract coin 3 (after "3.")
     result = get_text_after_delimiter(response_text, "3.")
-    if result:
-        symbol = get_text_between_strings(result, "**", "**")
-        if not is_valid_coin_symbol(symbol):
-            symbol = get_text_between_strings(result, "(", ")")
-        if is_valid_coin_symbol(symbol):
-            coins.append(symbol.upper())
+    symbol = extract_symbol_from_item(result)
+    if symbol:
+        coins.append(symbol)
     
     return coins
 
