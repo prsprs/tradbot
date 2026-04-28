@@ -1,8 +1,11 @@
 """
-Solana DEX Trader - Main trading interface for Solana DEX via Jupiter + WalletConnect.
+Solana DEX Trader - Main trading interface for Solana DEX via Jupiter.
 
 This class provides a similar interface to BlobbyTrader (CEX) for consistency,
 allowing the main trading bot to switch between CEX and DEX modes seamlessly.
+
+For live trading, uses interactive private key prompt (more secure than env vars).
+For what-if mode, no wallet is needed.
 """
 
 import asyncio
@@ -17,7 +20,7 @@ from .token_cache import (
     refresh_token_cache,
     get_cache_age,
 )
-from .walletconnect import WalletConnectSession, run_async
+from .local_wallet import LocalWallet, get_wallet_interactive, get_wallet_for_whatif
 
 # Default trade amount in SOL
 DEFAULT_TRADE_AMOUNT_SOL = 0.1
@@ -27,64 +30,110 @@ MIN_TRADE_INTERVAL = 60
 
 
 class SolanaDEXTrader:
-    """Solana DEX trader using Jupiter aggregator and WalletConnect/Phantom.
+    """Solana DEX trader using Jupiter aggregator and local keypair.
     
     This class provides a similar interface to BlobbyTrader for CEX trading,
     making it easy to switch between modes in the main trading bot.
+    
+    For live trading, prompts for private key at startup (secure, in-memory only).
+    For what-if mode, no wallet is needed.
     """
     
     def __init__(
         self,
         slippage_bps: int = 100,
-        approval_timeout: int = 300,
-        persist_session: bool = False
+        live_mode: bool = False
     ):
         """Initialize the Solana DEX trader.
         
         Args:
             slippage_bps: Slippage tolerance in basis points (100 = 1%).
-            approval_timeout: Timeout for user approval in Phantom (seconds).
-            persist_session: If True, persist WalletConnect session to file.
+            live_mode: If True, prompt for private key for live trading.
         """
         self.jupiter = JupiterClient(slippage_bps=slippage_bps)
-        self.wc_session = WalletConnectSession(
-            approval_timeout=approval_timeout,
-            persist_session=persist_session
-        )
-        
         self.slippage_bps = slippage_bps
-        self.connected = False
         self._last_trade_time = 0
         self._tokens = None
         
+        # Initialize wallet based on mode
+        if live_mode:
+            self.wallet = get_wallet_interactive()
+        else:
+            self.wallet = get_wallet_for_whatif()
+        
         print(f"[DEX] SolanaDEXTrader initialized (slippage: {slippage_bps/100}%)")
     
-    def connect_wallet(self) -> Optional[str]:
-        """Connect to Phantom wallet via WalletConnect.
-        
-        Displays QR code / deep link for user to scan with Phantom.
-        Blocks until connected or timeout.
-        
-        Returns:
-            Connected wallet address or None on timeout/error.
-        """
-        address = run_async(self.wc_session.connect())
-        if address:
-            self.connected = True
-        return address
-    
-    def disconnect_wallet(self):
-        """Disconnect from wallet and clean up."""
-        run_async(self.wc_session.disconnect())
-        self.connected = False
-    
     def is_connected(self) -> bool:
-        """Check if wallet is connected."""
-        return self.connected and self.wc_session.is_connected()
+        """Check if wallet keypair is loaded."""
+        return self.wallet.is_loaded()
     
     def get_wallet_address(self) -> Optional[str]:
-        """Get connected wallet address."""
-        return self.wc_session.get_address()
+        """Get wallet address."""
+        return self.wallet.get_address()
+    
+    def test_wallet_connection(self) -> bool:
+        """Test wallet connection by checking SOL balance via RPC.
+        
+        Returns:
+            True if connection successful, False otherwise.
+        """
+        import httpx
+        
+        if not self.wallet.is_loaded():
+            print("[DEX] ✗ No wallet loaded")
+            return False
+        
+        pubkey = self.wallet.get_address()
+        if not pubkey:
+            print("[DEX] ✗ Could not get wallet address")
+            return False
+        
+        print("[DEX] Testing wallet connection...")
+        
+        # Truncate pubkey for display (first 4 + last 4 chars)
+        pubkey_short = f"{pubkey[:4]}...{pubkey[-4:]}"
+        print(f"[DEX] Wallet: {pubkey_short}")
+        
+        # Get SOL balance via Solana RPC
+        rpc_url = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getBalance",
+                "params": [pubkey]
+            }
+            
+            with httpx.Client(timeout=15.0) as client:
+                response = client.post(rpc_url, json=payload)
+                response.raise_for_status()
+                result = response.json()
+            
+            if "error" in result:
+                error = result["error"]
+                print(f"[DEX] ✗ RPC error: {error.get('message', 'Unknown error')}")
+                return False
+            
+            lamports = result.get("result", {}).get("value", 0)
+            sol_balance = lamports / LAMPORTS_PER_SOL
+            
+            print(f"[DEX] Balance: {sol_balance:.4f} SOL")
+            
+            if sol_balance == 0:
+                print("[DEX] ⚠️  Wallet has no SOL - trades will fail (need SOL for fees)")
+            elif sol_balance < 0.01:
+                print("[DEX] ⚠️  Low SOL balance - may not cover transaction fees")
+            
+            print("[DEX] ✓ Wallet connected successfully")
+            return True
+            
+        except httpx.HTTPError as e:
+            print(f"[DEX] ✗ Cannot connect to Solana RPC: {e}")
+            return False
+        except Exception as e:
+            print(f"[DEX] ✗ Wallet test failed: {e}")
+            return False
     
     def _ensure_tokens(self):
         """Ensure token list is loaded."""
@@ -180,6 +229,12 @@ class SolanaDEXTrader:
             Result dictionary with quote and transaction info, or None on error.
         """
         symbol = symbol.upper()
+        
+        # Can't buy SOL with SOL (circular swap)
+        if symbol == "SOL":
+            print(f"\n[DEX] Skipping SOL: Cannot buy SOL with SOL (it's the base currency)")
+            return None
+        
         print(f"\n[DEX] {'Simulating' if whatif else 'Executing'} BUY: {amount_sol} SOL → {symbol}")
         
         # Get quote
@@ -206,10 +261,10 @@ class SolanaDEXTrader:
             print(f"[DEX] What-if mode: Skipping execution")
             return result
         
-        # Check connection
+        # Check wallet is loaded
         if not self.is_connected():
-            print("[DEX] Error: Wallet not connected")
-            print("[DEX] Call connect_wallet() first")
+            print("[DEX] Error: Wallet not loaded")
+            print("[DEX] Run with --trading-mode=live to enter private key")
             return result
         
         # Get swap transaction
@@ -219,15 +274,15 @@ class SolanaDEXTrader:
             print("[DEX] Failed to get swap transaction")
             return result
         
-        # Send to Phantom for approval
-        signature = run_async(self.wc_session.sign_and_send_transaction(swap_tx))
+        # Sign and submit transaction
+        signature = self._sign_and_submit(swap_tx)
         if signature:
             result["executed"] = True
             result["signature"] = signature
             result["tx_url"] = f"https://solscan.io/tx/{signature}"
             print(f"[DEX] ✓ BUY executed: {signature}")
         else:
-            print("[DEX] ✗ Transaction not executed (rejected or error)")
+            print("[DEX] ✗ Transaction not executed")
         
         return result
     
@@ -274,10 +329,10 @@ class SolanaDEXTrader:
             print(f"[DEX] What-if mode: Skipping execution")
             return result
         
-        # Check connection
+        # Check wallet is loaded
         if not self.is_connected():
-            print("[DEX] Error: Wallet not connected")
-            print("[DEX] Call connect_wallet() first")
+            print("[DEX] Error: Wallet not loaded")
+            print("[DEX] Run with --trading-mode=live to enter private key")
             return result
         
         # Get swap transaction
@@ -287,17 +342,129 @@ class SolanaDEXTrader:
             print("[DEX] Failed to get swap transaction")
             return result
         
-        # Send to Phantom for approval
-        signature = run_async(self.wc_session.sign_and_send_transaction(swap_tx))
+        # Sign and submit transaction
+        signature = self._sign_and_submit(swap_tx)
         if signature:
             result["executed"] = True
             result["signature"] = signature
             result["tx_url"] = f"https://solscan.io/tx/{signature}"
             print(f"[DEX] ✓ SELL executed: {signature}")
         else:
-            print("[DEX] ✗ Transaction not executed (rejected or error)")
+            print("[DEX] ✗ Transaction not executed")
         
         return result
+    
+    def _sign_and_submit(self, swap_tx_base64: str) -> Optional[str]:
+        """Sign and submit a swap transaction.
+        
+        Args:
+            swap_tx_base64: Base64-encoded transaction from Jupiter.
+        
+        Returns:
+            Transaction signature or None on error.
+        """
+        import base64
+        
+        try:
+            # Decode transaction
+            tx_bytes = base64.b64decode(swap_tx_base64)
+            
+            # Sign with local wallet
+            signed_tx = self.wallet.sign_transaction(tx_bytes)
+            if not signed_tx:
+                print("[DEX] Failed to sign transaction")
+                return None
+            
+            # Submit to Solana RPC
+            signature = self._submit_transaction(signed_tx)
+            return signature
+            
+        except Exception as e:
+            print(f"[DEX] Transaction error: {e}")
+            return None
+    
+    def _submit_transaction(self, signed_tx: bytes) -> Optional[str]:
+        """Submit signed transaction to Solana RPC.
+        
+        Args:
+            signed_tx: Signed transaction bytes.
+        
+        Returns:
+            Transaction signature or None on error.
+        """
+        import base64
+        import httpx
+        
+        # Use public Solana RPC (can be configured via env var)
+        rpc_url = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        
+        try:
+            tx_base64 = base64.b64encode(signed_tx).decode('utf-8')
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendTransaction",
+                "params": [
+                    tx_base64,
+                    {
+                        "encoding": "base64",
+                        "skipPreflight": False,
+                        "preflightCommitment": "confirmed",
+                        "maxRetries": 3
+                    }
+                ]
+            }
+            
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(rpc_url, json=payload)
+                response.raise_for_status()
+                result = response.json()
+                
+                if "error" in result:
+                    error = result["error"]
+                    print(f"\n[DEX] ========== RPC ERROR ==========")
+                    print(f"[DEX] Code: {error.get('code', 'N/A')}")
+                    print(f"[DEX] Message: {error.get('message', 'Unknown error')}")
+                    # Log detailed data if present (contains simulation logs)
+                    if "data" in error:
+                        data = error["data"]
+                        if isinstance(data, dict):
+                            if "logs" in data:
+                                print(f"[DEX] Simulation logs:")
+                                for log in data["logs"][:10]:  # First 10 log lines
+                                    print(f"[DEX]   {log}")
+                                if len(data.get("logs", [])) > 10:
+                                    print(f"[DEX]   ... ({len(data['logs']) - 10} more lines)")
+                            if "err" in data:
+                                print(f"[DEX] Error detail: {data['err']}")
+                        else:
+                            print(f"[DEX] Data: {data}")
+                    print(f"[DEX] ================================\n")
+                    return None
+                
+                signature = result.get("result")
+                if signature:
+                    print(f"[DEX] Transaction submitted: {signature[:16]}...")
+                    print(f"[DEX] https://solscan.io/tx/{signature}")
+                    return signature
+                
+                return None
+                
+        except httpx.HTTPError as e:
+            print(f"\n[DEX] ========== HTTP ERROR ==========")
+            print(f"[DEX] Request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[DEX] Status: {e.response.status_code}")
+                print(f"[DEX] Response: {e.response.text[:500]}")
+            print(f"[DEX] ==================================\n")
+            return None
+        except Exception as e:
+            print(f"\n[DEX] ========== UNEXPECTED ERROR ==========")
+            print(f"[DEX] Type: {type(e).__name__}")
+            print(f"[DEX] Message: {e}")
+            print(f"[DEX] ========================================\n")
+            return None
     
     def market_order_buy(
         self,
@@ -371,15 +538,13 @@ class SolanaDEXTrader:
 
 def create_dex_trader(
     slippage: float = 1.0,
-    approval_timeout: int = 300,
-    persist_session: bool = False
+    live_mode: bool = False
 ) -> SolanaDEXTrader:
     """Factory function to create a DEX trader.
     
     Args:
         slippage: Slippage tolerance as percentage (1.0 = 1%).
-        approval_timeout: Timeout for Phantom approval in seconds.
-        persist_session: If True, persist WalletConnect session.
+        live_mode: If True, prompt for private key for live trading.
     
     Returns:
         Configured SolanaDEXTrader instance.
@@ -387,6 +552,5 @@ def create_dex_trader(
     slippage_bps = int(slippage * 100)
     return SolanaDEXTrader(
         slippage_bps=slippage_bps,
-        approval_timeout=approval_timeout,
-        persist_session=persist_session
+        live_mode=live_mode
     )

@@ -34,9 +34,12 @@ class GrokTrader:
                     return item.content
         return str(response)
     
-    def send_recommendation_request(self):
+    def send_recommendation_request(self, dex_mode: bool = False):
         """Get cryptocurrency recommendations from Grok."""
-        prompt = "Using real-time web search for current market data and sentiment, what 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+        if dex_mode:
+            prompt = "Using real-time web search for current market data and sentiment, what 3 cryptocurrency meme coins on the SOLANA blockchain would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Only recommend coins that are tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT recommend coins on other chains like Base, Ethereum, or BNB. Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+        else:
+            prompt = "Using real-time web search for current market data and sentiment, what 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
         
         return self._call_responses_api(prompt)
     

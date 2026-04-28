@@ -321,6 +321,51 @@ This is safe because there's no risk of accidental execution - real trades requi
 | **Phantom permissions** | Sign transactions only (minimal) |
 | **Rate limiting** | 1 trade request per minute |
 
+#### 6a. Wallet Key Authentication (Alternative to WalletConnect)
+
+Since WalletConnect/Reown signup may not be available, an alternative approach uses an **interactive private key prompt** at startup. This is more secure than environment variables.
+
+**Design:**
+
+| Aspect | Value |
+|--------|-------|
+| **When prompted** | Only in DEX mode with `--trading-mode=live` |
+| **Not prompted** | CEX mode, or DEX mode with `--trading-mode=whatif` |
+| **Prompt timing** | Once at startup, before any trading begins |
+| **Key storage** | In-memory only, never written to disk or env |
+| **Key format** | Base58 (Phantom export format) or JSON array (Solana CLI) |
+| **Input method** | `getpass` (hidden input, no echo to terminal) |
+| **Session lifetime** | Key remains in memory until program exits |
+
+**User Flow:**
+
+```
+$ python geminigroundlin15.py --dex --trading-mode=live --coins=BONK
+
+[DEX] Live trading mode requires wallet key
+[DEX] Export from Phantom: Settings → Security → Export Private Key
+
+Enter Solana private key (hidden): ••••••••••••••••••••
+
+[WALLET] Loaded wallet: 7xKXt...9Qm4
+[DEX] SolanaDEXTrader initialized (slippage: 1.0%)
+
+... trading proceeds ...
+```
+
+**Security Benefits:**
+
+1. **No shell history exposure** - Key never appears in command line or env vars
+2. **No disk persistence** - Key exists only in process memory
+3. **Conscious action** - User must actively provide key each session
+4. **No accidental logging** - Hidden input prevents screen capture/logging
+5. **Process isolation** - Key not visible to other processes via `/proc/*/environ`
+
+**Trade-off:**
+
+- Requires user presence at startup (cannot be fully automated)
+- For this trading bot, this is acceptable since trades already require monitoring
+
 #### 7. Error Handling ✓
 
 | Decision | Value |
@@ -329,6 +374,80 @@ This is safe because there's no risk of accidental execution - real trades requi
 | **Jupiter API down** | Fail with clear error |
 | **Insufficient SOL** | Warn with amount needed, skip |
 | **Token not found** | Skip with warning |
+
+#### 8. Chain Restriction ✓
+
+DEX mode currently only supports **Solana** chain (via Jupiter aggregator).
+
+| Mode | Chain Behavior |
+|------|----------------|
+| **DEX + live** | Only Solana allowed. Auto-sets `--chains=solana` if not specified. Errors if non-Solana chains specified. |
+| **DEX + whatif** | Any chain allowed (for research). Warns if non-Solana chains used. |
+| **CEX** | No chain restriction (Coinbase handles availability). |
+
+**Rationale:** Prevents discovering coins that cannot be traded. Each blockchain has different DEX infrastructure (Jupiter for Solana, Uniswap for Ethereum, etc.), so chain-specific support must be implemented before enabling trading.
+
+**Future:** To support additional chains, implement chain-specific DEX modules (e.g., `dex/ethereum/`, `dex/base/`) with their own Jupiter-equivalent aggregators.
+
+#### 9. Test Wallet Feature (Pending)
+
+Optional startup validation to verify wallet connectivity before trading.
+
+**Command-Line Interface:**
+```bash
+--test-wallet          # Test wallet connection on startup (default: false)
+```
+
+**Behavior:**
+| Flag | Action |
+|------|--------|
+| `--test-wallet` not set | Skip wallet test, proceed directly to trading |
+| `--test-wallet` set | After key prompt, perform test call before continuing |
+
+**Startup Flow with `--test-wallet`:**
+```
+1. Parse args, initialize Jupiter client
+2. Prompt for private key (getpass)
+3. Derive public key from private key
+4. Test call: Check SOL balance via Solana RPC
+5. Display: "Wallet: <pubkey> | Balance: <SOL> SOL"
+6. If balance == 0: Warn "⚠️ Wallet has no SOL - trades will fail"
+7. Continue to discovery/analysis
+```
+
+**Test Call Options:**
+| Option | Pros | Cons |
+|--------|------|------|
+| **getBalance (SOL)** | Fast, single RPC call, shows if wallet can pay fees | Doesn't test token balances |
+| **getTokenAccountsByOwner** | Shows all SPL token holdings | Slower, more data than needed |
+| **getAccountInfo** | Confirms account exists on-chain | Less informative |
+
+**Recommended:** `getBalance` - simple, fast, directly relevant (need SOL for fees).
+
+**Sample Output:**
+```
+[DEX] Testing wallet connection...
+[DEX] Wallet: 7xKX...3nYz
+[DEX] Balance: 0.05 SOL
+[DEX] ✓ Wallet connected successfully
+```
+
+**Error Cases:**
+| Error | Response |
+|-------|----------|
+| Invalid private key format | "Invalid key format. Expected base58 or JSON array." Exit. |
+| RPC connection failed | "Cannot connect to Solana RPC: <error>". Exit. |
+| Key valid but balance query fails | "Wallet test failed: <error>". Exit. |
+
+**Design Decisions:**
+
+| Question | Decision |
+|----------|----------|
+| Required for live trading? | **No** - always optional |
+| Check token balances (USDC)? | **No** - SOL balance only |
+| Low balance behavior? | **Warn** and continue |
+| Cache test results? | **No** - test each run if flag set |
+| Environment variable? | **No** - CLI flag only |
 
 ---
 

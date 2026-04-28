@@ -96,7 +96,12 @@ class JupiterClient:
                 response.raise_for_status()
                 return response.json()
         except httpx.HTTPError as e:
-            print(f"[JUPITER] Quote error: {e}")
+            print(f"\n[JUPITER] ========== QUOTE ERROR ==========")
+            print(f"[JUPITER] Request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[JUPITER] Status: {e.response.status_code}")
+                print(f"[JUPITER] Response: {e.response.text[:500]}")
+            print(f"[JUPITER] ======================================\n")
             return None
     
     def get_swap_transaction(
@@ -129,7 +134,12 @@ class JupiterClient:
                 data = response.json()
                 return data.get("swapTransaction")
         except httpx.HTTPError as e:
-            print(f"[JUPITER] Swap transaction error: {e}")
+            print(f"\n[JUPITER] ========== SWAP TX ERROR ==========")
+            print(f"[JUPITER] Request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[JUPITER] Status: {e.response.status_code}")
+                print(f"[JUPITER] Response: {e.response.text[:500]}")
+            print(f"[JUPITER] ========================================\n")
             return None
     
     def get_price(self, symbol: str) -> Optional[Tuple[float, float, float]]:
@@ -190,10 +200,20 @@ class JupiterClient:
                 return (price, price, price)
                 
         except httpx.HTTPError as e:
-            print(f"[JUPITER] Price error for {symbol}: {e}")
+            print(f"\n[JUPITER] ========== PRICE ERROR ==========")
+            print(f"[JUPITER] Symbol: {symbol}")
+            print(f"[JUPITER] Request failed: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[JUPITER] Status: {e.response.status_code}")
+                print(f"[JUPITER] Response: {e.response.text[:500]}")
+            print(f"[JUPITER] ======================================\n")
             return None
         except Exception as e:
-            print(f"[JUPITER] Price calculation error for {symbol}: {e}")
+            print(f"\n[JUPITER] ========== CALCULATION ERROR ==========")
+            print(f"[JUPITER] Symbol: {symbol}")
+            print(f"[JUPITER] Type: {type(e).__name__}")
+            print(f"[JUPITER] Message: {e}")
+            print(f"[JUPITER] ============================================\n")
             return None
     
     def get_quote_for_symbol(

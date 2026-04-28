@@ -155,6 +155,14 @@ Environment variables can also be used (CLI takes precedence):
         help='DEX slippage tolerance as percentage (default: 1.0 = 1%%)'
     )
     
+    # DEX wallet test on startup
+    parser.add_argument(
+        '--test-wallet',
+        action='store_true',
+        default=False,
+        help='Test wallet connection on startup (DEX mode only, default: false)'
+    )
+    
     return parser.parse_args()
 
 
@@ -241,8 +249,18 @@ POLYMARKET_FILTER = args.polymarket_filter == 'true'
 # Check if filtering is requested
 USE_COIN_FILTERING = len(CHAINS) > 0 or len(CATEGORIES) > 0 or POLYMARKET_FILTER
 
+# DEX mode configuration (needed early for discovery default)
+DEX_MODE = args.dex
+
 # Discovery methods: llm, santiment, or both
-DISCOVERY_RAW = args.discovery.strip().lower()
+# DEX mode defaults to santiment (Solana tokens), CEX defaults to llm
+discovery_default_used = (args.discovery == os.environ.get('DISCOVERY', 'llm') and 
+                          not os.environ.get('DISCOVERY'))
+if DEX_MODE and discovery_default_used:
+    DISCOVERY_RAW = 'santiment'
+    print("[DEX] Using santiment discovery (default for DEX mode)")
+else:
+    DISCOVERY_RAW = args.discovery.strip().lower()
 DISCOVERY_METHODS = [m.strip() for m in DISCOVERY_RAW.split(',') if m.strip()]
 # Validate discovery methods
 VALID_DISCOVERY = {'llm', 'santiment'}
@@ -252,11 +270,30 @@ for method in DISCOVERY_METHODS:
         sys.exit(1)
 USE_LLM_DISCOVERY = 'llm' in DISCOVERY_METHODS
 USE_SANTIMENT_DISCOVERY = 'santiment' in DISCOVERY_METHODS
-
-# DEX mode configuration
-DEX_MODE = args.dex
 DEX_SLIPPAGE = args.slippage
+TEST_WALLET = args.test_wallet
 EXCHANGE_MODE = "solana-dex" if DEX_MODE else "cex"
+
+# Validate chain filter compatibility with DEX mode
+if DEX_MODE and not WHATIF_MODE:
+    # Live DEX mode: only Solana chain is supported
+    non_solana_chains = [c for c in CHAINS if c != 'solana']
+    if non_solana_chains:
+        print(f"[ERROR] DEX live mode only supports Solana chain")
+        print(f"        Invalid chains specified: {', '.join(non_solana_chains)}")
+        print(f"        Remove --chains or use --chains=solana")
+        print(f"        (Use --trading-mode=whatif to research other chains)")
+        sys.exit(1)
+    # Auto-set to solana if no chain specified (for discovery filtering)
+    if not CHAINS:
+        CHAINS = ['solana']
+        print(f"[DEX] Auto-filtering to Solana chain for live trading")
+elif DEX_MODE and WHATIF_MODE and CHAINS:
+    # What-if mode with non-Solana chains: warn but allow
+    non_solana_chains = [c for c in CHAINS if c != 'solana']
+    if non_solana_chains:
+        print(f"[DEX] Warning: What-if mode with non-Solana chains: {', '.join(non_solana_chains)}")
+        print(f"[DEX] These coins cannot be traded in DEX live mode")
 
 def is_valid_coin_symbol(text):
     """Check if text looks like a valid coin symbol."""
@@ -274,7 +311,12 @@ def is_valid_coin_symbol(text):
 
 def sendRecommendationRequest():
     """Get coin recommendations from Gemini."""
-    prompt = "What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+    if DEX_MODE:
+        # Solana DEX mode: only recommend Solana meme coins tradeable via Jupiter
+        prompt = "What 3 cryptocurrency meme coins on the SOLANA blockchain would a sophisticated trading bot designed for short-term appreciation recommend buying right now? Only recommend coins that are tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT recommend coins on other chains like Base, Ethereum, or BNB. Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
+    else:
+        # CEX mode: Coinbase-listed coins
+        prompt = "What 3 cryptocurrency meme coins listed on the coinbase exchange would a sophisticated trading bot designed for short-term appreciation recommend buying right now?  Once you have the top choices, number them and show me which of the coins chosen show the most positive social media trends in the last 4 hours. Put 3 plus signs around EACH choice separately at the end of your response. If for any reason you cannot recommend any coins, include ***FAILED*** at the end of your output. Do not include hypothetical results."
     
     try:
         response = client.models.generate_content(
@@ -418,13 +460,13 @@ def get_primary_recommendation():
         response = sendRecommendationRequest()
         return response.text if response else None
     elif PRIMARY_LLM == 'claude' and claude_trader:
-        return claude_trader.send_recommendation_request()
+        return claude_trader.send_recommendation_request(dex_mode=DEX_MODE)
     elif PRIMARY_LLM == 'openai' and openai_trader:
-        return openai_trader.send_recommendation_request()
+        return openai_trader.send_recommendation_request(dex_mode=DEX_MODE)
     elif PRIMARY_LLM == 'grok' and grok_trader:
-        return grok_trader.send_recommendation_request()
+        return grok_trader.send_recommendation_request(dex_mode=DEX_MODE)
     elif PRIMARY_LLM == 'perplexity' and perplexity_trader:
-        return perplexity_trader.send_recommendation_request()
+        return perplexity_trader.send_recommendation_request(dex_mode=DEX_MODE)
     else:
         print(f"Warning: PRIMARY_LLM '{PRIMARY_LLM}' not available, falling back to Gemini")
         response = sendRecommendationRequest()
@@ -1011,8 +1053,17 @@ whatif_sells = 0
 if DEX_MODE:
     try:
         from dex.trader import SolanaDEXTrader
-        trader = SolanaDEXTrader(slippage_bps=int(DEX_SLIPPAGE * 100))
+        # Live mode if not whatif OR if testing wallet
+        need_wallet = (not WHATIF_MODE) or TEST_WALLET
+        trader = SolanaDEXTrader(slippage_bps=int(DEX_SLIPPAGE * 100), live_mode=need_wallet)
         print(f"[DEX] Solana DEX trader initialized (slippage: {DEX_SLIPPAGE}%)")
+        
+        # Test wallet connection if requested
+        if TEST_WALLET:
+            if not trader.test_wallet_connection():
+                print("[ERROR] Wallet test failed. Exiting.")
+                sys.exit(1)
+            print("")  # Blank line after test output
     except ImportError as e:
         print(f"[ERROR] DEX mode requires dex module: {e}")
         print("[ERROR] Ensure dex/ directory exists with required files")

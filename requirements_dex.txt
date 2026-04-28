@@ -1,16 +1,13 @@
-# Requirements for DEX Trading Module (Solana via Jupiter + WalletConnect)
+# Requirements for DEX Trading Module (Solana via Jupiter)
 #
 # Install with: pip install -r requirements_dex.txt
 
 # HTTP client for Jupiter API
 httpx>=0.25.0
 
-# WalletConnect v2 client for Phantom connection
-pywalletconnect>=0.2.0
+# Solana primitives for transaction signing
+solders>=0.20.0
+base58>=2.1.0
 
-# Solana primitives (optional - for advanced transaction handling)
-# solders>=0.20.0
+# Optional: Full Solana SDK (only if needed for advanced RPC calls)
 # solana>=0.30.0
-
-# Note: QR code generation for WalletConnect URI display
-# qrcode>=7.4  # Optional - links work without QR display

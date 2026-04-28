@@ -158,7 +158,7 @@ def refresh_token_cache(force: bool = False) -> List[Dict]:
         print(f"[JUPITER] Using cached token list ({get_cache_age()})")
         return load_token_cache()
     
-    tokens = fetch_jupiter_token_list()
+    tokens = fetch_jupiter_tokens()
     save_token_cache(tokens)
     return tokens
 
@@ -201,7 +201,8 @@ def build_symbol_to_mint_map(tokens: List[Dict]) -> Dict[str, str]:
     # Second pass: only include unique symbols
     for token in tokens:
         symbol = token.get('symbol', '').upper()
-        address = token.get('address', '')
+        # Jupiter v2 API uses 'id' for mint address, v1 used 'address'
+        address = token.get('id') or token.get('address', '')
         
         if symbol and address and symbol_counts.get(symbol, 0) == 1:
             symbol_to_mint[symbol] = address

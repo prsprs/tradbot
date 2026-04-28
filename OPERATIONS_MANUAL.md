@@ -517,26 +517,25 @@ This installs:
 export JUPITER_API_KEY="your-jupiter-api-key"
 ```
 
-#### 3. Get WalletConnect Project ID (for actual trades)
+#### 3. Export Private Key from Phantom (for live trades)
 
-1. Go to https://cloud.walletconnect.com
-2. Create a free account
-3. Create a new project
-4. Copy the Project ID
-5. Set environment variable:
+For live trading, you'll be prompted to enter your private key at startup:
 
-```bash
-export WALLETCONNECT_PROJECT_ID="your-project-id"
-```
+1. Open Phantom wallet (browser extension or mobile app)
+2. Go to Settings → Security & Privacy → Export Private Key
+3. Enter your password to confirm
+4. Copy the private key (base58 format)
 
-**Note:** WalletConnect is only required for executing actual trades. Price fetching and what-if mode work with just the Jupiter API key.
+**Security:** The key is entered via hidden prompt (`getpass`) and stored in memory only - never written to disk, environment, or shell history.
+
+**Note:** Private key is only needed for live trades. Price fetching and what-if mode work with just the Jupiter API key.
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `JUPITER_API_KEY` | Yes | Jupiter API key for quotes and prices |
-| `WALLETCONNECT_PROJECT_ID` | For trades | WalletConnect project ID for Phantom connection |
+| `SOLANA_RPC_URL` | No | Custom Solana RPC endpoint (default: mainnet-beta) |
 | `DEX_MODE` | No | Set to `true` to enable DEX mode (alternative to `--dex` flag) |
 | `DEX_SLIPPAGE` | No | Slippage tolerance as percentage (default: `1.0` = 1%) |
 | `DEX_CACHE_DIR` | No | Directory for token cache (default: `./dex_cache/`) |
@@ -547,6 +546,15 @@ export WALLETCONNECT_PROJECT_ID="your-project-id"
 |--------|--------|---------|-------------|
 | `--dex` | flag | `false` | Enable DEX mode (Solana via Jupiter + Phantom) |
 | `--slippage` | float | `1.0` | DEX slippage tolerance as percentage |
+
+### Chain Restriction
+
+DEX mode only supports **Solana** chain:
+
+| Mode | Behavior |
+|------|----------|
+| `--dex --trading-mode=live` | Auto-sets `--chains=solana`. Errors if non-Solana chains specified. |
+| `--dex --trading-mode=whatif` | Allows any chain (for research). Warns about non-tradeable chains. |
 
 ### Usage Examples
 
@@ -564,20 +572,18 @@ export JUPITER_API_KEY="your-key"
 python geminigroundlin15.py --dex --trading-mode=whatif --coins=BONK,WIF
 ```
 
-#### Run in DEX live mode (requires Phantom wallet)
+#### Run in DEX live mode (requires private key)
 
 ```bash
 export JUPITER_API_KEY="your-key"
-export WALLETCONNECT_PROJECT_ID="your-project-id"
 python geminigroundlin15.py --dex --trading-mode=live --coins=BONK
 ```
 
 When running in live mode:
-1. A WalletConnect URI will be displayed
-2. Open Phantom mobile app → Settings → Connect Dapp
-3. Scan the QR code or paste the URI
-4. Approve connection
-5. Approve each trade transaction in Phantom
+1. You'll be prompted to enter your Solana private key (hidden input)
+2. Export key from Phantom: Settings → Security & Privacy → Export Private Key
+3. Paste the key when prompted (input is hidden for security)
+4. Trades execute automatically after LLM recommendations
 
 #### Adjust slippage tolerance
 
