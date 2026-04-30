@@ -635,16 +635,18 @@ The JLP Pool account at address `5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq` c
     - Insurance Fund was unaffected—IF staking may be safer than general vaults.
     - Monitor for stability before deploying significant capital.
 
-14. **Which platform for MVP?** (TBD — pending further evaluation)
-    - HyperLiquid: Simplest API, highest Sharpe, but different chain (not Solana)
-    - Drift hJLP: Python SDK, automated hedging, but recent exploit history
-    - Jupiter: Most liquid, but requires IDL parsing and manual hedging
-    - See MVP Platform Choice section for detailed comparison.
+14. **Which platform for MVP?** ✅ DECIDED (Updated April 2026)
+    - **Target:** Drift hJLP (Hedged JLP via Gauntlet) — *temporarily unavailable post-exploit*
+    - **Interim:** Jupiter JLP (unhedged) for low-volume beta testing
+    - **Rationale:** Collect data and validate strategy with small positions while Drift relaunches
+    - **Risk mitigation:** Small position sizes ($50-100), max exposure $500, no hedging
+    - See MVP Platform Choice section for full details.
 
 15. **Multi-platform: How to manage cross-chain complexity?** ✅ DECIDED
-    - **MVP Decision:** Start with HyperLiquid only (if chosen), but design architecture for easy introduction of other platforms.
-    - Abstract wallet/bridge logic so adding Solana-based platforms (Drift, Jupiter) is straightforward in Phase 2.
-    - Multi-platform diversification: Phase 2.
+    - **Interim:** Jupiter JLP only (Solana-based, unhedged)
+    - **Future:** Transition to Drift hJLP when available (automated hedging)
+    - Design architecture with abstract platform interface for easy platform swaps.
+    - HyperLiquid: Phase 2 (requires separate chain infrastructure).
 
 ### Scheduling & Operations
 
@@ -681,79 +683,481 @@ The JLP Pool account at address `5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq` c
 
 ### MVP Platform Choice
 
-Based on Sharpe ratio analysis, **three MVP paths** are viable depending on risk tolerance:
+#### Target: Drift hJLP (Currently Unavailable)
 
-| MVP Option | Platform | Sharpe | Complexity | Delta Hedging | Lock-up |
-|------------|----------|--------|------------|---------------|---------|
-| **Option A: Simplest** | HyperLiquid (HLP) | ~4.06 | Low | Not needed (USDC-based) | 4 days |
-| **Option B: Solana-native** | Drift hJLP | ~2.5+ | Medium | Automated by protocol | 13 days |
-| **Option C: Largest spreads** | Jupiter (JLP) | ~2.93 | High | Must build yourself | None |
+**Drift hJLP remains the preferred long-term choice** for automated hedging, but is **temporarily unavailable** due to the April 2026 exploit. Drift is relaunching with enhanced security measures.
 
-**Recommendation:** Start with **Option A (HyperLiquid)** for MVP because:
-- Highest risk-adjusted return (Sharpe ~4.06)
-- No delta hedging complexity — bot focuses purely on premium/discount
-- Simple REST API (no IDL parsing)
-- 4-day lock-up is acceptable for initial testing
+| Consideration | Drift hJLP Advantage |
+|---------------|---------------------|
+| **Wallet Compatibility** | ✅ Phantom wallet (existing infrastructure) |
+| **Blockchain** | ✅ Solana (reuse existing RPC, wallet code) |
+| **Delta Hedging** | ✅ Protocol handles automatically via Gauntlet's strategy |
+| **JLP Benefits** | ✅ Captures JLP's large spreads and 75% fee share |
+| **Risk Mitigation** | ✅ Delta-neutral positioning eliminates asset price exposure |
+| **SDK** | ✅ Native Python SDK (`driftpy`) |
 
-**If Solana-native is required:** Use **Option B (Drift hJLP)** — the protocol handles hedging automatically, simplifying bot logic despite the longer lock-up.
+**Status:** ⏸️ Waiting for Drift relaunch with enhanced security
 
-**Defer Option C (Jupiter JLP)** until Phase 2 when hedging logic can be properly implemented.
+---
+
+#### Interim: Jupiter JLP (Unhedged) ✅ ACTIVE FOR BETA
+
+While Drift hJLP is unavailable, we will use **raw Jupiter JLP** for low-volume beta testing:
+
+| Consideration | Jupiter JLP (Interim) |
+|---------------|----------------------|
+| **Wallet Compatibility** | ✅ Phantom wallet |
+| **Blockchain** | ✅ Solana |
+| **Delta Hedging** | ⚠️ **NOT IMPLEMENTED** — accept risk for small positions |
+| **JLP Benefits** | ✅ Large spreads, 75% fee share, no lock-up |
+| **Risk** | ⚠️ Exposed to SOL/ETH/BTC price movements (~45% SOL, ~10% ETH/BTC) |
+| **API** | ✅ Jupiter Quote/Swap API + on-chain JLP pool data |
+
+**Risk Mitigation Strategy (No Hedging):**
+- **Small position sizes only** — limit exposure to acceptable loss
+- **Monitor underlying asset prices** — exit if crypto market drops significantly
+- **Collect data** — use what-if mode to validate strategy before scaling
+- **Transition to Drift hJLP** — when available, for automated hedging
+
+| Risk Scenario | Impact on $100 JLP Position |
+|---------------|----------------------------|
+| 10% crypto crash | ~$4.50 loss (45% × 10%) |
+| 20% crypto crash | ~$9.00 loss |
+| Arbitrage gain (2% spread) | +$2.00 profit |
+
+**Recommendation:** Keep position size under $500 until Drift hJLP is available.
+
+---
+
+### Prerequisites: Jupiter JLP (Interim Beta)
+
+#### 1. Solana Wallet (Phantom)
+
+| Requirement | Details |
+|-------------|---------|
+| **Phantom Wallet** | Install browser extension or mobile app |
+| **SOL Balance** | Minimum ~0.1 SOL for transaction fees |
+| **USDC Balance** | Capital for JLP purchases (start with $50-100 for beta) |
+
+**For bot automation, export keypair:**
+```bash
+# Option A: Use Phantom's exported private key
+# Settings → Security & Privacy → Export Private Key
+
+# Option B: Generate dedicated bot wallet
+solana-keygen new --outfile ~/.config/solana/lp-bot-keypair.json
+
+# Fund the bot wallet from Phantom
+```
+
+#### 2. Jupiter JLP Pool Access
+
+| Item | Details |
+|------|---------|
+| **JLP Pool Account** | `5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq` |
+| **JLP Token Mint** | `27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4` |
+| **Lock-up** | None — can buy/sell instantly |
+| **Entry/Exit** | Via Jupiter swap (USDC ↔ JLP) |
+
+#### 3. Development Environment
+
+| Requirement | Command |
+|-------------|---------|
+| **Python 3.10+** | `python --version` |
+| **solana-py** | `pip install solana` |
+| **anchorpy** | `pip install anchorpy` |
+| **httpx** | `pip install httpx` (for Jupiter API) |
+| **Solana RPC** | Public: `https://api.mainnet-beta.solana.com` or Helius |
+
+#### 4. Environment Configuration
+
+```bash
+# .env file for Jupiter JLP arbitrage bot (interim)
+
+# === Solana & Wallet ===
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+SOLANA_KEYPAIR_PATH=~/.config/solana/lp-bot-keypair.json
+
+# === Jupiter JLP ===
+JLP_POOL_ACCOUNT=5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq
+JLP_TOKEN_MINT=27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4
+
+# === Trading Parameters (Conservative for unhedged) ===
+BUY_THRESHOLD=-0.02             # Buy when market < virtual by 2%
+SELL_THRESHOLD=0.03             # Sell when market > virtual by 3%
+TRADE_AMOUNT_USD=50             # Small fixed amount (unhedged risk)
+MAX_POSITION_USD=500            # Cap total exposure
+
+# === Scheduling ===
+POLL_INTERVAL_SECONDS=300       # 5-minute wake-up
+
+# === Modes ===
+TRADING_MODE=whatif             # Start in paper trading mode
+VERBOSE=false
+
+# === History ===
+HISTORY_DIR=./history/lp/
+```
+
+---
+
+### Jupiter JLP: How It Works (Interim)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              JUPITER JLP ARBITRAGE (UNHEDGED)                    │
+└─────────────────────────────────────────────────────────────────┘
+
+                    ┌─────────────────────┐
+                    │   JLP Pool On-Chain │
+                    │  (Virtual Price)    │
+                    └──────────┬──────────┘
+                               │
+      ┌────────────────────────┼────────────────────────┐
+      │                        │                        │
+      ▼                        ▼                        ▼
+┌──────────┐            ┌──────────┐            ┌──────────┐
+│   SOL    │            │   ETH    │            │   BTC    │
+│   ~45%   │            │   ~5%    │            │   ~5%    │
+└──────────┘            └──────────┘            └──────────┘
+      │                        │                        │
+      └────────────────────────┼────────────────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │  USDC/USDT (~45%)   │
+                    └─────────────────────┘
+
+  BOT ACTIONS:
+  ┌────────────────────────────────────────────────────────────┐
+  │  1. Fetch virtual price from JLP pool (on-chain)           │
+  │  2. Fetch market price from Jupiter Quote API              │
+  │  3. Calculate spread: (market - virtual) / virtual         │
+  │  4. If spread < -2%: BUY JLP (discount)                    │
+  │  5. If spread > +3%: SELL JLP (premium)                    │
+  │  6. Log snapshot and action                                │
+  └────────────────────────────────────────────────────────────┘
+
+  ⚠️  NO HEDGING — exposed to underlying asset price movements
+```
+
+### Key Jupiter Interactions
+
+```python
+# Core API usage pattern for Jupiter JLP (interim)
+
+import httpx
+from solana.rpc.async_api import AsyncClient
+from solders.pubkey import Pubkey
+
+# === 1. Fetch JLP Virtual Price (on-chain) ===
+JLP_POOL = Pubkey.from_string("5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq")
+
+async def get_jlp_virtual_price(client: AsyncClient) -> float:
+    """
+    Fetch JLP pool account and calculate virtual price.
+    Virtual price = Total AUM / Total JLP Supply
+    """
+    # Requires parsing the JLP pool IDL to decode account data
+    # Pool stores: aum_usd, total_supply
+    account = await client.get_account_info(JLP_POOL)
+    # ... decode using anchorpy and JLP IDL
+    return aum_usd / total_supply
+
+# === 2. Fetch JLP Market Price (Jupiter Quote API) ===
+JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
+JLP_MINT = "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+async def get_jlp_market_price() -> float:
+    """
+    Get JLP market price by quoting 1 JLP → USDC swap.
+    """
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(JUPITER_QUOTE_URL, params={
+            "inputMint": JLP_MINT,
+            "outputMint": USDC_MINT,
+            "amount": str(1_000_000),  # 1 JLP (6 decimals)
+            "slippageBps": 50
+        })
+        quote = resp.json()
+        return int(quote["outAmount"]) / 1_000_000  # USDC price
+
+# === 3. Calculate Spread ===
+def calculate_spread(market_price: float, virtual_price: float) -> float:
+    return (market_price - virtual_price) / virtual_price
+
+# === 4. Execute Swap (via Jupiter) ===
+async def buy_jlp(amount_usdc: int):
+    """Swap USDC → JLP when discount detected."""
+    # 1. Get quote
+    # 2. Get swap transaction from Jupiter
+    # 3. Sign and send transaction
+    pass
+
+async def sell_jlp(amount_jlp: int):
+    """Swap JLP → USDC when premium detected."""
+    pass
+```
+
+---
+
+### Prerequisites: Drift hJLP (Future)
+
+*The following prerequisites will apply when Drift relaunches:*
+
+#### Drift Protocol Account
+
+| Step | Action |
+|------|--------|
+| **Create Drift Account** | Visit [app.drift.trade](https://app.drift.trade) and connect Phantom |
+| **Initialize User** | Complete first deposit to initialize on-chain account |
+| **Note Account Address** | Save your Drift user account public key |
+
+**Verify via driftpy:**
+```python
+# After account creation, verify programmatically
+from driftpy.drift_client import DriftClient
+# If this succeeds, account exists
+drift_client.get_user()
+```
+
+#### 3. Drift hJLP Vault Access
+
+| Item | Details |
+|------|---------|
+| **hJLP Vault Address** | `[To be confirmed - Gauntlet's hJLP vault on Drift]` |
+| **Vault Type** | Permissionless (anyone can deposit) |
+| **Deposit Token** | USDC (converted to JLP automatically) |
+| **Withdrawal** | Request → 13-day cooldown → Complete withdrawal |
+
+**Finding the vault address:**
+```bash
+# Via Drift Vault CLI
+yarn cli list-vaults --filter="hJLP"
+
+# Or via Drift UI: app.drift.trade → Vaults → Search "hJLP"
+```
+
+#### 4. Development Environment
+
+| Requirement | Command |
+|-------------|---------|
+| **Python 3.10+** | `python --version` |
+| **driftpy SDK** | `pip install driftpy` |
+| **anchorpy** | `pip install anchorpy` (dependency) |
+| **solana-py** | `pip install solana` (dependency) |
+| **Solana RPC** | Public: `https://api.mainnet-beta.solana.com` or dedicated (Helius, QuickNode) |
+
+**Environment variables to configure:**
+```bash
+# .env file for LP arbitrage bot
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+SOLANA_KEYPAIR_PATH=~/.config/solana/lp-bot-keypair.json
+DRIFT_HJLP_VAULT_ADDRESS=<vault-pubkey>
+TRADING_MODE=whatif  # Start in paper trading mode
+```
+
+#### 5. API Rate Limits & RPC Considerations
+
+| RPC Provider | Rate Limit | Cost | Notes |
+|--------------|------------|------|-------|
+| **Public Solana RPC** | ~100 req/sec (shared) | Free | May be throttled during high load |
+| **Helius** | 10-100 req/sec | $0-49/mo | Recommended for production |
+| **QuickNode** | Custom | $49+/mo | Enterprise option |
+
+**Recommendation:** Start with public RPC for testing; upgrade to Helius free tier for what-if mode data collection.
+
+---
+
+### Drift hJLP: How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DRIFT hJLP VAULT FLOW                         │
+└─────────────────────────────────────────────────────────────────┘
+
+  USER DEPOSITS USDC
+         │
+         ▼
+  ┌──────────────┐
+  │  Drift hJLP  │ ◄── Gauntlet-managed vault
+  │    Vault     │
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────┐     ┌──────────────┐
+  │  Convert to  │────▶│  Deposit as  │
+  │     JLP      │     │  Collateral  │
+  └──────────────┘     └──────┬───────┘
+                              │
+         ┌────────────────────┴────────────────────┐
+         │                                         │
+         ▼                                         ▼
+  ┌──────────────┐                         ┌──────────────┐
+  │   Earn JLP   │                         │  Open Hedge  │
+  │    Yield     │                         │  Positions   │
+  │  (75% fees)  │                         │ (Short SOL,  │
+  └──────────────┘                         │  ETH, BTC)   │
+                                           └──────────────┘
+                              │
+                              ▼
+                    ┌──────────────────┐
+                    │  DELTA-NEUTRAL   │
+                    │  Net exposure ≈ 0 │
+                    │  Pure yield play  │
+                    └──────────────────┘
+```
+
+**Key insight:** The bot doesn't need to manage hedging — Gauntlet's strategy handles this automatically. The bot focuses on:
+1. Monitoring premium/discount spread
+2. Depositing when discount detected
+3. Requesting withdrawal when premium detected
 
 ### MVP Features
 
 | Feature | Included | Notes |
 |---------|----------|-------|
-| Price spread monitoring | ✓ | Core functionality |
-| Basic buy/sell execution | ✓ | Via platform API (HLP REST or Drift SDK) |
+| Price spread monitoring | ✓ | hJLP vault share price vs NAV |
+| Deposit/withdraw execution | ✓ | Via `driftpy` SDK |
 | Configurable thresholds | ✓ | Buy/sell spread triggers |
 | Logging & history | ✓ | Track all trades for analysis |
-| Delta hedging | ✗ | Not needed for HLP; automated for Drift hJLP |
+| Position summary | ✓ | Display current vault holdings at end of run |
+| What-if mode | ✓ | Paper trading for data collection |
+| Delta hedging | N/A | Handled automatically by Drift hJLP vault |
 | APY monitoring | ✗ | Phase 2 |
-| AUM cap detection | ✗ | Phase 2 (Jupiter-specific) |
-| Multi-platform | ✗ | Phase 3 |
+| Multi-platform | ✗ | Phase 2 (add HyperLiquid, raw JLP) |
 
-### MVP Architecture
+### MVP Architecture (Drift hJLP)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        MVP COMPONENTS                            │
+│                    MVP COMPONENTS (Drift hJLP)                   │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Price Feed  │────▶│   Strategy   │────▶│  Executor    │
-│              │     │   Engine     │     │              │
+│   (driftpy)  │     │   Engine     │     │   (driftpy)  │
 ├──────────────┤     ├──────────────┤     ├──────────────┤
-│ • Virtual    │     │ • Spread     │     │ • Jupiter    │
-│   price API  │     │   calculator │     │   swap API   │
-│ • Market     │     │ • Threshold  │     │ • Wallet     │
-│   price API  │     │   checker    │     │   (WC/local) │
-│              │     │ • Position   │     │ • Tx signing │
-│              │     │   tracker    │     │              │
+│ • Vault NAV  │     │ • Spread     │     │ • Vault      │
+│   (on-chain) │     │   calculator │     │   deposit()  │
+│ • Share      │     │ • Threshold  │     │ • Vault      │
+│   price      │     │   checker    │     │   withdraw() │
+│ • Position   │     │ • Decision   │     │ • Tx signing │
+│   balance    │     │   logic      │     │   (keypair)  │
 └──────────────┘     └──────────────┘     └──────────────┘
-                            │
+        │                   │                     │
+        │                   ▼                     │
+        │            ┌──────────────┐             │
+        │            │   Logger     │             │
+        │            ├──────────────┤             │
+        │            │ • Snapshots  │             │
+        │            │ • Trades     │             │
+        │            │ • Timing     │             │
+        │            └──────────────┘             │
+        │                   │                     │
+        └───────────────────┼─────────────────────┘
                             ▼
-                     ┌──────────────┐
-                     │   Logger     │
-                     ├──────────────┤
-                     │ • Trade log  │
-                     │ • P&L track  │
-                     │ • Alerts     │
-                     └──────────────┘
+                   ┌────────────────┐
+                   │ Terminal Output │
+                   ├────────────────┤
+                   │ • Position sum │
+                   │ • Opportunities│
+                   │ • Actions taken│
+                   └────────────────┘
+```
+
+### Key driftpy Interactions
+
+```python
+# Core SDK usage pattern for MVP
+
+from driftpy.drift_client import DriftClient
+from driftpy.accounts import get_vault_account
+from anchorpy import Wallet
+
+# 1. Initialize client
+drift_client = DriftClient(
+    connection,
+    wallet,
+    env="mainnet"
+)
+await drift_client.subscribe()
+
+# 2. Get vault data (hJLP)
+vault = await get_vault_account(
+    drift_client.program, 
+    vault_pubkey
+)
+vault_nav = vault.net_deposits  # Total NAV
+vault_shares = vault.total_shares
+
+# 3. Get user position
+user_vault_depositor = await get_vault_depositor_account(
+    drift_client.program,
+    vault_pubkey,
+    wallet.public_key
+)
+user_shares = user_vault_depositor.vault_shares
+
+# 4. Calculate share price vs market
+share_price = vault_nav / vault_shares
+# Compare to market price from Jupiter/DEX
+
+# 5. Execute deposit (if discount detected)
+await drift_client.deposit_into_vault(
+    vault_pubkey,
+    amount_usdc
+)
+
+# 6. Request withdrawal (if premium detected)
+await drift_client.request_withdraw_from_vault(
+    vault_pubkey,
+    shares_to_withdraw
+)
 ```
 
 ### MVP Configuration
 
-```
-# Proposed environment variables (or config file)
+```bash
+# Environment variables for Drift hJLP arbitrage bot
 
-LP_TOKEN=JLP                    # Which LP token to trade
-BUY_THRESHOLD=-0.01             # Buy when market < virtual by 1%
-SELL_THRESHOLD=0.08             # Sell when market > virtual by 8%
-MAX_POSITION_USD=1000           # Maximum USD value to hold
+# === Solana & Wallet ===
+SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
+SOLANA_KEYPAIR_PATH=~/.config/solana/lp-bot-keypair.json
+
+# === Drift hJLP Vault ===
+DRIFT_HJLP_VAULT_ADDRESS=<vault-pubkey>    # Gauntlet hJLP vault address
+
+# === Trading Parameters ===
+BUY_THRESHOLD=-0.01             # Deposit when share price < NAV by 1%
+SELL_THRESHOLD=0.02             # Withdraw when share price > NAV by 2%
+TRADE_AMOUNT_USD=100            # Fixed amount per trade (MVP decision)
 MIN_TRADE_USD=50                # Minimum trade size
-POLL_INTERVAL_SECONDS=300       # How often to check prices (see rate limit section)
-TRADING_MODE=whatif             # whatif or live
-HISTORY_DIR=./history/          # Where to store recommendation history
+
+# === Scheduling ===
+POLL_INTERVAL_SECONDS=300       # Wake-up interval (5 minutes default)
+
+# === Modes ===
+TRADING_MODE=whatif             # whatif | live
+VERBOSE=false                   # true = log every snapshot; false = only opportunities
+
+# === History ===
+HISTORY_DIR=./history/lp/       # Where to store recommendation history
+```
+
+### CLI Flags
+
+```bash
+# Run modes
+python lp_arbitrage.py --once                    # Single run (for cron)
+python lp_arbitrage.py --daemon --interval=300   # Continuous with 5-min wake-up
+
+# Trading modes
+python lp_arbitrage.py --trading-mode=whatif     # Paper trading (default)
+python lp_arbitrage.py --trading-mode=live       # Real execution
+
+# Logging
+python lp_arbitrage.py --verbose                 # Log every wake-up snapshot
 ```
 
 ---
@@ -1108,4 +1512,4 @@ From the existing trading bot codebase:
 
 - Jupiter Liquidity Provider: https://jup.ag/perps-earn
 - Vectis Navigator Vault: Example of automated JLP strategy
-- Existing DEX integration: `dex/` directory in this repo
+- Existing DEX integration: `dex/` directory in 
