@@ -1,0 +1,14 @@
+{
+  "name": "jlp-price-fetcher",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "fetch": "npx ts-node --esm fetch-jlp-price.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@solana/web3.js": "^1.87.0",
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0"
+  }
+}

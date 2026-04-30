@@ -518,6 +518,294 @@ The JLP Pool account at address `5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq` c
 
 ---
 
+## Price Fetching Approaches
+
+Two approaches exist for determining the premium/discount spread. The MVP implements the simpler approach, with the more accurate on-chain approach available for future enhancement.
+
+### Approach 1: Buy/Sell Quote Spread (MVP - Implemented)
+
+**Description:** Use the difference between Jupiter swap quotes for buying vs selling JLP as a proxy for premium/discount.
+
+**How it works:**
+```
+Buy Price  = Quote $100 USDC → JLP, calculate USDC per JLP received
+Sell Price = Quote 1 JLP → USDC, get USDC received
+
+Spread = (Sell Price - Buy Price) / Buy Price
+
+Positive spread = Premium (selling gives more than buying costs)
+Negative spread = Discount (selling gives less than buying costs)
+```
+
+**Pros:**
+- Simple to implement - uses existing Jupiter Quote API
+- No IDL parsing required
+- Reflects actual executable prices including liquidity/slippage
+- Works immediately with current infrastructure
+
+**Cons:**
+- Measures DEX liquidity spread, not true NAV premium/discount
+- Small spreads (~0.01%) may be within normal DEX slippage
+- Doesn't capture the theoretical "fair value" of JLP based on underlying assets
+- May miss opportunities where NAV diverges but DEX quotes are tight
+
+**Implementation:** `lp_arbitrage.py` - `JLPPriceFetcher.get_buy_price()` and `get_sell_price()`
+
+---
+
+### Approach 2: On-Chain Virtual Price Calculation (Future Enhancement)
+
+**Description:** Calculate the true virtual (NAV) price by reading JLP pool data directly from Solana and comparing to market swap price.
+
+**How it works:**
+```
+Virtual Price = Total Pool AUM (USD) / Total JLP Token Supply
+
+Market Price  = Jupiter Quote: 1 JLP → USDC
+
+Spread = (Market Price - Virtual Price) / Virtual Price
+```
+
+**Data Sources Required:**
+
+| Data Point | Source | Method |
+|------------|--------|--------|
+| Pool AUM | `Pool.aumUsd` field | Solana RPC `getAccountInfo` |
+| JLP Supply | JLP token mint | Solana RPC `getTokenSupply` |
+| Custody Values | Per-custody accounts | Sum of custody AUM fields |
+| Market Price | Jupiter Quote API | Existing `get_quote()` |
+
+**Implementation Steps:**
+
+1. **Fetch Pool Account Data**
+   ```python
+   # RPC call to get Pool account
+   response = client.post(rpc_url, json={
+       "jsonrpc": "2.0",
+       "method": "getAccountInfo",
+       "params": [
+           "5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq",  # JLP Pool
+           {"encoding": "base64"}
+       ]
+   })
+   ```
+
+2. **Decode Account Data Using IDL**
+   ```python
+   from anchorpy import Program, Provider
+   
+   # Load Jupiter Perpetuals IDL
+   idl = Program.fetch_idl("PERPHjGBqRHArX4DySjwM6UJHiR3sWAatqfdBS2qQJu")
+   program = Program(idl, "PERPHjGBqRHArX4DySjwM6UJHiR3sWAatqfdBS2qQJu", provider)
+   
+   # Decode pool account
+   pool = await program.account["Pool"].fetch(pool_pubkey)
+   aum_usd = pool.aum_usd
+   ```
+
+3. **Get JLP Token Supply**
+   ```python
+   response = client.post(rpc_url, json={
+       "jsonrpc": "2.0",
+       "method": "getTokenSupply",
+       "params": ["27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4"]  # JLP Mint
+   })
+   supply = response["result"]["value"]["uiAmount"]
+   ```
+
+4. **Calculate Virtual Price**
+   ```python
+   virtual_price = aum_usd / supply
+   ```
+
+**Pros:**
+- True NAV-based virtual price
+- Captures actual premium/discount vs theoretical fair value
+- More accurate arbitrage signals
+- Can detect opportunities even when DEX liquidity is tight
+
+**Cons:**
+- Requires IDL parsing (complex setup)
+- `anchorpy` dependency and Solana RPC integration
+- IDL may change with protocol upgrades
+- More points of failure (RPC, IDL, parsing)
+
+---
+
+### Approach Comparison
+
+| Aspect | Buy/Sell Spread (MVP) | On-Chain Virtual Price |
+|--------|----------------------|------------------------|
+| **Complexity** | Low | High |
+| **Accuracy** | Proxy measure | True NAV |
+| **Dependencies** | Jupiter API only | Solana RPC + anchorpy + IDL |
+| **Latency** | ~500ms (2 API calls) | ~1-2s (RPC + parsing) |
+| **Failure modes** | API rate limits | RPC errors, IDL changes |
+| **Best for** | MVP, quick testing | Production, larger spreads |
+
+---
+
+### Open Questions for On-Chain Approach
+
+1. **IDL Availability**: Where is the current Jupiter Perpetuals IDL hosted? Is it stable or frequently updated?
+
+2. **anchorpy Compatibility**: Does `anchorpy` support the latest Anchor version used by Jupiter Perpetuals? Any known issues?
+
+3. **Custody Account Enumeration**: How do we discover all custody accounts to sum their AUM? Is there a registry or do we hardcode addresses?
+
+4. **AUM Calculation**: Is `Pool.aumUsd` the pre-calculated total, or do we need to sum individual custody values? Are there edge cases (pending deposits, etc.)?
+
+5. **Price Decimals**: What decimal precision does `aumUsd` use? Is it raw or UI-formatted?
+
+6. **Rate Limits**: What are the Solana RPC rate limits for `getAccountInfo`? Do we need a dedicated RPC provider?
+
+7. **Real-time Updates**: Can we use WebSocket subscriptions (`accountSubscribe`) for the Pool account to get push updates instead of polling?
+
+8. **Reference Implementation**: The TypeScript examples at `julianfssen/jupiter-perps-anchor-idl-parsing` - should we port to Python or wrap as a subprocess?
+
+---
+
+### Recommended Path Forward
+
+1. ~~**Current MVP**: Continue using Buy/Sell Spread approach for initial data collection~~
+2. ~~**Parallel Research**: Investigate IDL parsing with `anchorpy` in a separate branch~~
+3. ~~**Validation**: Once on-chain approach works, run both methods in parallel to compare signals~~
+4. ~~**Migration**: Switch to on-chain approach when validated, keep spread approach as fallback~~
+
+**✅ COMPLETED** - On-chain approach is now the default. See implementation below.
+
+---
+
+### On-Chain Integration (IMPLEMENTED)
+
+The on-chain virtual price calculation is now integrated into `lp_arbitrage.py` as the **default method**, with DEX spread as fallback.
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    JLPPriceFetcher                              │
+├─────────────────────────────────────────────────────────────────┤
+│  PRIMARY: On-Chain Method                                       │
+│  ┌─────────────────────┐    ┌─────────────────────┐            │
+│  │ Solana RPC          │    │ Pool Account Parse  │            │
+│  │ getTokenSupply()    │───▶│ aumUsd (u128)       │            │
+│  │ getAccountInfo()    │    │ offset: byte 180    │            │
+│  └─────────────────────┘    └──────────┬──────────┘            │
+│                                        │                        │
+│                         Virtual Price = AUM / Supply            │
+│                                        │                        │
+├─────────────────────────────────────────────────────────────────┤
+│  FALLBACK: DEX Spread Method                                    │
+│  ┌─────────────────────┐                                        │
+│  │ Jupiter Quote API   │                                        │
+│  │ USDC → JLP quote    │──▶ Buy price as virtual proxy         │
+│  └─────────────────────┘                                        │
+├─────────────────────────────────────────────────────────────────┤
+│  MARKET PRICE: Always from DEX                                  │
+│  ┌─────────────────────┐                                        │
+│  │ Jupiter Quote API   │                                        │
+│  │ JLP → USDC quote    │──▶ What you actually receive           │
+│  └─────────────────────┘                                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Pool Struct Parsing
+
+The Jupiter Perpetuals Pool account is parsed using Python `struct` module:
+
+```python
+# Pool account layout (simplified)
+# Offset 0:   8 bytes  - Anchor discriminator
+# Offset 8:   4 bytes  - name string length (u32)
+# Offset 12:  N bytes  - name string ("Pool")
+# Offset 12+N: 4 bytes - custodies vec length (u32)
+# Offset 16+N: M*32    - custody pubkeys (M = num_custodies)
+# Offset 16+N+M*32: 16 bytes - aumUsd (u128, little-endian)
+
+def _parse_pool_aum(data: bytes) -> float:
+    offset = 8  # Skip discriminator
+    
+    # Skip name string
+    name_len = struct.unpack_from('<I', data, offset)[0]
+    offset += 4 + name_len
+    
+    # Skip custodies vec
+    num_custodies = struct.unpack_from('<I', data, offset)[0]
+    offset += 4 + (num_custodies * 32)
+    
+    # Read aumUsd (u128)
+    low = struct.unpack_from('<Q', data, offset)[0]
+    high = struct.unpack_from('<Q', data, offset + 8)[0]
+    aum_raw = low + (high << 64)
+    
+    return aum_raw / 1_000_000  # 6 decimals
+```
+
+#### Comparison Mode
+
+Use `--compare-price-sources` to run both methods and output comparison:
+
+```bash
+python lp_arbitrage.py --once --compare-price-sources
+```
+
+Output:
+```
+  ┌─────────────────────────────────────────────────────┐
+  │           PRICE SOURCE COMPARISON                   │
+  ├─────────────────────────────────────────────────────┤
+  │ ON-CHAIN (Pool AUM / Supply):                       │
+  │   AUM:           $904,230,772.39                    │
+  │   JLP Supply:    236,642,512.86                     │
+  │   Virtual Price: $      3.821083                    │
+  ├─────────────────────────────────────────────────────┤
+  │ DEX SPREAD (Buy/Sell quotes):                       │
+  │   Buy Price:     $      3.825747                    │
+  │   Sell Price:    $      3.825469                    │
+  │   DEX Spread:           -0.0073%                    │
+  ├─────────────────────────────────────────────────────┤
+  │ TRUE SPREAD (Market vs NAV):                        │
+  │   Market - NAV:         +0.1148%                    │
+  │   Market vs Buy: $     -0.000278                    │
+  └─────────────────────────────────────────────────────┘
+```
+
+#### Key Findings
+
+| Metric | On-Chain | DEX Spread |
+|--------|----------|------------|
+| Virtual Price | $3.8211 (true NAV) | $3.8257 (buy quote) |
+| Market Price | $3.8255 (sell quote) | $3.8255 (sell quote) |
+| Spread | +0.11% (true premium) | -0.01% (DEX spread) |
+
+**Insight**: The on-chain method reveals a **+0.11% premium** (market > NAV), while DEX spread shows near-parity. This is because DEX spread measures bid-ask, not NAV divergence.
+
+#### Configuration
+
+| Parameter | Environment Variable | Default |
+|-----------|---------------------|---------|
+| `--compare-price-sources` | `COMPARE_PRICE_SOURCES` | `false` |
+| `--rpc-url` | `SOLANA_RPC_URL` | `https://api.mainnet-beta.solana.com` |
+
+#### Failure Handling
+
+1. **On-chain fails**: Falls back to DEX buy price as virtual proxy
+2. **Market price fails**: Returns `None`, skips cycle
+3. **Both fail**: Logs error, returns `{"error": "price_fetch_failed"}`
+
+#### Lab Program
+
+The standalone lab at `lab/jlp_virtual_price_lab.py` can be used to test methods independently:
+
+```bash
+python lab/jlp_virtual_price_lab.py --method=rpc    # On-chain only
+python lab/jlp_virtual_price_lab.py --method=mvp    # DEX spread only
+python lab/jlp_virtual_price_lab.py --method=all    # Compare all
+```
+
+---
+
 ## Open Questions
 
 ### Data & APIs (Partially Resolved)
