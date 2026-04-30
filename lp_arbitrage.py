@@ -100,6 +100,10 @@ class LPConfig:
     
     # Price source comparison
     compare_price_sources: bool = False
+    
+    # Auto-calculate spread thresholds
+    auto_calculate_spread: bool = False
+    profit_margin: float = 0.005  # 0.5% profit margin above min viable spread
 
 
 def parse_args() -> LPConfig:
@@ -210,6 +214,20 @@ Environment variables (CLI takes precedence):
         help='Compare on-chain and DEX spread price methods'
     )
     
+    # Auto-calculate spread thresholds
+    parser.add_argument(
+        '--auto-calculate-spread',
+        action='store_true',
+        default=os.environ.get('AUTO_CALCULATE_SPREAD', 'false').lower() == 'true',
+        help='Auto-calculate min viable spread from swap fees and set thresholds'
+    )
+    parser.add_argument(
+        '--profit-margin',
+        type=float,
+        default=float(os.environ.get('PROFIT_MARGIN', '0.005')),
+        help='Profit margin above min viable spread (default: 0.005 = 0.5%%)'
+    )
+    
     args = parser.parse_args()
     
     # Build config
@@ -227,6 +245,8 @@ Environment variables (CLI takes precedence):
         rpc_url=args.rpc_url,
         history_dir=args.history_dir,
         compare_price_sources=args.compare_price_sources,
+        auto_calculate_spread=args.auto_calculate_spread,
+        profit_margin=args.profit_margin,
     )
     
     # Default to --once if neither specified
@@ -435,6 +455,107 @@ class JLPPriceFetcher:
     def get_dex_sell_price(self) -> Optional[float]:
         """Get sell price from DEX quote (JLP → USDC)."""
         return self.get_market_price()  # Same as market price
+    
+    # =========================================================================
+    # MIN VIABLE SPREAD CALCULATION
+    # =========================================================================
+    
+    def calculate_min_viable_spread(self, trade_amount_usd: float = 100.0) -> Optional[dict]:
+        """
+        Calculate the minimum viable spread needed to be profitable.
+        
+        Fetches Jupiter quotes for both directions and extracts:
+        - Swap fees from routePlan
+        - Price impact
+        - Estimates gas costs
+        
+        Returns:
+            Dict with breakdown of costs and min viable spread, or None on error
+        """
+        try:
+            # Get buy quote (USDC → JLP)
+            buy_amount = int(trade_amount_usd * (10 ** USDC_DECIMALS))
+            buy_quote = self.jupiter_client.get_quote(
+                input_mint=USDC_MINT,
+                output_mint=JLP_TOKEN_MINT,
+                amount=buy_amount,
+                slippage_bps=50
+            )
+            
+            if not buy_quote:
+                return None
+            
+            # Get sell quote (JLP → USDC) for equivalent JLP amount
+            jlp_out = int(buy_quote.get("outAmount", 0))
+            if jlp_out <= 0:
+                return None
+                
+            sell_quote = self.jupiter_client.get_quote(
+                input_mint=JLP_TOKEN_MINT,
+                output_mint=USDC_MINT,
+                amount=jlp_out,
+                slippage_bps=50
+            )
+            
+            if not sell_quote:
+                return None
+            
+            # Extract price impact
+            buy_price_impact = float(buy_quote.get("priceImpactPct", "0") or "0")
+            sell_price_impact = float(sell_quote.get("priceImpactPct", "0") or "0")
+            
+            # Extract swap fees from routePlan
+            buy_fees = self._extract_fees_from_quote(buy_quote, trade_amount_usd)
+            sell_fees = self._extract_fees_from_quote(sell_quote, trade_amount_usd)
+            
+            # Gas cost estimate (2 transactions, ~0.000005 SOL each, SOL ~$150)
+            gas_cost_usd = 2 * 0.000005 * 150  # ~$0.0015
+            gas_pct = (gas_cost_usd / trade_amount_usd) * 100
+            
+            # Calculate total round-trip cost
+            total_fee_pct = buy_fees + sell_fees
+            total_impact_pct = abs(buy_price_impact) + abs(sell_price_impact)
+            
+            # Min viable spread = total fees + total impact + gas + buffer
+            min_viable_spread = total_fee_pct + total_impact_pct + gas_pct
+            
+            return {
+                "buy_fee_pct": buy_fees,
+                "sell_fee_pct": sell_fees,
+                "buy_price_impact_pct": abs(buy_price_impact),
+                "sell_price_impact_pct": abs(sell_price_impact),
+                "gas_pct": gas_pct,
+                "total_fee_pct": total_fee_pct,
+                "total_impact_pct": total_impact_pct,
+                "min_viable_spread_pct": min_viable_spread,
+                "trade_amount_usd": trade_amount_usd,
+            }
+            
+        except Exception as e:
+            print(f"  [JLP] Error calculating min viable spread: {e}")
+            return None
+    
+    def _extract_fees_from_quote(self, quote: dict, trade_amount_usd: float) -> float:
+        """Extract total fees from Jupiter quote routePlan as percentage."""
+        total_fee_usd = 0.0
+        
+        route_plan = quote.get("routePlan", [])
+        for hop in route_plan:
+            swap_info = hop.get("swapInfo", {})
+            fee_amount = int(swap_info.get("feeAmount", "0") or "0")
+            fee_mint = swap_info.get("feeMint", "")
+            
+            # Convert fee to USD (assume USDC decimals for simplicity)
+            # In practice, would need to check fee_mint and convert
+            if fee_amount > 0:
+                # Assume 6 decimals for most stablecoins
+                fee_usd = fee_amount / (10 ** 6)
+                total_fee_usd += fee_usd
+        
+        # Return as percentage of trade amount
+        if trade_amount_usd > 0:
+            return (total_fee_usd / trade_amount_usd) * 100
+        return 0.0
     
     # =========================================================================
     # MAIN INTERFACE
@@ -788,6 +909,59 @@ class LPArbitrageEngine:
         self.simulated_pnl = 0.0
         self.executed_buys = 0
         self.executed_sells = 0
+        
+        # Auto-calculate spread thresholds if enabled
+        self.min_viable_spread_info = None
+        if config.auto_calculate_spread:
+            self._auto_calculate_thresholds()
+    
+    def _auto_calculate_thresholds(self):
+        """Calculate and set thresholds based on min viable spread + profit margin."""
+        print("\n[AUTO-SPREAD] Calculating minimum viable spread...")
+        
+        spread_info = self.price_fetcher.calculate_min_viable_spread(
+            trade_amount_usd=self.config.trade_amount_usd
+        )
+        
+        if spread_info is None:
+            print("  [WARN] Could not calculate min viable spread, using defaults")
+            return
+        
+        self.min_viable_spread_info = spread_info
+        
+        # Calculate thresholds with profit margin
+        min_spread = spread_info["min_viable_spread_pct"] / 100  # Convert to decimal
+        profit_margin = self.config.profit_margin
+        
+        # Buy threshold: negative (discount) = -(min_spread + margin)
+        # Sell threshold: positive (premium) = +(min_spread + margin)
+        calculated_buy = -(min_spread + profit_margin)
+        calculated_sell = min_spread + profit_margin
+        
+        # Update config thresholds
+        self.config.buy_threshold = calculated_buy
+        self.config.sell_threshold = calculated_sell
+        
+        # Print breakdown
+        print("\n  ┌─────────────────────────────────────────────────────┐")
+        print("  │        MIN VIABLE SPREAD CALCULATION                │")
+        print("  ├─────────────────────────────────────────────────────┤")
+        print(f"  │ Trade amount:        ${spread_info['trade_amount_usd']:>10.2f}              │")
+        print("  ├─────────────────────────────────────────────────────┤")
+        print(f"  │ Buy fees:            {spread_info['buy_fee_pct']:>10.4f}%              │")
+        print(f"  │ Sell fees:           {spread_info['sell_fee_pct']:>10.4f}%              │")
+        print(f"  │ Buy price impact:    {spread_info['buy_price_impact_pct']:>10.4f}%              │")
+        print(f"  │ Sell price impact:   {spread_info['sell_price_impact_pct']:>10.4f}%              │")
+        print(f"  │ Gas (estimated):     {spread_info['gas_pct']:>10.4f}%              │")
+        print("  ├─────────────────────────────────────────────────────┤")
+        print(f"  │ Total fees:          {spread_info['total_fee_pct']:>10.4f}%              │")
+        print(f"  │ Total impact:        {spread_info['total_impact_pct']:>10.4f}%              │")
+        print(f"  │ MIN VIABLE SPREAD:   {spread_info['min_viable_spread_pct']:>10.4f}%              │")
+        print("  ├─────────────────────────────────────────────────────┤")
+        print(f"  │ Profit margin:       {profit_margin * 100:>10.4f}%              │")
+        print(f"  │ BUY threshold:       {calculated_buy * 100:>+10.4f}%              │")
+        print(f"  │ SELL threshold:      {calculated_sell * 100:>+10.4f}%              │")
+        print("  └─────────────────────────────────────────────────────┘\n")
     
     def run_once(self) -> Dict:
         """

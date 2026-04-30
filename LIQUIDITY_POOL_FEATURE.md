@@ -787,6 +787,66 @@ Output:
 |-----------|---------------------|---------|
 | `--compare-price-sources` | `COMPARE_PRICE_SOURCES` | `false` |
 | `--rpc-url` | `SOLANA_RPC_URL` | `https://api.mainnet-beta.solana.com` |
+| `--auto-calculate-spread` | `AUTO_CALCULATE_SPREAD` | `false` |
+| `--profit-margin` | `PROFIT_MARGIN` | `0.005` |
+
+#### Auto-Calculate Spread (IMPLEMENTED)
+
+The bot can dynamically calculate the minimum viable spread needed to be profitable, based on actual swap costs from Jupiter quotes.
+
+**Usage:**
+```bash
+python lp_arbitrage.py --once --auto-calculate-spread
+python lp_arbitrage.py --once --auto-calculate-spread --profit-margin=0.01
+```
+
+**How it works:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│              MIN VIABLE SPREAD CALCULATION                      │
+├─────────────────────────────────────────────────────────────────┤
+│  1. Fetch Jupiter quote: USDC → JLP (buy direction)            │
+│  2. Fetch Jupiter quote: JLP → USDC (sell direction)           │
+│  3. Extract from quotes:                                        │
+│     - Swap fees: routePlan[].swapInfo.feeAmount                │
+│     - Price impact: priceImpactPct                              │
+│  4. Estimate gas: ~$0.0015 (2 transactions × $0.00075)         │
+│  5. Calculate:                                                  │
+│     min_viable_spread = buy_fees + sell_fees + impact + gas    │
+│  6. Set thresholds:                                             │
+│     buy_threshold = -(min_viable_spread + profit_margin)       │
+│     sell_threshold = +(min_viable_spread + profit_margin)      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Example output:**
+```
+  ┌─────────────────────────────────────────────────────┐
+  │        MIN VIABLE SPREAD CALCULATION                │
+  ├─────────────────────────────────────────────────────┤
+  │ Trade amount:        $     50.00                    │
+  ├─────────────────────────────────────────────────────┤
+  │ Buy fees:                0.1500%                    │
+  │ Sell fees:               0.1500%                    │
+  │ Buy price impact:        0.0100%                    │
+  │ Sell price impact:       0.0100%                    │
+  │ Gas (estimated):         0.0030%                    │
+  ├─────────────────────────────────────────────────────┤
+  │ Total fees:              0.3000%                    │
+  │ Total impact:            0.0200%                    │
+  │ MIN VIABLE SPREAD:       0.3230%                    │
+  ├─────────────────────────────────────────────────────┤
+  │ Profit margin:           0.5000%                    │
+  │ BUY threshold:          -0.8230%                    │
+  │ SELL threshold:         +0.8230%                    │
+  └─────────────────────────────────────────────────────┘
+```
+
+**Notes:**
+- JLP mint/redeem may show low explicit fees because costs are built into the price spread
+- The `--profit-margin` parameter adds a buffer above break-even (default 0.5%)
+- Calculation uses the configured `--trade-amount` for accurate fee estimation
 
 #### Failure Handling
 
