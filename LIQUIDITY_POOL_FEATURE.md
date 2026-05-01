@@ -32,6 +32,96 @@ While Jupiter JLP is the primary focus, two other platforms offer similar LP tok
 
 ---
 
+### Fee Structure Comparison for Arbitrage Viability
+
+The most critical factor for arbitrage profitability is the **round-trip fee** to enter and exit positions. Here's how each platform compares:
+
+| Fee Type | Jupiter (JLP) | HyperLiquid (HLP) | Drift (IF Staking) |
+|----------|---------------|-------------------|-------------------|
+| **Mint/Deposit Fee** | ~0.1% (addLiquidity2) | **0% (FREE)** | **0% (FREE)** |
+| **Redeem/Withdraw Fee** | ~0.1% (removeLiquidity2) | **0% (FREE)** | **0% (FREE)** |
+| **Total Round-Trip Fee** | **~0.2%** | **~0%** | **~0%** |
+| **Trading Fees (if swapping)** | 0-0.3% via Jupiter | 0.045% taker / 0.015% maker | 0.05% taker / -0.0025% maker |
+| **Gas Fees** | ~$0.001 (Solana) | **$0 (no gas)** | ~$0.001 (Solana) |
+| **Withdrawal Lock-up** | None | 4 days | 13 days |
+| **Min Viable Spread** | **>0.2%** | **>0.06%** | **>0.05%** |
+
+#### Key Findings
+
+**1. Jupiter JLP: High Friction**
+- The ~0.2% mint/redeem fee creates a high barrier for arbitrage
+- Spreads must exceed 0.2% just to break even (before profit margin)
+- In normal market conditions, spreads rarely exceed this threshold
+- **Best for**: Rare large premium events (AUM cap hits, high volatility)
+
+**2. HyperLiquid HLP: Lowest Friction, But NOT True Arbitrage**
+- **Zero deposit/withdrawal fees** from Hyperliquid's side
+- Only cost is trading fee if you need to swap (0.045% taker)
+- No gas fees (runs on its own L1)
+- **Barrier**: 4-day withdrawal lock-up prevents quick arbitrage exits
+
+**⚠️ Critical: HLP Lock-up Does NOT Lock In Profits**
+
+Unlike JLP true arbitrage where both legs execute instantly, HLP's 4-day lock exposes you to ongoing risk:
+
+| Aspect | JLP True Arbitrage | HLP with 4-day Lock |
+|--------|-------------------|---------------------|
+| **Entry** | Mint at NAV (fixed price) | Deposit USDC, get shares at current price |
+| **Exit** | Sell at market (immediate) | Withdraw at share price **4 days later** |
+| **Profit locked?** | ✅ Yes, instantly | ❌ No, exposed to 4 days of P&L |
+| **Risk during hold** | None (instant) | Vault's market-making P&L |
+
+**What Actually Happens with HLP:**
+1. **Day 0**: You see HLP trading at 2% discount to NAV. You deposit $1000 USDC.
+2. **Days 0-4**: HLP vault continues market-making. P&L fluctuates.
+3. **Day 4**: You can withdraw. But share price now reflects:
+   - Original NAV ± 4 days of trading P&L
+   - The "discount" may have closed, widened, or reversed
+
+**The Risk During Lock-up:**
+- HLP vault could have **losing trades** (you lose money)
+- The "discount" could **disappear** (other arbers closed it)
+- The "discount" could **widen** (you're down even more)
+- Or it works out and you profit
+
+**What You DO Get:**
+- **Yield accrual**: You earn your share of trading fees during the 4 days
+- **No delta risk**: Unlike JLP, HLP is USDC-only (no SOL/ETH price exposure)
+
+**Verdict**: HLP is **not arbitrage** in the traditional sense. It's yield farming with entry timing optimization, hoping the discount persists and yield compensates. **True arbitrage requires instant execution on both legs** - which only JLP offers (despite the 0.2% fee)
+
+**3. Drift Insurance Fund: Zero Fees, Long Lock**
+- **Zero staking/unstaking fees**
+- Yield accrues hourly from protocol fees
+- **Barrier**: 13-day cooldown to unstake (longest of all three)
+- Cannot unstake if market utilization > 80%
+- **Best for**: Yield farming, not active arbitrage
+- **Arbitrage limitation**: 13-day lock makes arbitrage impractical
+
+#### Arbitrage Viability Summary
+
+| Platform | Arbitrage Style | Viability | Notes |
+|----------|-----------------|-----------|-------|
+| **Jupiter JLP** | Quick in/out | ⚠️ Low | 0.2% fee floor, spreads rarely exceed it |
+| **Jupiter JLP** | Event-driven | ✅ Medium | Profitable during AUM caps, crashes |
+| **HyperLiquid HLP** | Quick in/out | ❌ No | 4-day lock prevents quick exits |
+| **HyperLiquid HLP** | Multi-day | ✅ Medium | Zero fees, but must hold 4+ days |
+| **Drift IF** | Any | ❌ No | 13-day lock, designed for yield not arb |
+
+#### Conclusion
+
+**For true arbitrage (quick spread capture):**
+- Jupiter JLP is the only option with no lock-up
+- But the 0.2% fee floor means opportunities are rare
+- Focus on **alert mode** to catch large spread events
+
+**For yield + spread capture (longer holds):**
+- HyperLiquid HLP has best economics (zero fees)
+- Must be willing to hold 4+ days
+- Different bot strategy: monitor for discount entry, hold for yield + exit at premium
+
+---
+
 ### HyperLiquid (HLP)
 
 **What is HLP?**
