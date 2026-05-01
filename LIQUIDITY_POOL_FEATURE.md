@@ -298,45 +298,66 @@ From HyperLiquid's official documentation:
 
 ---
 
-## The Core Strategy: Premium/Discount Arbitrage
+## The Core Strategy: True Arbitrage
 
 ### Two Prices, One Opportunity
 
 | Price Type | Definition | Behavior |
 |------------|------------|----------|
-| **Virtual Price** | Total value of underlying assets (SOL, BTC, ETH, USDC, USDT) ÷ total LP token supply | Grows steadily as fees reinvest |
+| **NAV Price** | Total value of underlying assets (SOL, BTC, ETH, USDC, USDT) ÷ total LP token supply | Accessible via mint/redeem at pool |
 | **Market Price** | Price on DEXs (e.g., Jupiter Swap) | Fluctuates based on supply/demand |
 
-### Profit Mechanics
+### True Arbitrage vs Spread Trading
+
+**Previous approach (DEPRECATED):** Buy when discounted, sell when premium appears. This was NOT true arbitrage - it was directional betting on mean reversion with full capital at risk.
+
+**Current approach (TRUE ARBITRAGE):** Capture the spread IMMEDIATELY through two transactions:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     PREMIUM/DISCOUNT ARBITRAGE CYCLE                     │
+│                        TRUE ARBITRAGE STRATEGIES                         │
 └─────────────────────────────────────────────────────────────────────────┘
 
-     Market Price
-          │
-    ┌─────┴─────┐
-    │  PREMIUM  │ ◄─── SELL HERE (market > virtual)
-    │   +5-15%  │      Triggered by: AUM cap hit, FOMO, high volatility
-    ├───────────┤
-    │  VIRTUAL  │ ◄─── Fair value baseline
-    │   PRICE   │
-    ├───────────┤
-    │ DISCOUNT  │ ◄─── BUY HERE (market < virtual or near parity)
-    │   -2-5%   │      Triggered by: Market calm, panic selling, low demand
-    └───────────┘
+PREMIUM ARBITRAGE (Market > NAV):
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Step 1: MINT JLP at NAV price (addLiquidity2 instruction)              │
+│          └── Deposit USDC → Receive JLP at NAV price                    │
+│                                                                          │
+│  Step 2: SELL JLP at market price (Jupiter swap)                        │
+│          └── Swap JLP → USDC at premium market price                    │
+│                                                                          │
+│  Profit = (Market Price - NAV Price) × Amount - Fees                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+DISCOUNT ARBITRAGE (Market < NAV):
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Step 1: BUY JLP at market price (Jupiter swap)                         │
+│          └── Swap USDC → JLP at discounted market price                 │
+│                                                                          │
+│  Step 2: REDEEM JLP at NAV price (removeLiquidity2 instruction)         │
+│          └── Burn JLP → Receive USDC at full NAV price                  │
+│                                                                          │
+│  Profit = (NAV Price - Market Price) × Amount - Fees                    │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Why True Arbitrage is Superior
+
+| Aspect | Spread Trading (Old) | True Arbitrage (New) |
+|--------|---------------------|---------------------|
+| **Profit capture** | Uncertain (betting on reversion) | Immediate (locked at execution) |
+| **Capital at risk** | Full position value | Only during brief execution window |
+| **Directional exposure** | Yes (holding JLP) | Minimal (two-leg execution) |
+| **Time dependency** | Must wait for spread to close | Instant profit capture |
 
 ### Key Triggers
 
-| Event | Expected Effect | Bot Action |
-|-------|-----------------|------------|
-| **AUM cap hit** | Cannot mint new JLP → scarcity → premium spikes | SELL |
-| **High volatility** | More trading fees → higher APY → demand spike | Prepare to SELL |
-| **Market crash** | Panic selling of JLP → discount | BUY (with caution) |
-| **Low APY period** | Stable, low demand → prices near virtual | BUY |
-| **AUM cap lifted** | New minting available → premium collapses | Avoid buying at premium |
+| Event | Expected Effect | Arbitrage Type |
+|-------|-----------------|----------------|
+| **AUM cap hit** | Cannot mint → premium spikes | PREMIUM ARB (if can mint) |
+| **High volatility** | Demand spike → premium | PREMIUM ARB |
+| **Market crash** | Panic selling → discount | DISCOUNT ARB |
+| **Low APY period** | Low demand → discount | DISCOUNT ARB |
 
 ---
 

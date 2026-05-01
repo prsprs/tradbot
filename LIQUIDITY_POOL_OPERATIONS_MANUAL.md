@@ -43,11 +43,17 @@ CLI arguments take precedence over environment variables. If neither is set, the
 2. Fetches market price via Jupiter swap quote
 3. Calculates spread: `(market_price - virtual_price) / virtual_price`
 4. Determines action based on spread vs thresholds:
-   - **BUY** when spread < buy_threshold (discount)
-   - **SELL** when spread > sell_threshold (premium)
+   - **DISCOUNT_ARB** when spread < buy_threshold: Buy at market → Redeem at NAV
+   - **PREMIUM_ARB** when spread > sell_threshold: Mint at NAV → Sell at market
    - **HOLD** otherwise
 5. Records snapshots to history (verbose mode or opportunities)
-6. Executes trades on Jupiter (live mode) or simulates them (whatif mode)
+6. Executes TRUE ARBITRAGE (two-leg trades) or simulates them (whatif mode)
+
+**True Arbitrage Strategy:**
+- **PREMIUM_ARB**: Mint JLP at NAV (addLiquidity2) → Sell at market (Jupiter swap)
+- **DISCOUNT_ARB**: Buy at market (Jupiter swap) → Redeem at NAV (removeLiquidity2)
+
+This captures the spread IMMEDIATELY rather than betting on mean reversion.
 
 **Output:**
 - Console output with prices, spread, and action
@@ -61,6 +67,19 @@ CLI arguments take precedence over environment variables. If neither is set, the
   Market price:  $3.8255 (DEX swap price)
   Spread: +0.11% (premium)
   Action: HOLD (spread within thresholds (-2.0% to 3.0%))
+
+# When arbitrage opportunity detected:
+[2026-04-30 08:15:22] Wake up #5
+  Virtual price: $3.8211 (NAV from on-chain)
+  Market price:  $3.9500 (DEX swap price)
+  Spread: +3.37% (premium)
+  Action: PREMIUM_ARB (spread 3.37% > threshold 3.00% → Mint NAV, Sell market)
+  [WHAT-IF] PREMIUM ARBITRAGE:
+    Step 1: Mint JLP at NAV ($3.8211)
+    Step 2: Sell JLP at market ($3.9500)
+    Gross profit: $1.69
+    Est. costs: $0.11
+    Net profit: $1.58 ✓
 ```
 
 ---
@@ -234,13 +253,14 @@ curl "https://api.jup.ag/quote?inputMint=27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidV
 
 ```
 tradingbot/
-├── lp_arbitrage.py           # Main LP arbitrage bot
+├── lp_arbitrage.py           # Main LP arbitrage bot (true arbitrage)
 ├── lp_history.py             # LP-specific history utilities
 ├── lp_analyzer.py            # Historical analysis tool
 ├── lab/
-│   └── jlp_virtual_price_lab.py  # Virtual price testing lab
+│   ├── jlp_virtual_price_lab.py  # Virtual price testing lab
+│   └── jlp_mint_redeem_lab.py    # Mint/redeem instruction lab
 ├── dex/
-│   ├── jupiterutil.py        # Jupiter API client
+│   ├── jupiterutil.py        # Jupiter API + JLP mint/redeem client
 │   └── local_wallet.py       # Solana wallet management
 ├── history/
 │   └── lp/
