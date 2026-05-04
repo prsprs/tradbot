@@ -44,6 +44,122 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Time Duration Parsing
+# ============================================================================
+
+def parse_duration(value: str) -> int:
+    """
+    Parse a duration string into seconds.
+    
+    Supported formats:
+        - Plain number: interpreted as seconds (e.g., "30" -> 30)
+        - Number + 'sec': seconds (e.g., "30sec" -> 30)
+        - Number + 'min': minutes (e.g., "5min" -> 300)
+        - Number + 'hr': hours (e.g., "1hr" -> 3600)
+    
+    Args:
+        value: Duration string to parse
+        
+    Returns:
+        Duration in seconds
+        
+    Raises:
+        ValueError: If the format is invalid
+    """
+    if value is None:
+        return None
+    
+    value = str(value).strip().lower()
+    
+    if not value:
+        raise ValueError("Empty duration string")
+    
+    # Try plain number first (default to seconds)
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    
+    # Parse with unit suffix
+    import re
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*(sec|min|hr)s?$', value)
+    
+    if not match:
+        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30, 30sec, 5min, 1hr")
+    
+    amount = float(match.group(1))
+    unit = match.group(2)
+    
+    multipliers = {
+        'sec': 1,
+        'min': 60,
+        'hr': 3600,
+    }
+    
+    return int(amount * multipliers[unit])
+
+
+def parse_lag_range(value: str) -> Tuple[int, int]:
+    """
+    Parse a lag range string into (start_seconds, end_seconds).
+    
+    Supported formats:
+        - "0-300" (plain seconds)
+        - "0-5min" (mixed units)
+        - "1min-1hr" (both with units)
+    
+    Args:
+        value: Lag range string (e.g., "0-5min")
+        
+    Returns:
+        Tuple of (start_seconds, end_seconds)
+        
+    Raises:
+        ValueError: If the format is invalid
+    """
+    if '-' not in value:
+        raise ValueError(f"Invalid lag range format: '{value}'. Use format like: 0-300, 0-5min, 1min-1hr")
+    
+    parts = value.split('-', 1)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid lag range format: '{value}'")
+    
+    start = parse_duration(parts[0].strip())
+    end = parse_duration(parts[1].strip())
+    
+    return (start, end)
+
+
+def format_duration(seconds: int) -> str:
+    """
+    Format seconds into a human-readable duration string.
+    
+    Args:
+        seconds: Duration in seconds
+        
+    Returns:
+        Formatted string (e.g., "1hr 30min", "45sec")
+    """
+    if seconds >= 3600:
+        hours = seconds // 3600
+        remaining = seconds % 3600
+        if remaining >= 60:
+            mins = remaining // 60
+            return f"{hours}hr {mins}min"
+        elif remaining > 0:
+            return f"{hours}hr {remaining}sec"
+        return f"{hours}hr"
+    elif seconds >= 60:
+        mins = seconds // 60
+        remaining = seconds % 60
+        if remaining > 0:
+            return f"{mins}min {remaining}sec"
+        return f"{mins}min"
+    else:
+        return f"{seconds}sec"
+
+
+# ============================================================================
 # Data Classes
 # ============================================================================
 
@@ -789,11 +905,14 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Collect price data
+  # Collect price data (30 second interval)
   python correlation_tracker.py --coins BTC,ETH,SOL --interval 30 --output-dir ./correlation_data
   
-  # Collect for specific duration (seconds)
-  python correlation_tracker.py --coins BTC,ETH --interval 30 --duration 3600
+  # Collect with time units (1hr interval, 4hr duration)
+  python correlation_tracker.py --coins BTC,ETH --interval 1min --duration 4hr
+  
+  # Collect for specific duration
+  python correlation_tracker.py --coins BTC,ETH --interval 30sec --duration 3600
   
   # Analyze specific pair
   python correlation_tracker.py --analyze --leader BTC --follower ETH --data-dir ./correlation_data
@@ -828,12 +947,12 @@ IMPORTANT WARNINGS:
     collector = parser.add_argument_group('Collector Options')
     collector.add_argument('--coins', type=str,
                           help='Comma-separated list of coin symbols (e.g., BTC,ETH,SOL)')
-    collector.add_argument('--interval', type=int, default=30,
-                          help='Collection interval in seconds (default: 30)')
+    collector.add_argument('--interval', type=str, default='30',
+                          help='Collection interval (e.g., 30, 30sec, 5min, 1hr; default: 30sec)')
     collector.add_argument('--output-dir', type=str, default='./correlation_data',
                           help='Output directory for collected data')
-    collector.add_argument('--duration', type=int,
-                          help='Collection duration in seconds (default: run indefinitely)')
+    collector.add_argument('--duration', type=str,
+                          help='Collection duration (e.g., 3600, 1hr, 30min; default: run indefinitely)')
     
     # Analyzer options
     analyzer = parser.add_argument_group('Analyzer Options')
@@ -852,7 +971,7 @@ IMPORTANT WARNINGS:
     analyzer.add_argument('--min-samples', type=int, default=500,
                          help='Minimum samples required for analysis (default: 500)')
     analyzer.add_argument('--lag-range', type=str,
-                         help='Lag range to test in seconds (e.g., 0-300)')
+                         help='Lag range to test (e.g., 0-300, 0-5min, 1min-1hr)')
     analyzer.add_argument('--output-report', type=str,
                          help='Path to save the analysis report (JSON)')
     
@@ -897,9 +1016,11 @@ def main():
         if args.follower_candidates:
             config.follower_candidates = [c.strip() for c in args.follower_candidates.split(',')]
         if args.lag_range:
-            parts = args.lag_range.split('-')
-            if len(parts) == 2:
-                config.lag_range_seconds = (int(parts[0]), int(parts[1]))
+            try:
+                config.lag_range_seconds = parse_lag_range(args.lag_range)
+            except ValueError as e:
+                logger.error(f"Invalid lag-range: {e}")
+                sys.exit(1)
         
         analyzer = CorrelationAnalyzer(config)
         
@@ -997,15 +1118,32 @@ def main():
         # Apply CLI args (override YAML)
         if args.coins:
             config.coins = [c.strip().upper() for c in args.coins.split(',')]
-        config.interval_seconds = args.interval
+        
+        # Parse interval with duration support
+        try:
+            config.interval_seconds = parse_duration(args.interval)
+        except ValueError as e:
+            logger.error(f"Invalid interval: {e}")
+            sys.exit(1)
+        
         config.output_dir = args.output_dir
+        
+        # Parse duration if provided
+        duration_seconds = None
+        if args.duration:
+            try:
+                duration_seconds = parse_duration(args.duration)
+                logger.info(f"Collection duration: {format_duration(duration_seconds)}")
+            except ValueError as e:
+                logger.error(f"Invalid duration: {e}")
+                sys.exit(1)
         
         if not config.coins:
             logger.error("No coins specified. Use --coins BTC,ETH,SOL or provide a config file.")
             sys.exit(1)
         
         collector = DataCollector(config)
-        collector.run(duration_seconds=args.duration)
+        collector.run(duration_seconds=duration_seconds)
 
 
 if __name__ == '__main__':
