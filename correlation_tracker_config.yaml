@@ -1,0 +1,23 @@
+# Correlation Tracker Configuration
+collector:
+  interval_seconds: 30          # Default, warn if <30
+  output_dir: ./correlation_data
+  source: coingecko             # MVP: CoinGecko only
+
+coins:
+  - BTC
+  - ETH
+  - SOL
+  - TAO
+
+data_fields:
+  - price
+  - volume_24h
+  - market_cap
+  - price_change_24h
+  - timestamp
+
+analyzer:
+  min_confidence: 0.6
+  min_samples: 500              # ~4 hours at 30s intervals
+  lag_multiplier: 10            # lag_range = interval * multiplier

@@ -80,6 +80,8 @@ SYMBOL_TO_ID = {
     'BRETT': 'brett',
     'POPCAT': 'popcat-sol',
     'NEIRO': 'neiro-ethereum',
+    'TAO': 'bittensor',
+    'WTAO': 'wrapped-tao',
 }
 
 
