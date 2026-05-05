@@ -94,16 +94,119 @@ def _rate_limit():
     _last_request_time = time.time()
 
 
-def get_coingecko_id(symbol: str) -> Optional[str]:
-    """Convert a coin symbol to CoinGecko ID.
+def search_coingecko_coin(symbol: str) -> Optional[Dict]:
+    """Search CoinGecko API for a coin by symbol.
     
     Args:
-        symbol: Coin symbol (e.g., 'DOGE', 'SHIB')
+        symbol: Coin symbol to search for (e.g., 'ONDO', 'JTO')
+    
+    Returns:
+        Dict with 'id', 'symbol', 'name' if found, None otherwise.
+    """
+    try:
+        import requests
+    except ImportError:
+        print("Warning: requests library not available")
+        return None
+    
+    _rate_limit()
+    
+    try:
+        if COINGECKO_API_KEY:
+            url = "https://pro-api.coingecko.com/api/v3/search"
+            headers = {"x-cg-pro-api-key": COINGECKO_API_KEY}
+        else:
+            url = "https://api.coingecko.com/api/v3/search"
+            headers = {}
+        
+        params = {"query": symbol}
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        coins = data.get('coins', [])
+        
+        # Find exact symbol match (case-insensitive)
+        symbol_upper = symbol.upper()
+        for coin in coins:
+            if coin.get('symbol', '').upper() == symbol_upper:
+                return {
+                    'id': coin['id'],
+                    'symbol': coin['symbol'].upper(),
+                    'name': coin.get('name', '')
+                }
+        
+        # If no exact match, return first result if symbol is close
+        if coins and coins[0].get('symbol', '').upper().startswith(symbol_upper[:2]):
+            coin = coins[0]
+            print(f"[COINGECKO] No exact match for '{symbol}', using closest: {coin['symbol']} ({coin['id']})")
+            return {
+                'id': coin['id'],
+                'symbol': coin['symbol'].upper(),
+                'name': coin.get('name', '')
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"[COINGECKO] Search error for {symbol}: {e}")
+        return None
+
+
+def auto_resolve_symbol(symbol: str, add_to_cache: bool = True) -> Optional[str]:
+    """Automatically resolve a coin symbol to CoinGecko ID.
+    
+    First checks local cache, then searches CoinGecko API if not found.
+    Optionally adds discovered mappings to the runtime cache.
+    
+    Args:
+        symbol: Coin symbol (e.g., 'ONDO', 'JTO')
+        add_to_cache: If True, add discovered mapping to SYMBOL_TO_ID
     
     Returns:
         CoinGecko ID or None if not found.
     """
-    return SYMBOL_TO_ID.get(symbol.upper())
+    symbol_upper = symbol.upper()
+    
+    # Check existing mapping first
+    if symbol_upper in SYMBOL_TO_ID:
+        return SYMBOL_TO_ID[symbol_upper]
+    
+    # Search CoinGecko
+    print(f"[COINGECKO] Searching for unknown symbol: {symbol_upper}")
+    result = search_coingecko_coin(symbol_upper)
+    
+    if result:
+        coin_id = result['id']
+        print(f"[COINGECKO] Found: {symbol_upper} -> {coin_id} ({result['name']})")
+        
+        if add_to_cache:
+            SYMBOL_TO_ID[symbol_upper] = coin_id
+            print(f"[COINGECKO] Added to runtime cache: {symbol_upper} -> {coin_id}")
+        
+        return coin_id
+    
+    print(f"[COINGECKO] Could not find coin: {symbol_upper}")
+    return None
+
+
+def get_coingecko_id(symbol: str, auto_search: bool = False) -> Optional[str]:
+    """Convert a coin symbol to CoinGecko ID.
+    
+    Args:
+        symbol: Coin symbol (e.g., 'DOGE', 'SHIB')
+        auto_search: If True, search CoinGecko API for unknown symbols
+    
+    Returns:
+        CoinGecko ID or None if not found.
+    """
+    symbol_upper = symbol.upper()
+    coin_id = SYMBOL_TO_ID.get(symbol_upper)
+    
+    if coin_id is None and auto_search:
+        coin_id = auto_resolve_symbol(symbol_upper)
+    
+    return coin_id
 
 
 def get_coingecko_price(symbol: str) -> Optional[float]:
@@ -288,11 +391,12 @@ CATEGORY_GAMING = "gaming"
 CATEGORY_AI = "ai"
 
 
-def get_multiple_prices(symbols: list) -> Dict[str, Optional[float]]:
+def get_multiple_prices(symbols: list, auto_search: bool = False) -> Dict[str, Optional[float]]:
     """Get prices for multiple coins in a single request.
     
     Args:
         symbols: List of coin symbols (e.g., ['DOGE', 'SHIB', 'PEPE'])
+        auto_search: If True, search CoinGecko API for unknown symbols
     
     Returns:
         Dictionary mapping symbols to prices (None for unavailable).
@@ -306,7 +410,7 @@ def get_multiple_prices(symbols: list) -> Dict[str, Optional[float]]:
     # Convert symbols to CoinGecko IDs
     id_to_symbol = {}
     for symbol in symbols:
-        coin_id = get_coingecko_id(symbol)
+        coin_id = get_coingecko_id(symbol, auto_search=auto_search)
         if coin_id:
             id_to_symbol[coin_id] = symbol
     

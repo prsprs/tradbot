@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 # Import existing CoinGecko utility
-from coingeckoutil import get_multiple_prices, get_coingecko_id, SYMBOL_TO_ID
+from coingeckoutil import get_multiple_prices, get_coingecko_id, SYMBOL_TO_ID, auto_resolve_symbol
 
 # Configure logging
 logging.basicConfig(
@@ -230,6 +230,7 @@ class CollectorConfig:
     interval_seconds: int = 30
     output_dir: str = './correlation_data'
     source: str = 'coingecko'
+    auto_search: bool = True  # Auto-search CoinGecko for unknown symbols
 
 
 @dataclass
@@ -281,14 +282,20 @@ class DataCollector:
         return date_dir / f'prices_{window_start:02d}-{window_end:02d}.jsonl'
 
     def _validate_coins(self) -> Tuple[List[str], List[str]]:
-        """Validate coin symbols and return valid/invalid lists."""
+        """Validate coin symbols and return valid/invalid lists.
+        
+        If auto_search is enabled, unknown symbols will be looked up via CoinGecko API.
+        """
         valid = []
         invalid = []
         for coin in self.config.coins:
-            if get_coingecko_id(coin.upper()):
-                valid.append(coin.upper())
+            symbol = coin.upper()
+            # Use auto_search to resolve unknown symbols
+            coin_id = get_coingecko_id(symbol, auto_search=self.config.auto_search)
+            if coin_id:
+                valid.append(symbol)
             else:
-                invalid.append(coin.upper())
+                invalid.append(symbol)
         return valid, invalid
 
     def collect_once(self) -> Tuple[List[PriceRecord], DataQualityInfo]:
@@ -299,8 +306,8 @@ class DataCollector:
         start_time = time.time()
         timestamp = datetime.now(timezone.utc).isoformat()
         
-        # Get prices for all coins in one request
-        prices = get_multiple_prices(self.config.coins)
+        # Get prices for all coins in one request (auto-search for unknown symbols)
+        prices = get_multiple_prices(self.config.coins, auto_search=self.config.auto_search)
         
         collection_latency = int((time.time() - start_time) * 1000)
         
@@ -953,6 +960,8 @@ IMPORTANT WARNINGS:
                           help='Output directory for collected data')
     collector.add_argument('--duration', type=str,
                           help='Collection duration (e.g., 3600, 1hr, 30min; default: run indefinitely)')
+    collector.add_argument('--no-auto-search', action='store_true',
+                          help='Disable auto-search for unknown coin symbols (default: enabled)')
     
     # Analyzer options
     analyzer = parser.add_argument_group('Analyzer Options')
@@ -1127,6 +1136,7 @@ def main():
             sys.exit(1)
         
         config.output_dir = args.output_dir
+        config.auto_search = not args.no_auto_search
         
         # Parse duration if provided
         duration_seconds = None
