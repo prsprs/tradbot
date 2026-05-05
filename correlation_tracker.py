@@ -56,6 +56,7 @@ def parse_duration(value: str) -> int:
         - Number + 'sec': seconds (e.g., "30sec" -> 30)
         - Number + 'min': minutes (e.g., "5min" -> 300)
         - Number + 'hr': hours (e.g., "1hr" -> 3600)
+        - Number + 'day'/'days': days (e.g., "14days" -> 1209600)
     
     Args:
         value: Duration string to parse
@@ -82,18 +83,23 @@ def parse_duration(value: str) -> int:
     
     # Parse with unit suffix
     import re
-    match = re.match(r'^(\d+(?:\.\d+)?)\s*(sec|min|hr)s?$', value)
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*(sec|min|hr|days?)s?$', value)
     
     if not match:
-        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30, 30sec, 5min, 1hr")
+        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30, 30sec, 5min, 1hr, 14days")
     
     amount = float(match.group(1))
     unit = match.group(2)
+    
+    # Normalize 'day' to 'days'
+    if unit == 'day':
+        unit = 'days'
     
     multipliers = {
         'sec': 1,
         'min': 60,
         'hr': 3600,
+        'days': 86400,
     }
     
     return int(amount * multipliers[unit])
@@ -189,6 +195,16 @@ class DataQualityInfo:
 
 
 @dataclass
+class TestResult:
+    """Result from a single analysis test."""
+    test_name: str
+    passed: bool
+    metrics: Dict[str, Any]
+    reason: str
+    reason_code: Optional[str] = None
+
+
+@dataclass
 class CorrelationReport:
     """Results from correlation analysis between two coins."""
     generated_at: str
@@ -209,6 +225,9 @@ class CorrelationReport:
     stable_relationship: bool
     recommendation: str
     trading_signal_strength: str
+    # Detailed test results
+    test_results: List[TestResult] = field(default_factory=list)
+    caveats: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -246,6 +265,10 @@ class AnalyzerConfig:
     lag_range_seconds: Optional[Tuple[int, int]] = None
     lag_multiplier: int = 10
     output_report: Optional[str] = None
+    recent_seconds: Optional[int] = None  # Filter to recent N seconds of data
+    start_date: Optional[datetime] = None  # Explicit start date filter
+    end_date: Optional[datetime] = None    # Explicit end date filter
+    verbose: bool = False  # Output detailed test results for all pairs
 
 
 # ============================================================================
@@ -418,8 +441,18 @@ class DataLoader:
     def __init__(self, data_dir: str):
         self.data_dir = Path(data_dir)
 
-    def load_all(self) -> pd.DataFrame:
-        """Load all data from the data directory."""
+    def load_all(self, recent_seconds: Optional[int] = None,
+                  start_date: Optional[datetime] = None,
+                  end_date: Optional[datetime] = None) -> pd.DataFrame:
+        """Load all data from the data directory with optional date filtering.
+        
+        Args:
+            recent_seconds: If provided, only load data from the last N seconds
+            start_date: If provided, only load data after this date
+            end_date: If provided, only load data before this date
+            
+        Note: recent_seconds takes precedence over start_date if both provided.
+        """
         all_records = []
         
         if not self.data_dir.exists():
@@ -452,6 +485,23 @@ class DataLoader:
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.sort_values(['symbol', 'timestamp']).reset_index(drop=True)
         
+        original_count = len(df)
+        
+        # Apply date filtering
+        if recent_seconds is not None:
+            from datetime import timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=recent_seconds)
+            df = df[df['timestamp'] >= cutoff]
+            logger.info(f"Filtered to recent {format_duration(recent_seconds)}: {len(df)}/{original_count} records")
+        else:
+            if start_date is not None:
+                df = df[df['timestamp'] >= start_date]
+            if end_date is not None:
+                df = df[df['timestamp'] <= end_date]
+            if start_date is not None or end_date is not None:
+                logger.info(f"Filtered by date range: {len(df)}/{original_count} records")
+        
+        df = df.reset_index(drop=True)
         logger.info(f"Loaded {len(df)} records for {df['symbol'].nunique()} coins")
         
         return df
@@ -663,12 +713,32 @@ class CorrelationAnalyzer:
         
         Returns CorrelationReport or None if insufficient data.
         """
+        test_results = []
+        caveats = []
+        
         leader_returns = self.loader.get_returns_series(df, leader)
         follower_returns = self.loader.get_returns_series(df, follower)
         
-        if len(leader_returns) < self.config.min_samples or len(follower_returns) < self.config.min_samples:
+        # TEST 1: Data Validation
+        leader_count = len(leader_returns)
+        follower_count = len(follower_returns)
+        data_valid = leader_count >= self.config.min_samples and follower_count >= self.config.min_samples
+        
+        test_results.append(TestResult(
+            test_name="Data Validation",
+            passed=data_valid,
+            metrics={
+                'leader_samples': leader_count,
+                'follower_samples': follower_count,
+                'minimum_required': self.config.min_samples
+            },
+            reason="Sufficient samples available" if data_valid else f"Insufficient samples (need {self.config.min_samples})",
+            reason_code=None if data_valid else "INSUFFICIENT_SAMPLES"
+        ))
+        
+        if not data_valid:
             logger.warning(f"Insufficient samples for {leader}->{follower}: "
-                          f"leader={len(leader_returns)}, follower={len(follower_returns)}, "
+                          f"leader={leader_count}, follower={follower_count}, "
                           f"required={self.config.min_samples}")
             return None
         
@@ -678,7 +748,7 @@ class CorrelationAnalyzer:
         else:
             max_lag_periods = self.config.lag_multiplier
         
-        # Cross-correlation analysis
+        # TEST 2: Cross-correlation analysis
         lags, correlations = self.cross_correlation(leader_returns, follower_returns, max_lag_periods)
         
         if len(correlations) == 0:
@@ -700,11 +770,79 @@ class CorrelationAnalyzer:
         zero_lag_idx = np.where(lags == 0)[0]
         correlation_at_zero = float(correlations[zero_lag_idx[0]]) if len(zero_lag_idx) > 0 else 0.0
         
-        # Granger causality test
+        improvement = abs(correlation_at_optimal) - abs(correlation_at_zero)
+        improvement_pct = (improvement / abs(correlation_at_zero) * 100) if correlation_at_zero != 0 else 0
+        
+        corr_passed = abs(correlation_at_optimal) >= 0.3
+        positive_lag_found = optimal_lag > 0
+        
+        if not corr_passed:
+            caveats.append("Weak correlation")
+        if not positive_lag_found:
+            caveats.append("No positive lag found")
+        
+        corr_reason = "Positive lag correlation found, leader precedes follower" if (corr_passed and positive_lag_found) else \
+                      "Weak correlation" if not corr_passed else "Best correlation at zero or negative lag"
+        
+        test_results.append(TestResult(
+            test_name="Cross-Correlation Analysis",
+            passed=corr_passed and positive_lag_found,
+            metrics={
+                'lag_range_periods': [-max_lag_periods, max_lag_periods],
+                'lag_range_seconds': [-max_lag_periods * interval_seconds, max_lag_periods * interval_seconds],
+                'correlation_at_zero': round(correlation_at_zero, 4),
+                'correlation_at_optimal': round(correlation_at_optimal, 4),
+                'optimal_lag_periods': optimal_lag,
+                'optimal_lag_seconds': optimal_lag * interval_seconds,
+                'improvement_over_zero': round(improvement, 4),
+                'improvement_pct': round(improvement_pct, 1)
+            },
+            reason=corr_reason,
+            reason_code=None if (corr_passed and positive_lag_found) else ("WEAK_CORRELATION" if not corr_passed else "NO_POSITIVE_LAG")
+        ))
+        
+        # TEST 3: Granger causality test
         pvalue, is_significant = self.granger_causality_test(leader_returns, follower_returns)
         
-        # Rolling correlation stability
-        _, stability = self.rolling_correlation(leader_returns, follower_returns)
+        if not is_significant:
+            caveats.append("Granger causality not significant")
+        
+        test_results.append(TestResult(
+            test_name="Granger Causality",
+            passed=is_significant,
+            metrics={
+                'test_type': 'ssr_ftest',
+                'p_value': round(pvalue, 4),
+                'significance_threshold': 0.05
+            },
+            reason=f"p={pvalue:.4f} < 0.05, statistically significant predictive relationship" if is_significant else \
+                   f"p={pvalue:.4f} >= 0.05, cannot reject null hypothesis",
+            reason_code=None if is_significant else "GRANGER_NOT_SIGNIFICANT"
+        ))
+        
+        # TEST 4: Rolling correlation stability
+        rolling_corr, stability = self.rolling_correlation(leader_returns, follower_returns)
+        std_dev = 1.0 - stability if stability > 0 else 1.0
+        mean_corr = float(rolling_corr.mean()) if len(rolling_corr) > 0 else 0.0
+        stable = stability > 0.7
+        
+        if not stable:
+            caveats.append("Unstable relationship over time")
+        
+        test_results.append(TestResult(
+            test_name="Rolling Correlation Stability",
+            passed=stable,
+            metrics={
+                'window_size': 120,
+                'mean_correlation': round(mean_corr, 4),
+                'std_deviation': round(std_dev, 4),
+                'stability_score': round(stability, 4),
+                'stability_threshold': 0.70
+            },
+            reason=f"Stability {stability:.2f} > 0.70 threshold, correlation is consistent over time" if stable else \
+                   f"Stability {stability:.2f} < 0.70 threshold, correlation varies significantly over time",
+            reason_code=None if stable else "UNSTABLE_RELATIONSHIP"
+        ))
         
         # Calculate aligned sample count
         aligned = pd.concat([leader_returns, follower_returns], axis=1, join='inner')
@@ -713,10 +851,37 @@ class CorrelationAnalyzer:
         # Lag consistency: how much better is optimal lag vs zero lag
         lag_correlation_diff = abs(correlation_at_optimal) - abs(correlation_at_zero)
         
-        # Confidence calculation
+        # TEST 5: Confidence calculation
         confidence_score, confidence_level, confidence_factors = self.calculate_confidence(
             correlation_at_optimal, pvalue, stability, num_samples, lag_correlation_diff
         )
+        
+        conf_passed = confidence_score >= self.config.min_confidence
+        
+        test_results.append(TestResult(
+            test_name="Confidence Score Calculation",
+            passed=conf_passed,
+            metrics={
+                'factors': {
+                    'correlation_strength': {'value': round(abs(correlation_at_optimal), 4), 'weight': 0.30, 
+                                            'contribution': round(abs(correlation_at_optimal) * 0.30, 4)},
+                    'statistical_significance': {'value': round(1.0 - pvalue, 4), 'weight': 0.25,
+                                                 'contribution': round((1.0 - pvalue) * 0.25, 4)},
+                    'relationship_stability': {'value': round(stability, 4), 'weight': 0.20,
+                                              'contribution': round(stability * 0.20, 4)},
+                    'sample_adequacy': {'value': round(min(1.0, num_samples / 1000), 4), 'weight': 0.15,
+                                       'contribution': round(min(1.0, num_samples / 1000) * 0.15, 4)},
+                    'lag_consistency': {'value': round(min(1.0, max(0, lag_correlation_diff)), 4), 'weight': 0.10,
+                                       'contribution': round(min(1.0, max(0, lag_correlation_diff)) * 0.10, 4)}
+                },
+                'total_score': round(confidence_score, 4),
+                'confidence_level': confidence_level,
+                'min_confidence_threshold': self.config.min_confidence
+            },
+            reason=f"Score {confidence_score:.2f} indicates {confidence_level} confidence" if conf_passed else \
+                   f"Score {confidence_score:.2f} below {self.config.min_confidence} threshold",
+            reason_code=None if conf_passed else "LOW_CONFIDENCE"
+        ))
         
         # Determine date range
         timestamps = df['timestamp']
@@ -739,14 +904,20 @@ class CorrelationAnalyzer:
             correlation_stability=round(stability, 4),
             stable_relationship=stability > 0.7,
             recommendation=self._get_recommendation(confidence_level, correlation_at_optimal, optimal_lag * interval_seconds),
-            trading_signal_strength=self._get_signal_strength(confidence_level)
+            trading_signal_strength=self._get_signal_strength(confidence_level),
+            test_results=test_results,
+            caveats=caveats
         )
         
         return report
 
     def analyze_specific_pair(self, leader: str, follower: str) -> Optional[CorrelationReport]:
         """Analyze a specific leader-follower pair."""
-        df = self.loader.load_all()
+        df = self.loader.load_all(
+            recent_seconds=self.config.recent_seconds,
+            start_date=self.config.start_date,
+            end_date=self.config.end_date
+        )
         
         if df.empty:
             logger.error("No data loaded")
@@ -763,7 +934,11 @@ class CorrelationAnalyzer:
         """
         Discovery mode: analyze all possible pairs to find leading indicators.
         """
-        df = self.loader.load_all()
+        df = self.loader.load_all(
+            recent_seconds=self.config.recent_seconds,
+            start_date=self.config.start_date,
+            end_date=self.config.end_date
+        )
         
         if df.empty:
             logger.error("No data loaded")
@@ -811,26 +986,31 @@ class CorrelationAnalyzer:
                     no_relationship.append({
                         'leader': leader,
                         'follower': follower,
-                        'reason': 'Insufficient data'
+                        'reason': 'Insufficient data',
+                        'test_results': None,
+                        'confidence': None
                     })
                     continue
                 
+                pair_data = {
+                    'leader': report.leader_symbol,
+                    'follower': report.follower_symbol,
+                    'optimal_lag_seconds': report.optimal_lag_seconds,
+                    'correlation': report.correlation_at_optimal_lag,
+                    'confidence': report.confidence_score,
+                    'granger_significant': report.granger_causality_significant,
+                    'recommendation': report.recommendation,
+                    'test_results': report.test_results,
+                    'caveats': report.caveats,
+                    'stability': report.correlation_stability,
+                    'stable_relationship': report.stable_relationship
+                }
+                
                 if report.confidence_score >= self.config.min_confidence:
-                    significant_pairs.append({
-                        'leader': report.leader_symbol,
-                        'follower': report.follower_symbol,
-                        'optimal_lag_seconds': report.optimal_lag_seconds,
-                        'correlation': report.correlation_at_optimal_lag,
-                        'confidence': report.confidence_score,
-                        'granger_significant': report.granger_causality_significant,
-                        'recommendation': report.recommendation
-                    })
+                    significant_pairs.append(pair_data)
                 else:
-                    no_relationship.append({
-                        'leader': leader,
-                        'follower': follower,
-                        'reason': f"Low confidence ({report.confidence_score:.2f})"
-                    })
+                    pair_data['reason'] = f"Low confidence ({report.confidence_score:.2f})"
+                    no_relationship.append(pair_data)
         
         # Sort by confidence
         significant_pairs.sort(key=lambda x: x['confidence'], reverse=True)
@@ -981,8 +1161,16 @@ IMPORTANT WARNINGS:
                          help='Minimum samples required for analysis (default: 500)')
     analyzer.add_argument('--lag-range', type=str,
                          help='Lag range to test (e.g., 0-300, 0-5min, 1min-1hr)')
+    analyzer.add_argument('--recent', type=str,
+                         help='Only analyze recent data (e.g., 14days, 48hr, 6hr)')
+    analyzer.add_argument('--start-date', type=str,
+                         help='Start date for analysis (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)')
+    analyzer.add_argument('--end-date', type=str,
+                         help='End date for analysis (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)')
     analyzer.add_argument('--output-report', type=str,
                          help='Path to save the analysis report (JSON)')
+    analyzer.add_argument('--verbose', '-v', action='store_true',
+                         help='Output detailed test results for all pairs (not just significant)')
     
     return parser.parse_args()
 
@@ -1031,6 +1219,53 @@ def main():
                 logger.error(f"Invalid lag-range: {e}")
                 sys.exit(1)
         
+        # Parse date filtering options
+        if args.recent:
+            try:
+                config.recent_seconds = parse_duration(args.recent)
+                logger.info(f"Filtering to recent {format_duration(config.recent_seconds)}")
+            except ValueError as e:
+                logger.error(f"Invalid --recent value: {e}")
+                sys.exit(1)
+        
+        if args.start_date:
+            try:
+                # Try full datetime first, then date only
+                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                    try:
+                        config.start_date = datetime.strptime(args.start_date, fmt).replace(tzinfo=timezone.utc)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    raise ValueError(f"Invalid date format: {args.start_date}")
+                logger.info(f"Start date: {config.start_date}")
+            except ValueError as e:
+                logger.error(f"Invalid --start-date: {e}. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
+                sys.exit(1)
+        
+        if args.end_date:
+            try:
+                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                    try:
+                        config.end_date = datetime.strptime(args.end_date, fmt).replace(tzinfo=timezone.utc)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    raise ValueError(f"Invalid date format: {args.end_date}")
+                logger.info(f"End date: {config.end_date}")
+            except ValueError as e:
+                logger.error(f"Invalid --end-date: {e}. Use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
+                sys.exit(1)
+        
+        # Warn if both recent and explicit dates are provided
+        if args.recent and (args.start_date or args.end_date):
+            logger.warning("Both --recent and explicit date range provided. --recent takes precedence.")
+        
+        # Apply verbose flag
+        config.verbose = args.verbose
+        
         analyzer = CorrelationAnalyzer(config)
         
         # Print warnings
@@ -1048,26 +1283,58 @@ def main():
             report = analyzer.analyze_specific_pair(config.leader, config.follower)
             
             if report:
-                print("\n" + "="*70)
-                print(f"CORRELATION REPORT: {report.leader_symbol} → {report.follower_symbol}")
-                print("="*70)
-                print(f"Data Range: {report.data_range_start} to {report.data_range_end}")
-                print(f"Total Samples: {report.total_samples}")
-                print("-"*70)
-                print(f"Optimal Lag: {report.optimal_lag_seconds} seconds")
-                print(f"Correlation at Optimal Lag: {report.correlation_at_optimal_lag:.4f}")
-                print(f"Correlation at Zero Lag: {report.correlation_at_zero_lag:.4f}")
-                print("-"*70)
-                print(f"Granger Causality p-value: {report.granger_causality_pvalue:.4f}")
-                print(f"Granger Significant: {'Yes' if report.granger_causality_significant else 'No'}")
-                print("-"*70)
-                print(f"Confidence Score: {report.confidence_score:.4f}")
-                print(f"Confidence Level: {report.confidence_level.upper()}")
-                print(f"Stability: {report.correlation_stability:.4f} ({'Stable' if report.stable_relationship else 'Unstable'})")
-                print("-"*70)
-                print(f"Signal Strength: {report.trading_signal_strength.upper()}")
-                print(f"Recommendation: {report.recommendation}")
-                print("="*70 + "\n")
+                print("\n" + "="*80)
+                print(f"                    ANALYSIS SUMMARY REPORT")
+                print("="*80)
+                print(f"\nPair: {report.leader_symbol} → {report.follower_symbol}")
+                print("-"*80)
+                
+                # Print detailed test results
+                for i, test in enumerate(report.test_results, 1):
+                    status = "PASS ✓" if test.passed else "FAIL ✗"
+                    print(f"\n  TEST {i}: {test.test_name}")
+                    
+                    # Print metrics based on test type
+                    if test.test_name == "Data Validation":
+                        print(f"  ├─ Leader samples:    {test.metrics['leader_samples']}")
+                        print(f"  ├─ Follower samples:  {test.metrics['follower_samples']}")
+                        print(f"  ├─ Minimum required:  {test.metrics['minimum_required']}")
+                    elif test.test_name == "Cross-Correlation Analysis":
+                        print(f"  ├─ Lag range tested:  {test.metrics['lag_range_periods'][0]} to {test.metrics['lag_range_periods'][1]} periods")
+                        print(f"  ├─ Correlation at lag=0:      {test.metrics['correlation_at_zero']:.4f}")
+                        print(f"  ├─ Correlation at optimal:    {test.metrics['correlation_at_optimal']:.4f} (at lag={test.metrics['optimal_lag_periods']}, {test.metrics['optimal_lag_seconds']}s)")
+                        print(f"  ├─ Improvement over zero-lag: {test.metrics['improvement_over_zero']:+.4f} ({test.metrics['improvement_pct']:.1f}%)")
+                    elif test.test_name == "Granger Causality":
+                        print(f"  ├─ Test type:         {test.metrics['test_type']}")
+                        print(f"  ├─ P-value:           {test.metrics['p_value']:.4f}")
+                        print(f"  ├─ Significance threshold: {test.metrics['significance_threshold']}")
+                    elif test.test_name == "Rolling Correlation Stability":
+                        print(f"  ├─ Window size:       {test.metrics['window_size']} periods")
+                        print(f"  ├─ Mean correlation:  {test.metrics['mean_correlation']:.4f}")
+                        print(f"  ├─ Std deviation:     {test.metrics['std_deviation']:.4f}")
+                        print(f"  ├─ Stability score:   {test.metrics['stability_score']:.4f}")
+                        print(f"  ├─ Stability threshold: {test.metrics['stability_threshold']}")
+                    elif test.test_name == "Confidence Score Calculation":
+                        print(f"  ├─ Factor breakdown:")
+                        factors = test.metrics['factors']
+                        for fname, fdata in factors.items():
+                            print(f"  │   ├─ {fname}: {fdata['value']:.4f} × {fdata['weight']:.2f} = {fdata['contribution']:.4f}")
+                        print(f"  ├─ Total confidence score: {test.metrics['total_score']:.4f}")
+                        print(f"  ├─ Confidence level: {test.metrics['confidence_level'].upper()}")
+                    
+                    print(f"  └─ RESULT: {status}")
+                    print(f"     Reason: {test.reason}")
+                
+                # Final conclusion
+                print("\n" + "-"*80)
+                print(f"  FINAL CONCLUSION: {report.leader_symbol} is a {report.trading_signal_strength.upper()} leading indicator for {report.follower_symbol}")
+                print(f"  ├─ Optimal lag: {report.optimal_lag_seconds} seconds")
+                print(f"  ├─ Correlation: {report.correlation_at_optimal_lag:.4f}")
+                print(f"  ├─ Confidence: {report.confidence_score:.4f} ({report.confidence_level})")
+                if report.caveats:
+                    print(f"  ├─ Caveats: {', '.join(report.caveats)}")
+                print(f"  └─ Recommendation: {report.recommendation}")
+                print("="*80 + "\n")
                 
                 if config.output_report:
                     with open(config.output_report, 'w') as f:
@@ -1094,14 +1361,119 @@ def main():
                 if report.significant_pairs:
                     print(f"\nSIGNIFICANT PAIRS (confidence >= {config.min_confidence}):\n")
                     for pair in report.significant_pairs:
-                        print(f"  {pair['leader']} → {pair['follower']}")
-                        print(f"    Lag: {pair['optimal_lag_seconds']}s, Corr: {pair['correlation']:.3f}, "
-                              f"Conf: {pair['confidence']:.3f}")
-                        print(f"    Granger Significant: {'Yes' if pair['granger_significant'] else 'No'}")
-                        print(f"    {pair['recommendation']}")
+                        print("-"*80)
+                        print(f"\nPair: {pair['leader']} → {pair['follower']}")
+                        print("-"*80)
+                        
+                        # Print detailed test results if available
+                        if 'test_results' in pair and pair['test_results']:
+                            for i, test in enumerate(pair['test_results'], 1):
+                                status = "PASS ✓" if test.passed else "FAIL ✗"
+                                print(f"\n  TEST {i}: {test.test_name}")
+                                
+                                if test.test_name == "Data Validation":
+                                    print(f"  ├─ Leader samples:    {test.metrics['leader_samples']}")
+                                    print(f"  ├─ Follower samples:  {test.metrics['follower_samples']}")
+                                    print(f"  ├─ Minimum required:  {test.metrics['minimum_required']}")
+                                elif test.test_name == "Cross-Correlation Analysis":
+                                    print(f"  ├─ Lag range tested:  {test.metrics['lag_range_periods'][0]} to {test.metrics['lag_range_periods'][1]} periods")
+                                    print(f"  ├─ Correlation at lag=0:      {test.metrics['correlation_at_zero']:.4f}")
+                                    print(f"  ├─ Correlation at optimal:    {test.metrics['correlation_at_optimal']:.4f} (at lag={test.metrics['optimal_lag_periods']}, {test.metrics['optimal_lag_seconds']}s)")
+                                    print(f"  ├─ Improvement over zero-lag: {test.metrics['improvement_over_zero']:+.4f} ({test.metrics['improvement_pct']:.1f}%)")
+                                elif test.test_name == "Granger Causality":
+                                    print(f"  ├─ Test type:         {test.metrics['test_type']}")
+                                    print(f"  ├─ P-value:           {test.metrics['p_value']:.4f}")
+                                    print(f"  ├─ Significance threshold: {test.metrics['significance_threshold']}")
+                                elif test.test_name == "Rolling Correlation Stability":
+                                    print(f"  ├─ Window size:       {test.metrics['window_size']} periods")
+                                    print(f"  ├─ Mean correlation:  {test.metrics['mean_correlation']:.4f}")
+                                    print(f"  ├─ Std deviation:     {test.metrics['std_deviation']:.4f}")
+                                    print(f"  ├─ Stability score:   {test.metrics['stability_score']:.4f}")
+                                    print(f"  ├─ Stability threshold: {test.metrics['stability_threshold']}")
+                                elif test.test_name == "Confidence Score Calculation":
+                                    print(f"  ├─ Factor breakdown:")
+                                    factors = test.metrics['factors']
+                                    for fname, fdata in factors.items():
+                                        print(f"  │   ├─ {fname}: {fdata['value']:.4f} × {fdata['weight']:.2f} = {fdata['contribution']:.4f}")
+                                    print(f"  ├─ Total confidence score: {test.metrics['total_score']:.4f}")
+                                    print(f"  ├─ Confidence level: {test.metrics['confidence_level'].upper()}")
+                                
+                                print(f"  └─ RESULT: {status}")
+                                print(f"     Reason: {test.reason}")
+                        
+                        # Final conclusion for this pair
+                        print("\n" + "-"*40)
+                        strength = "STRONG" if pair['confidence'] >= 0.7 else "MODERATE" if pair['confidence'] >= 0.5 else "WEAK"
+                        print(f"  CONCLUSION: {pair['leader']} is a {strength} leading indicator for {pair['follower']}")
+                        print(f"  ├─ Optimal lag: {pair['optimal_lag_seconds']} seconds")
+                        print(f"  ├─ Correlation: {pair['correlation']:.4f}")
+                        print(f"  ├─ Confidence: {pair['confidence']:.4f}")
+                        if pair.get('caveats'):
+                            print(f"  ├─ Caveats: {', '.join(pair['caveats'])}")
+                        print(f"  └─ {pair['recommendation']}")
                         print()
                 else:
                     print("\nNo significant leading indicator pairs found.")
+                
+                # Verbose mode: show all pairs including non-significant ones
+                if config.verbose and report.no_significant_relationship:
+                    print("\n" + "="*80)
+                    print("                    ALL PAIRS (VERBOSE MODE)")
+                    print("="*80)
+                    
+                    for pair in report.no_significant_relationship:
+                        print("-"*80)
+                        print(f"\nPair: {pair['leader']} → {pair['follower']}")
+                        print(f"Status: {pair.get('reason', 'Unknown')}")
+                        print("-"*80)
+                        
+                        # Print detailed test results if available
+                        if pair.get('test_results'):
+                            for i, test in enumerate(pair['test_results'], 1):
+                                status = "PASS ✓" if test.passed else "FAIL ✗"
+                                print(f"\n  TEST {i}: {test.test_name}")
+                                
+                                if test.test_name == "Data Validation":
+                                    print(f"  ├─ Leader samples:    {test.metrics['leader_samples']}")
+                                    print(f"  ├─ Follower samples:  {test.metrics['follower_samples']}")
+                                    print(f"  ├─ Minimum required:  {test.metrics['minimum_required']}")
+                                elif test.test_name == "Cross-Correlation Analysis":
+                                    print(f"  ├─ Lag range tested:  {test.metrics['lag_range_periods'][0]} to {test.metrics['lag_range_periods'][1]} periods")
+                                    print(f"  ├─ Correlation at lag=0:      {test.metrics['correlation_at_zero']:.4f}")
+                                    print(f"  ├─ Correlation at optimal:    {test.metrics['correlation_at_optimal']:.4f} (at lag={test.metrics['optimal_lag_periods']}, {test.metrics['optimal_lag_seconds']}s)")
+                                    print(f"  ├─ Improvement over zero-lag: {test.metrics['improvement_over_zero']:+.4f} ({test.metrics['improvement_pct']:.1f}%)")
+                                elif test.test_name == "Granger Causality":
+                                    print(f"  ├─ Test type:         {test.metrics['test_type']}")
+                                    print(f"  ├─ P-value:           {test.metrics['p_value']:.4f}")
+                                    print(f"  ├─ Significance threshold: {test.metrics['significance_threshold']}")
+                                elif test.test_name == "Rolling Correlation Stability":
+                                    print(f"  ├─ Window size:       {test.metrics['window_size']} periods")
+                                    print(f"  ├─ Mean correlation:  {test.metrics['mean_correlation']:.4f}")
+                                    print(f"  ├─ Std deviation:     {test.metrics['std_deviation']:.4f}")
+                                    print(f"  ├─ Stability score:   {test.metrics['stability_score']:.4f}")
+                                    print(f"  ├─ Stability threshold: {test.metrics['stability_threshold']}")
+                                elif test.test_name == "Confidence Score Calculation":
+                                    print(f"  ├─ Factor breakdown:")
+                                    factors = test.metrics['factors']
+                                    for fname, fdata in factors.items():
+                                        print(f"  │   ├─ {fname}: {fdata['value']:.4f} × {fdata['weight']:.2f} = {fdata['contribution']:.4f}")
+                                    print(f"  ├─ Total confidence score: {test.metrics['total_score']:.4f}")
+                                    print(f"  ├─ Confidence level: {test.metrics['confidence_level'].upper()}")
+                                
+                                print(f"  └─ RESULT: {status}")
+                                print(f"     Reason: {test.reason}")
+                            
+                            # Final summary for this pair
+                            if pair.get('confidence') is not None:
+                                print("\n" + "-"*40)
+                                print(f"  SUMMARY: {pair['leader']} → {pair['follower']}")
+                                print(f"  ├─ Optimal lag: {pair.get('optimal_lag_seconds', 'N/A')} seconds")
+                                print(f"  ├─ Correlation: {pair.get('correlation', 0):.4f}")
+                                print(f"  ├─ Confidence: {pair.get('confidence', 0):.4f}")
+                                print(f"  └─ Result: Below threshold ({config.min_confidence})")
+                        else:
+                            print("  No test results available (insufficient data)")
+                        print()
                 
                 print("="*70 + "\n")
                 

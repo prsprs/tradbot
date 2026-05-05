@@ -287,9 +287,512 @@ python correlation_tracker.py \
     --follower SOL \
     --lag-range 0-300 \
     --data-dir ./correlation_data
+
+# Only analyze recent data (last 14 days)
+python correlation_tracker.py \
+    --analyze \
+    --recent 14days \
+    --data-dir ./correlation_data
+
+# Analyze specific date range
+python correlation_tracker.py \
+    --analyze \
+    --start-date 2026-04-21 \
+    --end-date 2026-05-05 \
+    --data-dir ./correlation_data
+
+# Combine recent filter with specific pair
+python correlation_tracker.py \
+    --analyze \
+    --leader BTC \
+    --follower ETH \
+    --recent 7days
 ```
 
+#### Date Filtering Options
+
+| Parameter | Format | Description |
+|-----------|--------|-------------|
+| `--recent` | Duration string | Only analyze data from the last N time period |
+| `--start-date` | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` | Start of date range (UTC) |
+| `--end-date` | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` | End of date range (UTC) |
+
+**Duration formats for `--recent`:**
+- `6hr` - last 6 hours
+- `48hr` - last 48 hours  
+- `7days` - last 7 days
+- `14days` - last 14 days
+
+**Precedence:** If both `--recent` and explicit date range are provided, `--recent` takes precedence.
+
 ### Analysis Techniques
+
+The analyzer applies multiple statistical techniques in a specific order to identify and validate leading indicator relationships. Each technique contributes to a composite confidence score.
+
+---
+
+### Detailed Analysis Methodology
+
+#### Order of Operations
+
+The analyzer processes each candidate pair through the following pipeline:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    LEADING INDICATOR DETECTION PIPELINE                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Step 1: DATA VALIDATION                                                    │
+│  ├─ Check minimum sample requirement (default: 500 samples)                 │
+│  ├─ Align time series by timestamp                                          │
+│  └─ If insufficient data → SKIP PAIR                                        │
+│                          ↓                                                  │
+│  Step 2: CROSS-CORRELATION ANALYSIS                                         │
+│  ├─ Calculate correlation at lags from -N to +N periods                     │
+│  ├─ Find optimal positive lag (leader leads follower)                       │
+│  └─ Record: optimal_lag, correlation_at_optimal, correlation_at_zero        │
+│                          ↓                                                  │
+│  Step 3: GRANGER CAUSALITY TEST                                             │
+│  ├─ Test if leader helps predict follower                                   │
+│  ├─ Threshold: p-value < 0.05 for significance                              │
+│  └─ Record: p-value, is_significant (boolean)                               │
+│                          ↓                                                  │
+│  Step 4: ROLLING CORRELATION STABILITY                                      │
+│  ├─ Calculate correlation in sliding windows (default: 120 periods)         │
+│  ├─ Compute standard deviation of rolling correlation                       │
+│  ├─ Stability score = 1 - std_dev                                           │
+│  └─ Threshold: stability > 0.7 for "stable relationship"                    │
+│                          ↓                                                  │
+│  Step 5: CONFIDENCE SCORE CALCULATION                                       │
+│  ├─ Weighted combination of all factors (see below)                         │
+│  ├─ Classify into confidence levels                                         │
+│  └─ Generate recommendation                                                 │
+│                          ↓                                                  │
+│  Step 6: FILTER BY MINIMUM CONFIDENCE                                       │
+│  ├─ Discovery mode: filter pairs by --min-confidence (default: 0.6)         │
+│  └─ Output significant pairs in ranked order                                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Step 1: Data Validation
+
+**Purpose:** Ensure sufficient data quality before analysis.
+
+| Check | Threshold | Action if Failed |
+|-------|-----------|------------------|
+| Minimum samples per coin | 500 (configurable via `--min-samples`) | Skip pair with warning |
+| Aligned sample count | ≥ 10 samples after timestamp alignment | Return no result |
+| Granger test minimum | 3× max_lag samples | Skip Granger test |
+
+---
+
+#### Step 2: Cross-Correlation Analysis
+
+**Purpose:** Find the time lag at which leader movements best predict follower movements.
+
+**Algorithm:**
+1. Convert raw prices to percentage returns: `returns = pct_change() × 100`
+2. Align leader and follower return series by timestamp (inner join)
+3. Normalize both series: `(x - mean) / std`
+4. For each lag from `-max_lag` to `+max_lag`:
+   - Positive lag: leader leads follower by N periods
+   - Negative lag: leader lags behind follower
+   - Zero lag: simultaneous movement
+5. Calculate Pearson correlation at each lag
+6. **Key output:** Find the **positive lag** with highest absolute correlation
+
+**Thresholds and Interpretation:**
+
+| Correlation (absolute) | Interpretation |
+|------------------------|----------------|
+| 0.0 - 0.3 | Weak/No relationship |
+| 0.3 - 0.5 | Moderate relationship |
+| 0.5 - 0.7 | Strong relationship |
+| 0.7 - 1.0 | Very strong relationship |
+
+**Lag Range Calculation:**
+- Default: `max_lag = lag_multiplier × 1` (10 periods at 30s = 5 minutes)
+- Or specified via `--lag-range` (e.g., `0-5min`, `1min-1hr`)
+
+---
+
+#### Step 3: Granger Causality Test
+
+**Purpose:** Statistically test whether past values of the leader help predict future values of the follower beyond what the follower's own past values predict.
+
+**Algorithm:**
+1. Use statsmodels `grangercausalitytests` function
+2. Test lags 1 through `max_lag` (default: 5)
+3. Use F-test (SSR F-test) for significance
+4. Take minimum p-value across all tested lags
+
+**Hypothesis:**
+- **Null hypothesis (H₀):** Leader does NOT Granger-cause follower
+- **Alternative (H₁):** Leader DOES Granger-cause follower
+
+**Thresholds:**
+
+| P-value | Interpretation | `granger_causality_significant` |
+|---------|----------------|--------------------------------|
+| p < 0.05 | Statistically significant | `True` |
+| p ≥ 0.05 | Not significant | `False` |
+
+**Important:** Granger causality ≠ true causation. It only indicates predictive relationship.
+
+---
+
+#### Step 4: Rolling Correlation Stability
+
+**Purpose:** Assess whether the correlation relationship is consistent over time or fluctuates.
+
+**Algorithm:**
+1. Calculate rolling correlation with window size (default: 120 periods = 1 hour at 30s)
+2. Compute standard deviation of the rolling correlation series
+3. **Stability score:** `1.0 - min(1.0, std_dev)`
+
+**Thresholds:**
+
+| Stability Score | Interpretation | `stable_relationship` |
+|-----------------|----------------|----------------------|
+| ≥ 0.7 | Stable - relationship is consistent | `True` |
+| < 0.7 | Unstable - relationship varies over time | `False` |
+
+**Why it matters:** A high correlation that fluctuates wildly is less reliable for trading signals.
+
+---
+
+#### Step 5: Confidence Score Calculation
+
+**Purpose:** Combine all factors into a single actionable score.
+
+**Formula:**
+
+```
+confidence_score = Σ (factor_i × weight_i)
+```
+
+| Factor | Weight | Calculation | Range |
+|--------|--------|-------------|-------|
+| **Correlation Strength** | 0.30 | `abs(correlation_at_optimal_lag)` | 0.0 - 1.0 |
+| **Statistical Significance** | 0.25 | `1.0 - granger_pvalue` | 0.0 - 1.0 |
+| **Relationship Stability** | 0.20 | `1.0 - std_dev(rolling_corr)` | 0.0 - 1.0 |
+| **Sample Adequacy** | 0.15 | `min(1.0, num_samples / 1000)` | 0.0 - 1.0 |
+| **Lag Consistency** | 0.10 | `abs(corr_optimal) - abs(corr_zero)` | 0.0 - 1.0 |
+
+**Weight Rationale:**
+
+| Factor | Rationale |
+|--------|-----------|
+| **Correlation Strength (30%)** | The core metric. Higher correlation means stronger predictive relationship. Given highest weight as it directly measures how much leader movement predicts follower movement. |
+| **Statistical Significance (25%)** | Granger causality tests whether the relationship is statistically real vs. coincidental. High weight because without significance, correlation could be spurious. |
+| **Relationship Stability (20%)** | A correlation that fluctuates wildly over time is unreliable for trading. Moderate weight because even strong correlations are useless if they're inconsistent. |
+| **Sample Adequacy (15%)** | More data = more reliable conclusions. Lower weight because it's a quality metric rather than a relationship metric. Saturates at 1000 samples. |
+| **Lag Consistency (10%)** | Measures if lagged correlation actually improves over zero-lag. Lowest weight because it's a secondary indicator - confirms the "leading" nature but doesn't measure strength. |
+
+**Design Philosophy:**
+- **Relationship quality > Data quality** - The top 3 factors (75% total) measure the relationship itself
+- **Statistical rigor matters** - Granger significance gets 25% to prevent false positives
+- **Stability = tradability** - An unstable correlation can't be reliably traded
+- **Diminishing returns on data** - More data helps but caps out (1000 samples is sufficient)
+- **Lag improvement is confirmatory** - It validates the "leading" hypothesis but isn't the main signal
+
+**Signal Strength Classification:**
+
+| Confidence Score | Classification |
+|-----------------|----------------|
+| ≥ 0.70 | **STRONG** |
+| 0.50 - 0.69 | **MODERATE** |
+| < 0.50 | **WEAK** |
+
+**Confidence Levels:**
+
+| Score Range | Level | Actionable? | Recommendation |
+|-------------|-------|-------------|----------------|
+| 0.0 - 0.3 | `low` | No | No reliable relationship detected |
+| 0.3 - 0.5 | `medium` | With caution | Weak leading indicator, use with caution |
+| 0.5 - 0.7 | `high` | Yes | Moderate leading indicator |
+| 0.7 - 1.0 | `very_high` | Yes | Strong leading indicator |
+
+---
+
+#### Step 6: Discovery Mode Filtering
+
+**Purpose:** In discovery mode, filter to only significant pairs.
+
+**Default threshold:** `--min-confidence 0.6` (corresponds to "high" confidence level)
+
+**Output ranking:** Pairs sorted by confidence score (descending)
+
+---
+
+### Example: Complete Analysis Flow
+
+```
+Input: Analyze BTC → ETH with 1000 samples at 30s intervals
+
+Step 1: Data Validation
+  ├─ BTC samples: 1000 ✓
+  ├─ ETH samples: 1000 ✓
+  └─ Aligned samples: 985 ✓
+
+Step 2: Cross-Correlation
+  ├─ Test lags: -10 to +10 periods
+  ├─ Optimal positive lag: +1 period (30 seconds)
+  ├─ Correlation at lag=+1: 0.72
+  └─ Correlation at lag=0: 0.65
+
+Step 3: Granger Causality
+  ├─ F-test p-value: 0.003
+  └─ Significant: YES (p < 0.05)
+
+Step 4: Rolling Stability
+  ├─ Window: 120 periods
+  ├─ Std dev of rolling corr: 0.15
+  └─ Stability score: 0.85 (stable)
+
+Step 5: Confidence Score
+  ├─ Correlation strength:     0.72 × 0.30 = 0.216
+  ├─ Statistical significance: 0.997 × 0.25 = 0.249
+  ├─ Relationship stability:   0.85 × 0.20 = 0.170
+  ├─ Sample adequacy:          0.985 × 0.15 = 0.148
+  ├─ Lag consistency:          0.07 × 0.10 = 0.007
+  └─ TOTAL: 0.79 (very_high)
+
+Result: BTC is a STRONG leading indicator for ETH
+        Optimal lag: 30 seconds
+        Confidence: 0.79 (very_high)
+```
+
+---
+
+### Per-Test Statistics and Reasoning Report
+
+At the end of each analysis run, the system should output a detailed breakdown showing the statistics and reasoning for each test applied to each pair. This provides transparency into why a pair was classified as a leading indicator or not.
+
+#### Console Output Format
+
+```
+================================================================================
+                         ANALYSIS SUMMARY REPORT
+================================================================================
+
+Pair: BTC → ETH
+--------------------------------------------------------------------------------
+
+  TEST 1: Data Validation
+  ├─ Leader samples:    1000
+  ├─ Follower samples:  1000
+  ├─ Aligned samples:   985
+  ├─ Minimum required:  500
+  └─ RESULT: PASS ✓
+
+  TEST 2: Cross-Correlation Analysis
+  ├─ Lag range tested:  -10 to +10 periods (-300s to +300s)
+  ├─ Correlation at lag=0:      0.65
+  ├─ Correlation at optimal:    0.72 (at lag=+1, 30s)
+  ├─ Improvement over zero-lag: +0.07 (10.8%)
+  └─ RESULT: POSITIVE LAG CORRELATION FOUND ✓
+     Reason: Optimal correlation occurs at positive lag, indicating leader precedes follower
+
+  TEST 3: Granger Causality
+  ├─ Test type:         F-test (SSR)
+  ├─ Lags tested:       1-5
+  ├─ Minimum p-value:   0.003 (at lag=2)
+  ├─ Significance threshold: 0.05
+  └─ RESULT: STATISTICALLY SIGNIFICANT ✓
+     Reason: p=0.003 < 0.05, reject null hypothesis that leader does not predict follower
+
+  TEST 4: Rolling Correlation Stability
+  ├─ Window size:       120 periods (1 hour)
+  ├─ Mean correlation:  0.68
+  ├─ Std deviation:     0.15
+  ├─ Stability score:   0.85
+  ├─ Stability threshold: 0.70
+  └─ RESULT: STABLE RELATIONSHIP ✓
+     Reason: Stability score 0.85 > 0.70 threshold, correlation is consistent over time
+
+  TEST 5: Confidence Score Calculation
+  ├─ Factor breakdown:
+  │   ├─ Correlation strength:     0.72 × 0.30 = 0.216
+  │   ├─ Statistical significance: 0.997 × 0.25 = 0.249
+  │   ├─ Relationship stability:   0.85 × 0.20 = 0.170
+  │   ├─ Sample adequacy:          0.985 × 0.15 = 0.148
+  │   └─ Lag consistency:          0.07 × 0.10 = 0.007
+  ├─ Total confidence score: 0.79
+  ├─ Confidence level: VERY_HIGH (0.7-1.0)
+  └─ RESULT: HIGH CONFIDENCE LEADING INDICATOR ✓
+     Reason: Score 0.79 exceeds 0.70 threshold for very_high confidence
+
+  FINAL CONCLUSION: BTC is a STRONG leading indicator for ETH
+  ├─ Optimal lag: 30 seconds
+  ├─ Expected behavior: When BTC moves, ETH follows ~30s later with 0.72 correlation
+  └─ Trading signal strength: STRONG
+
+--------------------------------------------------------------------------------
+
+Pair: SOL → TAO
+--------------------------------------------------------------------------------
+
+  TEST 1: Data Validation
+  ├─ Leader samples:    1000
+  ├─ Follower samples:  1000
+  ├─ Aligned samples:   950
+  ├─ Minimum required:  500
+  └─ RESULT: PASS ✓
+
+  TEST 2: Cross-Correlation Analysis
+  ├─ Lag range tested:  -10 to +10 periods
+  ├─ Correlation at lag=0:      0.25
+  ├─ Correlation at optimal:    0.28 (at lag=+3, 90s)
+  ├─ Improvement over zero-lag: +0.03 (12%)
+  └─ RESULT: WEAK CORRELATION ⚠
+     Reason: Optimal correlation 0.28 is below 0.30 threshold for meaningful relationship
+
+  TEST 3: Granger Causality
+  ├─ Test type:         F-test (SSR)
+  ├─ Lags tested:       1-5
+  ├─ Minimum p-value:   0.42 (at lag=3)
+  ├─ Significance threshold: 0.05
+  └─ RESULT: NOT SIGNIFICANT ✗
+     Reason: p=0.42 > 0.05, cannot reject null hypothesis
+
+  TEST 4: Rolling Correlation Stability
+  ├─ Window size:       120 periods
+  ├─ Mean correlation:  0.22
+  ├─ Std deviation:     0.35
+  ├─ Stability score:   0.65
+  ├─ Stability threshold: 0.70
+  └─ RESULT: UNSTABLE RELATIONSHIP ✗
+     Reason: Stability score 0.65 < 0.70 threshold, correlation varies significantly over time
+
+  TEST 5: Confidence Score Calculation
+  ├─ Factor breakdown:
+  │   ├─ Correlation strength:     0.28 × 0.30 = 0.084
+  │   ├─ Statistical significance: 0.58 × 0.25 = 0.145
+  │   ├─ Relationship stability:   0.65 × 0.20 = 0.130
+  │   ├─ Sample adequacy:          0.95 × 0.15 = 0.143
+  │   └─ Lag consistency:          0.03 × 0.10 = 0.003
+  ├─ Total confidence score: 0.51
+  ├─ Confidence level: HIGH (0.5-0.7)
+  └─ RESULT: MARGINAL - USE WITH CAUTION ⚠
+     Reason: Score 0.51 is above minimum but multiple tests showed weak results
+
+  FINAL CONCLUSION: SOL is a WEAK leading indicator for TAO
+  ├─ Optimal lag: 90 seconds
+  ├─ Issues: Low correlation, Granger test failed, unstable relationship
+  └─ Trading signal strength: WEAK - USE WITH CAUTION
+
+================================================================================
+                              SUMMARY
+================================================================================
+
+Total pairs analyzed: 6
+├─ Strong indicators (confidence ≥ 0.7):   1  (BTC → ETH)
+├─ Moderate indicators (0.5-0.7):          2  (ETH → SOL, BTC → TAO)
+├─ Weak indicators (0.3-0.5):              1  (SOL → TAO)
+└─ No relationship (<0.3):                 2  (TAO → BTC, SOL → ETH)
+
+Tests failed breakdown:
+├─ Cross-correlation weak:    2 pairs
+├─ Granger not significant:   3 pairs
+└─ Unstable relationship:     2 pairs
+
+================================================================================
+```
+
+#### JSON Report Format
+
+The detailed per-test statistics should also be included in the JSON output report:
+
+```json
+{
+  "pair_analysis": {
+    "leader": "BTC",
+    "follower": "ETH",
+    "tests": {
+      "data_validation": {
+        "passed": true,
+        "leader_samples": 1000,
+        "follower_samples": 1000,
+        "aligned_samples": 985,
+        "minimum_required": 500,
+        "reason": "Sufficient samples available"
+      },
+      "cross_correlation": {
+        "passed": true,
+        "lag_range_periods": [-10, 10],
+        "correlation_at_zero": 0.65,
+        "correlation_at_optimal": 0.72,
+        "optimal_lag_periods": 1,
+        "optimal_lag_seconds": 30,
+        "improvement_over_zero": 0.07,
+        "reason": "Positive lag correlation found, leader precedes follower by 30s"
+      },
+      "granger_causality": {
+        "passed": true,
+        "test_type": "ssr_ftest",
+        "lags_tested": [1, 2, 3, 4, 5],
+        "p_values": {"1": 0.012, "2": 0.003, "3": 0.008, "4": 0.015, "5": 0.021},
+        "min_p_value": 0.003,
+        "min_p_value_lag": 2,
+        "significance_threshold": 0.05,
+        "reason": "p=0.003 < 0.05, statistically significant predictive relationship"
+      },
+      "rolling_stability": {
+        "passed": true,
+        "window_size": 120,
+        "mean_correlation": 0.68,
+        "std_deviation": 0.15,
+        "stability_score": 0.85,
+        "stability_threshold": 0.70,
+        "reason": "Correlation is consistent over time (stability 0.85 > 0.70)"
+      },
+      "confidence_calculation": {
+        "factors": {
+          "correlation_strength": {"value": 0.72, "weight": 0.30, "contribution": 0.216},
+          "statistical_significance": {"value": 0.997, "weight": 0.25, "contribution": 0.249},
+          "relationship_stability": {"value": 0.85, "weight": 0.20, "contribution": 0.170},
+          "sample_adequacy": {"value": 0.985, "weight": 0.15, "contribution": 0.148},
+          "lag_consistency": {"value": 0.07, "weight": 0.10, "contribution": 0.007}
+        },
+        "total_score": 0.79,
+        "confidence_level": "very_high",
+        "reason": "All factors contribute positively, score 0.79 indicates strong reliability"
+      }
+    },
+    "conclusion": {
+      "is_leading_indicator": true,
+      "strength": "strong",
+      "optimal_lag_seconds": 30,
+      "correlation": 0.72,
+      "confidence": 0.79,
+      "recommendation": "Strong leading indicator - BTC movements predict ETH ~30s later",
+      "caveats": []
+    }
+  }
+}
+```
+
+#### Failure Reason Codes
+
+When a test fails or a pair is rejected, include specific reason codes:
+
+| Code | Reason | Description |
+|------|--------|-------------|
+| `INSUFFICIENT_SAMPLES` | Data validation failed | Not enough samples for analysis |
+| `WEAK_CORRELATION` | Cross-correlation < 0.3 | No meaningful correlation at any lag |
+| `NO_POSITIVE_LAG` | Best correlation at lag ≤ 0 | Leader doesn't precede follower |
+| `GRANGER_NOT_SIGNIFICANT` | p-value ≥ 0.05 | No statistical evidence of prediction |
+| `UNSTABLE_RELATIONSHIP` | Stability < 0.70 | Correlation varies too much over time |
+| `LOW_CONFIDENCE` | Score < min_confidence | Combined factors too weak |
+| `REVERSE_CAUSALITY` | Follower leads leader | Wrong direction detected |
+
+---
+
+### Individual Technique Details
 
 #### 1. Cross-Correlation Analysis
 
