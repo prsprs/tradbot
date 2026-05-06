@@ -540,8 +540,8 @@ When a pair fails analysis, one of these codes is assigned:
 |------|-------------|
 | `INSUFFICIENT_SAMPLES` | Not enough data points for analysis |
 | `WEAK_CORRELATION` | Correlation < 0.3 at all lags |
-| `NO_POSITIVE_LAG` | Best correlation at zero or negative lag |
 | `GRANGER_NOT_SIGNIFICANT` | p-value ≥ 0.05, no predictive relationship |
 | `UNSTABLE_RELATIONSHIP` | Correlation varies too much over time |
 | `LOW_CONFIDENCE` | Combined confidence score below threshold |
-| `REVERSE_CAUSALITY` | Follower actually leads leader |
+
+**Note:** If the optimal correlation is at a negative lag (the specified "follower" actually leads), the analyzer automatically swaps roles and reports the correct direction with "Roles swapped" in the caveats.

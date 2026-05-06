@@ -784,11 +784,11 @@ When a test fails or a pair is rejected, include specific reason codes:
 |------|--------|-------------|
 | `INSUFFICIENT_SAMPLES` | Data validation failed | Not enough samples for analysis |
 | `WEAK_CORRELATION` | Cross-correlation < 0.3 | No meaningful correlation at any lag |
-| `NO_POSITIVE_LAG` | Best correlation at lag ≤ 0 | Leader doesn't precede follower |
 | `GRANGER_NOT_SIGNIFICANT` | p-value ≥ 0.05 | No statistical evidence of prediction |
 | `UNSTABLE_RELATIONSHIP` | Stability < 0.70 | Correlation varies too much over time |
 | `LOW_CONFIDENCE` | Score < min_confidence | Combined factors too weak |
-| `REVERSE_CAUSALITY` | Follower leads leader | Wrong direction detected |
+
+**Note:** If the optimal correlation is at a negative lag (meaning the specified "follower" actually leads the "leader"), the analyzer automatically swaps the roles and reports the correct direction. This is indicated in the output with "Roles swapped" in the caveats.
 
 ---
 

@@ -754,39 +754,46 @@ class CorrelationAnalyzer:
         if len(correlations) == 0:
             return None
         
-        # Find optimal lag (positive lag = leader leads)
-        positive_lag_mask = lags > 0
-        if not any(positive_lag_mask):
+        # Find optimal lag across ALL lags (both positive and negative)
+        # Exclude zero lag from optimal search
+        nonzero_mask = lags != 0
+        nonzero_lags = lags[nonzero_mask]
+        nonzero_correlations = correlations[nonzero_mask]
+        
+        if len(nonzero_correlations) == 0:
             return None
         
-        positive_correlations = correlations[positive_lag_mask]
-        positive_lags = lags[positive_lag_mask]
-        
-        optimal_idx = np.argmax(np.abs(positive_correlations))
-        optimal_lag = int(positive_lags[optimal_idx])
-        correlation_at_optimal = float(positive_correlations[optimal_idx])
+        optimal_idx = np.argmax(np.abs(nonzero_correlations))
+        optimal_lag = int(nonzero_lags[optimal_idx])
+        correlation_at_optimal = float(nonzero_correlations[optimal_idx])
         
         # Correlation at zero lag
         zero_lag_idx = np.where(lags == 0)[0]
         correlation_at_zero = float(correlations[zero_lag_idx[0]]) if len(zero_lag_idx) > 0 else 0.0
         
+        # Check if roles should be swapped (negative lag = follower actually leads)
+        roles_swapped = optimal_lag < 0
+        if roles_swapped:
+            # Swap roles: the "follower" is actually the leader
+            leader, follower = follower, leader
+            leader_returns, follower_returns = follower_returns, leader_returns
+            optimal_lag = abs(optimal_lag)  # Convert to positive
+            caveats.append(f"Roles swapped: {leader} leads {follower}")
+        
         improvement = abs(correlation_at_optimal) - abs(correlation_at_zero)
         improvement_pct = (improvement / abs(correlation_at_zero) * 100) if correlation_at_zero != 0 else 0
         
         corr_passed = abs(correlation_at_optimal) >= 0.3
-        positive_lag_found = optimal_lag > 0
         
         if not corr_passed:
             caveats.append("Weak correlation")
-        if not positive_lag_found:
-            caveats.append("No positive lag found")
         
-        corr_reason = "Positive lag correlation found, leader precedes follower" if (corr_passed and positive_lag_found) else \
-                      "Weak correlation" if not corr_passed else "Best correlation at zero or negative lag"
+        corr_reason = f"{'Roles swapped - ' if roles_swapped else ''}Leader precedes follower by {optimal_lag} periods" if corr_passed else \
+                      "Weak correlation at all lags"
         
         test_results.append(TestResult(
             test_name="Cross-Correlation Analysis",
-            passed=corr_passed and positive_lag_found,
+            passed=corr_passed,
             metrics={
                 'lag_range_periods': [-max_lag_periods, max_lag_periods],
                 'lag_range_seconds': [-max_lag_periods * interval_seconds, max_lag_periods * interval_seconds],
@@ -795,10 +802,11 @@ class CorrelationAnalyzer:
                 'optimal_lag_periods': optimal_lag,
                 'optimal_lag_seconds': optimal_lag * interval_seconds,
                 'improvement_over_zero': round(improvement, 4),
-                'improvement_pct': round(improvement_pct, 1)
+                'improvement_pct': round(improvement_pct, 1),
+                'roles_swapped': roles_swapped
             },
             reason=corr_reason,
-            reason_code=None if (corr_passed and positive_lag_found) else ("WEAK_CORRELATION" if not corr_passed else "NO_POSITIVE_LAG")
+            reason_code=None if corr_passed else "WEAK_CORRELATION"
         ))
         
         # TEST 3: Granger causality test
@@ -1003,7 +1011,8 @@ class CorrelationAnalyzer:
                     'test_results': report.test_results,
                     'caveats': report.caveats,
                     'stability': report.correlation_stability,
-                    'stable_relationship': report.stable_relationship
+                    'stable_relationship': report.stable_relationship,
+                    'data_range_end': report.data_range_end
                 }
                 
                 if report.confidence_score >= self.config.min_confidence:
@@ -1327,9 +1336,10 @@ def main():
                 
                 # Final conclusion
                 print("\n" + "-"*80)
-                print(f"  FINAL CONCLUSION: {report.leader_symbol} is a {report.trading_signal_strength.upper()} leading indicator for {report.follower_symbol}")
+                direction = "POSITIVE" if report.correlation_at_optimal_lag >= 0 else "NEGATIVE"
+                print(f"  FINAL CONCLUSION: {report.leader_symbol} is a {report.trading_signal_strength.upper()} {direction} leading indicator for {report.follower_symbol}")
                 print(f"  ├─ Optimal lag: {report.optimal_lag_seconds} seconds")
-                print(f"  ├─ Correlation: {report.correlation_at_optimal_lag:.4f}")
+                print(f"  ├─ Correlation: {report.correlation_at_optimal_lag:.4f} ({direction.lower()}: {'both rise/fall together' if direction == 'POSITIVE' else 'inverse relationship'})")
                 print(f"  ├─ Confidence: {report.confidence_score:.4f} ({report.confidence_level})")
                 if report.caveats:
                     print(f"  ├─ Caveats: {', '.join(report.caveats)}")
@@ -1404,9 +1414,10 @@ def main():
                         # Final conclusion for this pair
                         print("\n" + "-"*40)
                         strength = "STRONG" if pair['confidence'] >= 0.7 else "MODERATE" if pair['confidence'] >= 0.5 else "WEAK"
-                        print(f"  CONCLUSION: {pair['leader']} is a {strength} leading indicator for {pair['follower']}")
+                        direction = "POSITIVE" if pair['correlation'] >= 0 else "NEGATIVE"
+                        print(f"  CONCLUSION: {pair['leader']} is a {strength} {direction} leading indicator for {pair['follower']}")
                         print(f"  ├─ Optimal lag: {pair['optimal_lag_seconds']} seconds")
-                        print(f"  ├─ Correlation: {pair['correlation']:.4f}")
+                        print(f"  ├─ Correlation: {pair['correlation']:.4f} ({direction.lower()}: {'both rise/fall together' if direction == 'POSITIVE' else 'inverse relationship'})")
                         print(f"  ├─ Confidence: {pair['confidence']:.4f}")
                         if pair.get('caveats'):
                             print(f"  ├─ Caveats: {', '.join(pair['caveats'])}")
@@ -1466,9 +1477,11 @@ def main():
                             # Final summary for this pair
                             if pair.get('confidence') is not None:
                                 print("\n" + "-"*40)
-                                print(f"  SUMMARY: {pair['leader']} → {pair['follower']}")
+                                corr_val = pair.get('correlation', 0)
+                                direction = "POSITIVE" if corr_val >= 0 else "NEGATIVE"
+                                print(f"  SUMMARY: {pair['leader']} → {pair['follower']} ({direction})")
                                 print(f"  ├─ Optimal lag: {pair.get('optimal_lag_seconds', 'N/A')} seconds")
-                                print(f"  ├─ Correlation: {pair.get('correlation', 0):.4f}")
+                                print(f"  ├─ Correlation: {corr_val:.4f} ({direction.lower()}: {'both rise/fall together' if direction == 'POSITIVE' else 'inverse relationship'})")
                                 print(f"  ├─ Confidence: {pair.get('confidence', 0):.4f}")
                                 print(f"  └─ Result: Below threshold ({config.min_confidence})")
                         else:
