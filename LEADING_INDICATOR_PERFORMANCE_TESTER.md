@@ -596,6 +596,75 @@ The reporting format captures per-trade accuracy, enabling post-run analysis:
 
 ---
 
+## Implementation Details
+
+### I1: Discovery Report Path
+
+**Decision:** Use `./correlation_data/discovery_report.json` as default.
+
+User can override with `--report path/to/report.json`.
+
+### I2: Price API Integration
+
+**Status: RESOLVED**
+
+Use `coingeckoutil.py` for price fetching:
+
+```python
+from coingeckoutil import get_coingecko_price
+
+# Get single price
+price = get_coingecko_price("BTC")  # Returns float (e.g., 67000.0) or None
+
+# For multiple coins (more efficient, single API call)
+from coingeckoutil import get_multiple_prices
+prices = get_multiple_prices(["BTC", "ETH"])  # Returns {"BTC": 67000.0, "ETH": 2450.0}
+```
+
+**Key constraints:**
+- Built-in rate limiting: 6 seconds between requests
+- Free tier: ~10 calls/minute, ~500 calls/day
+- Returns `None` on error (timeout, API failure, unknown symbol)
+- Symbol mapping automatic (BTC, ETH, SOL, TAO, WTAO, etc. already mapped)
+- Pro API available via `COINGECKO_API_KEY` env var
+
+**Error handling strategy:**
+- If price fetch returns `None`, log warning and skip this sample
+- Continue monitoring loop (don't crash on transient errors)
+- Track consecutive failures; abort if > 5 in a row (API likely down)
+
+### I3: Graceful Shutdown (Ctrl+C)
+
+**Decision:** Abort current cycle, save partial results.
+
+On SIGINT:
+1. Stop monitoring loop immediately
+2. Do not wait for pending trade execution
+3. Write all completed trades to output file
+4. Log "Tester interrupted, partial results saved"
+
+### I4: State Recovery After Crash
+
+**Decision:** Start fresh.
+
+No state persistence between runs. If tester crashes:
+- Previous run's output file is preserved (separate file per run or append)
+- New run starts from scratch
+- User can analyze partial results from crashed run separately
+
+### I5: Console Output
+
+**Decision:** Print only on trades.
+
+During normal operation:
+- Startup: Display configuration, API rate estimate, pair info
+- Each trade: Print trade details (leader move, action, prices)
+- Shutdown: Print summary (total trades, accuracy if measurable)
+
+Use `--verbose` for detailed output (every price check, timing info).
+
+---
+
 ## Dependencies
 
 - `coingeckoutil.py` - Price fetching
