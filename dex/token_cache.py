@@ -21,6 +21,9 @@ CACHE_DIR = os.environ.get('DEX_CACHE_DIR', './dex_cache/')
 TOKEN_CACHE_FILE = os.path.join(CACHE_DIR, 'jupiter_tokens.json')
 CACHE_MAX_AGE_HOURS = 24
 
+# Track if collision warning has been shown (to avoid spam)
+_collision_warning_shown = False
+
 # Jupiter API endpoints (v2 - requires API key)
 # Use /tag?query=verified to get all verified tokens
 JUPITER_TOKEN_LIST_URL = "https://api.jup.ag/tokens/v2/tag?query=verified"
@@ -207,10 +210,12 @@ def build_symbol_to_mint_map(tokens: List[Dict]) -> Dict[str, str]:
         if symbol and address and symbol_counts.get(symbol, 0) == 1:
             symbol_to_mint[symbol] = address
     
-    # Count collisions for logging
+    # Count collisions for logging (only show once per session)
+    global _collision_warning_shown
     collisions = sum(1 for count in symbol_counts.values() if count > 1)
-    if collisions > 0:
+    if collisions > 0 and not _collision_warning_shown:
         print(f"[JUPITER] Skipped {collisions} symbols with collisions")
+        _collision_warning_shown = True
     
     return symbol_to_mint
 
@@ -285,6 +290,8 @@ WELL_KNOWN_TOKENS = {
     "POPCAT": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
     "PEPE": "HRw4GCbxTZdCHEjpCfvE5kXxrRQ4FyEafjzYN7L12aqD",
     "FLOKI": "FLokitvNngGxrqA5tVp2MDPH2bqWUFMQ76LqCVwC2C1H",
+    # Wrapped TAO (Bittensor) on Solana - listed as TAO on Jupiter
+    "WTAO": "taoC6xyv2v8tDLcev4uaGUgV4vdQsWJrGft2kcBRrBY",
 }
 
 # Well-known token decimals (for price calculations)
@@ -297,6 +304,7 @@ WELL_KNOWN_DECIMALS = {
     "POPCAT": 9,
     "PEPE": 9,
     "FLOKI": 9,
+    "WTAO": 9,
 }
 
 

@@ -1,128 +1,157 @@
-# Crypto Trading Bot
+# Trading Bot Repository Guide
 
-An AI-powered cryptocurrency trading bot that uses multiple LLMs to analyze coins and make buy/sell/hold recommendations. Supports single-LLM mode or multi-LLM comparison and integration for higher-confidence trading signals.
+A comprehensive cryptocurrency trading system combining AI-powered analysis, multi-exchange support, correlation-based strategies, and arbitrage detection.
 
-## Features
+---
 
-- **Multi-LLM Support:** Gemini, Claude, OpenAI GPT-4o, Grok, and Perplexity
-- **Comparison Mode:** Get recommendations from multiple LLMs and only act on consensus
-- **Integration Mode:** LLMs review each other's analysis before making final recommendations
-- **Real-time Data:** Uses Google Search grounding and web search for current market information
-- **Google Trends:** Incorporates trend data into analysis
-- **History Tracking:** Records all recommendations for later accuracy analysis
-- **Performance Analytics:** Analyze historical recommendation accuracy by LLM and mode
+## Overview
+
+This repository contains multiple interconnected projects for cryptocurrency trading and analysis:
+
+- **AI-Powered Trading** - Multi-LLM consensus-based trading recommendations
+- **Correlation Analysis** - Discover leading indicator relationships between tokens
+- **Cross-Exchange Arbitrage** - Exploit price discrepancies across exchanges and chains
+- **Liquidity Pool Arbitrage** - Trade LP token premium/discount spreads
+- **DEX Integration** - Native Solana trading via Jupiter aggregator
+
+---
 
 ## Quick Start
 
-### Prerequisites
-
-1. Python 3.9+
-2. Coinbase Advanced Trade API credentials
-3. At least one LLM API key (Gemini recommended as primary)
-
-### Installation
-
 ```bash
-git clone https://github.com/YOUR_USERNAME/tradbot.git
-cd tradbot
-pip install google-genai anthropic openai pytrends pandas coinbase-advanced-py requests
+# Install dependencies
+pip install -r requirements_llm_compare.txt
+
+# Set API keys
+export GOOGLE_API_KEY=...     # Gemini
+export CLAUDE_API_KEY=...     # Claude
+export COINBASE_API_KEY=...   # Coinbase trading
+
+# Run main trading bot
+python geminigroundlin15.py --trading-mode whatif --llm-mode compare
 ```
 
-### Setup Credentials
+See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 
-1. **Coinbase:** Download API key JSON from https://cloud.coinbase.com/access/api and save as `cdp_api_key.json`
+---
 
-2. **LLM API Keys:** Set environment variables for the LLMs you want to use:
-   ```bash
-   export GOOGLE_API_KEY=...        # For Gemini
-   export CLAUDE_API_KEY=...        # For Claude
-   export OPENAI_API_KEY=...        # For OpenAI
-   export XAI_API_KEY=...           # For Grok
-   export PERPLEXITY_API_KEY=...    # For Perplexity
-   ```
+## Projects
 
-### Run the Trading Bot
+| Project | Description | Design Doc | Operations Manual | Status | Main Module | Comments |
+|---------|-------------|------------|-------------------|--------|-------------|----------|
+| **Crypto Trading Bot** | AI-powered trading using multi-LLM consensus | [CRYPTO_TRADING_BOT.md](CRYPTO_TRADING_BOT.md) | [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) | ✅ Implemented | `geminigroundlin15.py` | Core system - Gemini, Claude, OpenAI, Grok, Perplexity |
+| **LLM Compare** | Multi-LLM comparison and integration framework | [LLMCompareFeature.md](LLMCompareFeature.md) | [LLM_COMPARE_OPERATIONS_MANUAL.md](LLM_COMPARE_OPERATIONS_MANUAL.md) | ✅ Implemented | `llm_compare.py` | General-purpose LLM comparison tool |
+| **Correlation Tracker** | Intraday price collection and leading indicator discovery | [CORRELATION_HISTORY_TRACKER.md](CORRELATION_HISTORY_TRACKER.md) | [CORRELATION_HISTORY_OPERATIONS_MANUAL.md](CORRELATION_HISTORY_OPERATIONS_MANUAL.md) | ✅ Implemented | `correlation_tracker.py` | Collect mode + Analyze mode |
+| **Leading Indicator Tester** | Paper trading simulation for correlation pairs | [LEADING_INDICATOR_PERFORMANCE_TESTER.md](LEADING_INDICATOR_PERFORMANCE_TESTER.md) | — | ✅ Implemented | `leading_indicator_tester.py` | Cross-exchange arbitrage investigation |
+| **DEX Trading** | Solana DEX trading via Jupiter aggregator | [DEX_TRADING_FEATURE.md](DEX_TRADING_FEATURE.md) | — | ✅ Implemented | `dex/jupiterutil.py` | Wallet connect, token swaps, price API |
+| **Liquidity Pool Arbitrage** | JLP premium/discount arbitrage on Jupiter | [LIQUIDITY_POOL_FEATURE.md](LIQUIDITY_POOL_FEATURE.md) | [LIQUIDITY_POOL_OPERATIONS_MANUAL.md](LIQUIDITY_POOL_OPERATIONS_MANUAL.md) | ✅ Implemented | `lp_arbitrage.py` | Also supports HyperLiquid, Drift |
+| **Correlated Pair Trading** | Cross-exchange arbitrage for wrapped tokens | [CORRELATED_PAIR_FEATURE.md](CORRELATED_PAIR_FEATURE.md) | — | 📋 Design Only | — | TAO/WTAO, BTC/WBTC strategies |
+| **Flash Loan Arbitrage** | Atomic arbitrage using flash loans | [FLASH_LOAN_FEATURE.md](FLASH_LOAN_FEATURE.md) | — | 📋 Design Only | — | Zero-capital atomic trades |
+| **Meteora Arbitrage** | DLMM bin arbitrage on Meteora | [METEORA_ARBITRAGE_FEATURE.md](METEORA_ARBITRAGE_FEATURE.md) | — | 📋 Design Only | — | Solana concentrated liquidity |
 
-```bash
-# Single LLM mode (Gemini)
-export LLM_MODE=gemini
-python geminigroundlin15.py
+---
 
-# Compare mode (requires consensus)
-export LLM_MODE=compare
-export COMPARE_LLMS=gemini,claude
-python geminigroundlin15.py
+## Feature Enhancements
 
-# Analyze specific coins
-export ANALYZE_COINS=BTC,ETH,DOGE
-python geminigroundlin15.py
-```
+| Feature | Description | Design Doc | Status | Module | Comments |
+|---------|-------------|------------|--------|--------|----------|
+| **Coin Categorization** | Filter coins by category (meme, DeFi, AI) | [COIN_CATEGORIZATION_FEATURE.md](COIN_CATEGORIZATION_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Uses LunarCrush API |
+| **Coin Choice** | Analyze specific coins directly | [COIN_CHOICE_FEATURE.md](COIN_CHOICE_FEATURE.md) | ✅ Implemented | `geminigroundlin15.py` | `--coins` flag or `ANALYZE_COINS` env |
+| **Compare with Bitcoin** | Evaluate altcoin alpha vs BTC | [COMPARE_WITH_BITCOIN_FEATURE.md](COMPARE_WITH_BITCOIN_FEATURE.md) | 📋 Design Only | — | Risk-adjusted comparison |
+| **History Analysis** | Track and analyze recommendation accuracy | [HISTORY_ANALYSIS_FEATURE.md](HISTORY_ANALYSIS_FEATURE.md) | ✅ Implemented | `historyutil.py` | Performance metrics by LLM |
+| **LunarCrush Integration** | Social intelligence data for coins | [LUNAR_CRUSH_FEATURE.md](LUNAR_CRUSH_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Categories, blockchains, sentiment |
+| **Polymarket Integration** | Prediction market sentiment data | [POLYMARKET_FEATURE.md](POLYMARKET_FEATURE.md) | ✅ Implemented | `polymarketutil.py` | Market-validated coin selection |
+| **Stock Trading** | Extend bot to Coinbase stock trading | [STOCK_TRADING_FEATURE.md](STOCK_TRADING_FEATURE.md) | 📋 Design Only | — | US equities via Coinbase |
+| **Whale Alert** | Large transaction tracking | [WHALE_ALERT_INTEGRATION_FEATURE.md](WHALE_ALERT_INTEGRATION_FEATURE.md) | 📋 Design Only | — | Exchange inflow/outflow signals |
+| **What-If Mode** | Paper trading / simulation mode | [WHAT_IF_MODE_FEATURE.md](WHAT_IF_MODE_FEATURE.md) | ✅ Implemented | `geminigroundlin15.py` | `--trading-mode whatif` |
 
-### Run the Analyzer
+---
 
-Analyze the accuracy of past recommendations:
+## Internal Documentation
 
-```bash
-python tradeanalyzer.py
-```
+| Document | Purpose |
+|----------|---------|
+| [INSTRUCTIONS_FOR_IMPLEMENTATION.md](INSTRUCTIONS_FOR_IMPLEMENTATION.md) | Guidelines for implementing features |
+| [METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md](METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md) | CLI vs env var configuration patterns |
+| [PARSING_OPTIONS_FOR_VARIABLE_INPUT.md](PARSING_OPTIONS_FOR_VARIABLE_INPUT.md) | Handling variable LLM output formats |
+| [GENERAL_PURPOSE_LLM_COMPARE_AND_INTEGRATE_FEATURE.md](GENERAL_PURPOSE_LLM_COMPARE_AND_INTEGRATE_FEATURE.md) | Abstracted multi-LLM framework design |
 
-## Configuration
+---
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_MODE` | `compare` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, or `integrate` |
-| `PRIMARY_LLM` | `gemini` | LLM for coin discovery |
-| `COMPARE_LLMS` | `gemini,claude` | LLMs to use in compare/integrate modes |
-| `REQUIRE_CONSENSUS` | `true` | Only act when all LLMs agree |
-| `ANALYZE_COINS` | *(empty)* | Specific coins to analyze (max 5), or let LLM discover |
-
-## Programs
-
-| Program | Purpose |
-|---------|---------|
-| `geminigroundlin15.py` | Main trading bot |
-| `tradeanalyzer.py` | Analyze historical recommendation accuracy |
-
-## Project Structure
+## Directory Structure
 
 ```
+tradingbot/
 ├── geminigroundlin15.py      # Main trading bot
-├── tradeanalyzer.py          # Recommendation analyzer
-├── coinbaseutil2.py          # Coinbase trading client
-├── claudeutil.py             # Claude LLM client
-├── openaiutil.py             # OpenAI LLM client
-├── grokutil.py               # Grok LLM client
-├── perplexityutil.py         # Perplexity LLM client
-├── historyutil.py            # History recording utility
-├── coingeckoutil.py          # CoinGecko fallback pricing
-├── cdp_api_key.json          # Coinbase credentials (gitignored)
-├── OPERATIONS_MANUAL.md      # Detailed documentation
-└── history/
-    ├── recommendations.json  # Recommendation history
-    └── analysis_*.csv        # Analysis results
+├── llm_compare.py            # General-purpose LLM comparison
+├── correlation_tracker.py    # Price collection & correlation analysis
+├── leading_indicator_tester.py # Paper trading for correlation pairs
+├── lp_arbitrage.py           # Liquidity pool arbitrage
+├── lp_analyzer.py            # LP analysis utilities
+│
+├── dex/                      # DEX integration (Solana/Jupiter)
+│   ├── jupiterutil.py        # Jupiter API client
+│   ├── token_cache.py        # Token mint address cache
+│   ├── local_wallet.py       # Solana wallet management
+│   └── walletconnect.py      # WalletConnect integration
+│
+├── llm_utils/                # LLM client wrappers
+│   ├── claude_client.py
+│   ├── gemini_client.py
+│   ├── openai_client.py
+│   ├── grok_client.py
+│   └── perplexity_client.py
+│
+├── history/                  # Recommendation history tracking
+├── context/                  # Google Trends integration
+├── prompts/                  # LLM prompt templates
+├── correlation_data/         # Price history storage
+├── paper_trades/             # Paper trading logs
+└── lab/                      # Experimental scripts
 ```
 
-## APIs Used
+---
 
-| Service | Purpose | Auth |
-|---------|---------|------|
-| Google Gemini | Primary LLM with web search | `GOOGLE_API_KEY` |
-| Anthropic Claude | Secondary LLM | `CLAUDE_API_KEY` |
-| OpenAI | Secondary LLM | `OPENAI_API_KEY` |
-| xAI Grok | Secondary LLM with web search | `XAI_API_KEY` |
-| Perplexity | Secondary LLM with search | `PERPLEXITY_API_KEY` |
-| Coinbase | Trading & price data | `cdp_api_key.json` |
-| CoinGecko | Fallback pricing | Optional `COINGECKO_API_KEY` |
-| Google Trends | Trend analysis | None required |
+## API Integrations
 
-## Documentation
+| API | Purpose | Module | Required |
+|-----|---------|--------|----------|
+| **Coinbase** | CEX trading | `coinbaseutil2.py` | For live trading |
+| **Jupiter** | Solana DEX | `dex/jupiterutil.py` | For DEX trading |
+| **CoinGecko** | Price data | `coingeckoutil.py` | Free tier available |
+| **LunarCrush** | Social data, categories | `lunarcrushutil.py` | $24/month |
+| **Polymarket** | Prediction markets | `polymarketutil.py` | Free |
+| **Santiment** | On-chain metrics | `santimentutil.py` | Free tier |
+| **Google Trends** | Search trends | `context/trends.py` | Free |
 
-See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed documentation including:
-- Complete environment variable reference
-- API configuration details
-- Credential file formats
-- Regression testing procedures
+---
 
-## License
+## Status Legend
 
-MIT
+| Symbol | Meaning |
+|--------|---------|
+| ✅ Implemented | Feature is coded and functional |
+| 📋 Design Only | Design document exists, not yet implemented |
+| 🚧 In Progress | Partially implemented |
+
+---
+
+## Getting Started by Use Case
+
+### I want to trade crypto with AI recommendations
+→ Start with [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) and `geminigroundlin15.py`
+
+### I want to find correlated trading pairs
+→ See [CORRELATION_HISTORY_TRACKER.md](CORRELATION_HISTORY_TRACKER.md) and run `correlation_tracker.py`
+
+### I want to test a correlation strategy
+→ See [LEADING_INDICATOR_PERFORMANCE_TESTER.md](LEADING_INDICATOR_PERFORMANCE_TESTER.md) for paper trading
+
+### I want to trade on Solana DEX
+→ See [DEX_TRADING_FEATURE.md](DEX_TRADING_FEATURE.md) and the `dex/` module
+
+### I want to arbitrage LP tokens
+→ See [LIQUIDITY_POOL_FEATURE.md](LIQUIDITY_POOL_FEATURE.md) and `lp_arbitrage.py`
+
+### I want to compare multiple LLMs on any question
+→ See [README_LLM_COMPARE.md](README_LLM_COMPARE.md) and `llm_compare.py`

@@ -215,6 +215,73 @@ Flags:
   --dry-run                 Show configuration without executing
   --verbose                 Detailed logging of each decision
   --auto-interval           Calculate optimal sample interval from lag
+
+Directionality:
+  --honor-directionality    Only trade in the stronger direction from analysis
+                            (default: yes, choices: yes/no)
+
+Performance Monitoring:
+  --max-data-age HOURS      Maximum age of discovery report data before warning
+                            (default: 24)
+  --age-check-interval HRS  Hours between data age checks during run
+                            (default: 1.0)
+  --min-win-rate FLOAT      Minimum win rate before action (0.0-1.0)
+                            (default: 0.5)
+  --win-rate-window INT     Number of recent trades to evaluate win rate
+                            (default: 10)
+  --auto-refresh            Auto re-run analyzer when win rate drops
+                            (default: no, choices: yes/no)
+```
+
+---
+
+## Multi-Pair Mode
+
+Test multiple pairs simultaneously in paper trading mode. Useful for comparing pair performance under identical market conditions.
+
+### Usage
+
+```bash
+python leading_indicator_tester.py --pairs BTC:TAO,ETH:SOL,BTC:BONK \
+  --sample-interval 60 \
+  --min-move-pct 0.5 \
+  --duration 4h
+```
+
+### Constraints
+
+| Feature | Multi-Pair Behavior |
+|---------|---------------------|
+| `--auto-interval` | **Disabled** (must specify `--sample-interval` manually) |
+| `--execution-pct` | Single value applies to all pairs |
+| `--trade-frequency` | Single value applies to all pairs |
+| Live trading | **Not supported** (paper mode only) |
+| Missing pairs | Skipped with warning |
+
+### Design Decisions
+
+| Aspect | Behavior |
+|--------|----------|
+| **Cooldown** | Global across all pairs (one trade triggers cooldown for all) |
+| **Price fetching** | Batched by source (all CoinGecko symbols together, all Jupiter together) |
+| **Directionality** | Per-pair from discovery report |
+| **Win rate** | Per-pair tracking (no aggregate) |
+| **Output** | Single log file with pair prefix on each entry |
+
+### Summary Output
+
+```
+============================================================
+MULTI-PAIR SESSION SUMMARY
+============================================================
+Pair        | Trades | Wins | Win Rate | P&L
+------------|--------|------|----------|--------
+BTC:TAO     | 3      | 2    | 66.7%    | +$45.20
+ETH:SOL     | 0      | -    | -        | $0.00
+BTC:BONK    | 5      | 3    | 60.0%    | +$82.15
+============================================================
+Total       | 8      | 5    | 62.5%    | +$127.35
+============================================================
 ```
 
 ---
@@ -728,3 +795,1123 @@ python leading_indicator_tester.py --pair BTC:ETH --verbose
 # Let tester calculate optimal intervals from lag
 python leading_indicator_tester.py --pair BTC:ETH --auto-interval
 ```
+
+---
+
+## Cross-Exchange Arbitrage Investigation
+
+By supporting separate exchanges for leader and follower tokens, this system also serves as a **cross-exchange arbitrage investigation tool**. Since we only trade the follower token, we can:
+
+1. **Track leader prices** from any exchange (CoinGecko for broad coverage)
+2. **Track and trade follower** on the actual trading exchange (Jupiter for Solana)
+
+This enables discovering arbitrage opportunities where price movements on one chain/exchange predict movements on another, with the ability to act on those predictions via the follower exchange.
+
+**Example: TAO → WTAO Cross-Chain Correlation**
+- TAO (non-Solana) price tracked via CoinGecko
+- WTAO (Solana wrapped) price tracked and traded via Jupiter
+- If TAO price moves predict WTAO price moves, we can trade WTAO on Jupiter
+
+---
+
+## Alternative Price API: Jupiter
+
+Jupiter's Price API V3 can be used as an alternative to CoinGecko for Solana-native tokens.
+
+### Endpoint
+
+```
+GET https://api.jup.ag/price/v3?ids=<mint_addresses>
+```
+
+**Headers:** `x-api-key: <your-api-key>` (optional but recommended)
+
+### Response Format
+
+```json
+{
+  "So11111111111111111111111111111111111111112": {
+    "usdPrice": 147.48,
+    "blockId": 348004023,
+    "decimals": 9,
+    "priceChange24h": 1.29
+  }
+}
+```
+
+### Rate Limits
+
+| Tier | Rate Limit | Credits | Cost |
+|------|------------|---------|------|
+| Keyless | 0.5 RPS (30/min) | Unlimited | Free |
+| Free (API key) | Rate-limited | Unlimited | Free |
+| Paid tiers | Higher RPS | Included + $1/1M overage | Varies |
+| Enterprise | 150+ RPS | Custom | Contact sales |
+
+**Note:** Previous portal users retain their rate limits free until **30 June 2026**.
+
+### Comparison with CoinGecko
+
+| Feature | Jupiter | CoinGecko |
+|---------|---------|-----------|
+| **Tokens supported** | Solana only | Multi-chain |
+| **Identifier** | Mint address | Symbol or ID |
+| **Free rate limit** | 30/min keyless | ~10-50/min |
+| **Batch queries** | Up to 50 IDs | Up to 250 IDs |
+| **Price source** | On-chain liquidity | Aggregated exchanges |
+| **Latency** | Lower (direct) | Higher (aggregated) |
+
+### Viability Assessment
+
+**✅ Viable for Solana-native pairs** (TAO, WTAO, SOL, JUP, etc.):
+- Lower latency (direct on-chain pricing)
+- Free tier sufficient for 14+ minute intervals
+- Already have `jupiterutil.py` with price methods
+
+**❌ Not viable for cross-chain pairs** (BTC, ETH):
+- Jupiter only supports Solana tokens
+- Would need wrapped versions (wBTC, wETH) which may have different price dynamics
+
+### Implementation Notes
+
+Existing `dex/jupiterutil.py` has `get_price()` method that derives price from swap quotes. For direct price lookups, use the Price API V3:
+
+```python
+import httpx
+
+def get_jupiter_prices(mint_addresses: list, api_key: str = None) -> dict:
+    """Get prices from Jupiter Price API V3."""
+    headers = {"x-api-key": api_key} if api_key else {}
+    url = f"https://api.jup.ag/price/v3?ids={','.join(mint_addresses)}"
+    
+    response = httpx.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    return response.json()
+```
+
+### Recommendation
+
+For **Solana-only correlation testing** (e.g., TAO:WTAO), Jupiter is preferred due to:
+- Direct on-chain price data
+- Lower latency
+- Sufficient free tier rate limits
+
+For **cross-chain correlation testing** (e.g., BTC:ETH), continue using CoinGecko.
+
+---
+
+## Exchange API Comparison for Non-Solana Pairs
+
+For pairs not on Solana, we need exchanges that provide both **price data** and **trading capability**.
+
+### Exchange Matrix
+
+| Exchange | Price API Rate Limit | Trading | US Available | Tokens | Cost |
+|----------|---------------------|---------|--------------|--------|------|
+| **Coinbase** | 10 RPS public, 15 RPS private | ✅ | ✅ | ~250 | Free |
+| **Kraken** | 1 req/sec public | ✅ | ✅ | ~200 | Free |
+| **Binance** | 1200 weight/min (~300 ticker calls) | ✅ | ❌ (US restricted) | 500+ | Free |
+| **Binance.US** | Similar to Binance | ✅ | ✅ | ~80 | Free |
+| **OKX** | Per-endpoint limits | ✅ | ⚠️ (limited) | 300+ | Free |
+| **Bybit** | Per-endpoint limits | ✅ | ❌ | 400+ | Free |
+
+### Detailed Analysis
+
+#### Coinbase (Recommended for US users)
+**Existing integration:** `coinbaseutil2.py`
+
+```
+Public endpoints: 10 RPS per IP (burst to 15)
+Private endpoints: 15 RPS per profile (burst to 30)
+```
+
+**Pros:**
+- US-regulated and compliant
+- Already integrated in codebase
+- Good BTC, ETH, major altcoin coverage
+- WebSocket available for real-time
+
+**Cons:**
+- Limited altcoin selection (~250 pairs)
+- Some newer tokens not listed
+
+**Price endpoint:**
+```python
+# GET /api/v3/brokerage/products/{product_id}
+# Returns: price, bid, ask, volume
+```
+
+#### Kraken (Good US alternative)
+
+```
+Public: 1 request/second (or less)
+Private: Counter-based (starts at 0, +1 per call, -0.5 to -1 per second)
+Trading: Points-based per currency pair
+```
+
+**Pros:**
+- Strong US regulatory standing
+- Good security reputation
+- Reasonable rate limits for monitoring
+
+**Cons:**
+- Smaller selection than Binance
+- API slightly more complex
+
+**Price endpoint:**
+```
+GET https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD
+```
+
+#### Binance (Best selection, non-US only)
+
+```
+REST: 1200 request weight per minute per IP
+Ticker endpoint: weight 4 (can do ~300 calls/min)
+WebSocket: No rate limit cost
+```
+
+**Pros:**
+- Largest token selection (500+)
+- Best liquidity
+- Excellent documentation
+- Free historical data
+
+**Cons:**
+- **Not available to US users** (use Binance.US instead)
+- Binance.US has much smaller selection (~80 pairs)
+
+**Price endpoint:**
+```
+GET https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT
+```
+
+#### OKX
+
+```
+Public REST: IP-based limits
+Private REST: User ID-based limits
+Trading: 1000 orders per 2 seconds per sub-account
+```
+
+**Pros:**
+- Large selection
+- Good derivatives market
+- Competitive fees
+
+**Cons:**
+- US availability uncertain/limited
+- More complex API structure
+
+### Recommendation by Use Case
+
+| Pair Type | Primary | Fallback |
+|-----------|---------|----------|
+| **Solana tokens** (TAO, WTAO, SOL) | Jupiter | CoinGecko |
+| **Major pairs** (BTC, ETH) | Coinbase | Kraken |
+| **Altcoins** (US user) | Coinbase → Kraken | CoinGecko (data only) |
+| **Altcoins** (non-US) | Binance | OKX |
+
+### Implementation Priority
+
+1. **Jupiter** - Already have `jupiterutil.py`, add Price API V3 support
+2. **Coinbase** - Already have `coinbaseutil2.py`, add price monitoring
+3. **Kraken** - New integration for broader US coverage
+4. **Binance** - New integration for non-US users with large token needs
+
+### Adding `--exchange` Parameter
+
+Future enhancement to support exchange selection:
+
+```bash
+# Use Jupiter for Solana pairs
+python leading_indicator_tester.py --pair TAO:WTAO --exchange jupiter
+
+# Use Coinbase for BTC:ETH
+python leading_indicator_tester.py --pair BTC:ETH --exchange coinbase
+
+# Auto-detect based on token (default)
+python leading_indicator_tester.py --pair BTC:ETH --exchange auto
+```
+
+---
+
+## Live Trading Mode (Solana/Jupiter)
+
+Once paper trading validates a correlation strategy, live trading can be enabled to execute real trades on the follower token via Jupiter DEX.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    LIVE TRADING MODE                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────────────┐     ┌──────────────────┐     ┌───────────────────┐   │
+│  │  Price Monitor   │     │  Trade Signal    │     │  Jupiter Swap     │   │
+│  │  (same as paper) │────▶│  Generator       │────▶│  Execution        │   │
+│  └──────────────────┘     └──────────────────┘     └───────────────────┘   │
+│                                                            │                │
+│                                                            ▼                │
+│                                                    ┌───────────────────┐   │
+│                                                    │  Solana Wallet    │   │
+│                                                    │  (Jupiter/Phantom)│   │
+│                                                    └───────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Command-Line Interface
+
+```bash
+# Paper trading (default, current behavior)
+python leading_indicator_tester.py --pair TAO:WTAO --trading-mode paper
+
+# Live trading with Jupiter
+python leading_indicator_tester.py --pair TAO:WTAO --trading-mode live
+
+# Live trading with specific position size
+python leading_indicator_tester.py --pair TAO:WTAO --trading-mode live --position-size 100
+
+# Dry run to preview live trade parameters
+python leading_indicator_tester.py --pair TAO:WTAO --trading-mode live --dry-run
+```
+
+### New CLI Parameters
+
+| Parameter | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `--trading-mode` | `paper`, `live` | `paper` | Trading mode |
+| `--position-size` | USD amount | `100` | Amount per trade in USD |
+| `--slippage-bps` | basis points | `50` | Max slippage (0.5% default) |
+| `--wallet` | path | `~/.config/solana/id.json` | Solana wallet keypair path |
+
+### Wallet Configuration
+
+#### Option 1: Local Keypair File (Recommended for Automation)
+
+```bash
+# Set wallet path
+export SOLANA_WALLET_PATH=~/.config/solana/id.json
+
+# Or use CLI
+python leading_indicator_tester.py --pair TAO:WTAO --trading-mode live \
+    --wallet ~/.config/solana/id.json
+```
+
+#### Option 2: Environment Variable (Base58 Private Key)
+
+```bash
+export SOLANA_PRIVATE_KEY=<base58-encoded-private-key>
+```
+
+#### Option 3: Jupiter Wallet Integration
+
+If using a browser-based Jupiter wallet:
+
+```bash
+# Export private key from Jupiter wallet settings
+# Save to file or environment variable as above
+```
+
+### Trade Execution Flow
+
+```
+1. Signal Detected
+   └─ Leader moved ≥ min_move_pct in direction X
+
+2. Pre-Trade Checks
+   ├─ Wallet balance sufficient?
+   ├─ Trade cooldown elapsed?
+   ├─ Slippage within bounds?
+   └─ Gas fees acceptable?
+
+3. Build Swap Transaction
+   ├─ Input: USDC (or SOL)
+   ├─ Output: Follower token (e.g., WTAO)
+   ├─ Amount: position_size USD
+   └─ Slippage: slippage_bps
+
+4. Execute via Jupiter
+   ├─ Get quote from Jupiter API
+   ├─ Build swap transaction
+   ├─ Sign with wallet
+   └─ Submit to Solana RPC
+
+5. Log Trade
+   ├─ Transaction signature
+   ├─ Actual fill price
+   ├─ Fees paid
+   └─ Slippage realized
+```
+
+### Jupiter Integration
+
+Leverages existing `dex/jupiterutil.py` with extensions:
+
+```python
+from dex.jupiterutil import JupiterClient
+from dex.local_wallet import load_wallet
+
+# Initialize
+jupiter = JupiterClient()
+wallet = load_wallet()
+
+# Get quote
+quote = jupiter.get_quote(
+    input_mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
+    output_mint="taoC6xyv2v8tDLcev4uaGUgV4vdQsWJrGft2kcBRrBY",  # WTAO
+    amount=100_000_000,  # 100 USDC (6 decimals)
+    slippage_bps=50
+)
+
+# Execute swap
+result = jupiter.swap(quote, wallet)
+print(f"TX: {result.signature}")
+```
+
+### Position Management
+
+#### Buy Signal (Leader UP, Positive Correlation)
+
+```
+USDC → WTAO
+├─ Swap $100 USDC for WTAO
+├─ Hold position
+└─ Close at outcome check time (or next signal)
+```
+
+#### Sell Signal (Leader DOWN, Positive Correlation)
+
+```
+WTAO → USDC
+├─ Swap WTAO holdings for USDC
+└─ Wait for next buy signal
+```
+
+#### Position Tracking
+
+```python
+@dataclass
+class LivePosition:
+    token: str                    # e.g., "WTAO"
+    entry_price: float           # USD price at entry
+    quantity: float              # Token amount held
+    entry_time: datetime         # When position opened
+    entry_tx: str                # Solana transaction signature
+    status: str                  # "open" or "closed"
+```
+
+### Safety Features
+
+| Feature | Description |
+|---------|-------------|
+| **Max Position Size** | Hard cap on single trade (default: $500) |
+| **Daily Loss Limit** | Stop trading if daily P&L < -X% (default: -5%) |
+| **Cooldown Enforcement** | Minimum time between trades (from correlation lag) |
+| **Slippage Protection** | Reject trades with slippage > threshold |
+| **Balance Check** | Verify wallet has sufficient funds before trade |
+| **Dry Run Mode** | Preview all trades without execution |
+
+### Performance Monitoring & Auto-Refresh
+
+The tester monitors its own success rate and data freshness during operation:
+
+#### Data Staleness Monitoring
+- **Periodic age check**: Every `--age-check-interval` hours (default: 1h)
+- **Warning**: Logs warning if data exceeds `--max-data-age` hours
+- **Purpose**: Alert user that correlation analysis may be outdated
+
+#### Win Rate Monitoring
+- **Rolling window**: Tracks last `--win-rate-window` trades (default: 10)
+- **Threshold**: `--min-win-rate` (default: 0.5 = 50%)
+- **Evaluation**: After each completed trade outcome
+
+#### Breach Behavior
+
+| `--auto-refresh` | On Win Rate Breach |
+|------------------|-------------------|
+| `no` (default) | Stop with message: "Stopping due to low win rate" |
+| `yes` | Run analyzer → Reload config → Reset tracking → Resume |
+
+#### Auto-Refresh Process
+1. Run `correlation_tracker.py --analyze` with same parameters
+2. Reload pair configuration from updated discovery report
+3. Clear win rate history (fresh start with new config)
+4. Resume trading with new correlation/lag parameters
+
+#### Post-Trade Pause
+After executing a trade, the tester automatically pauses for the remaining lag time before resuming price checks. This handles both scenarios:
+
+| Scenario | Behavior |
+|----------|----------|
+| `remaining_lag > sample_interval` | Wait remaining_lag (avoid wasteful API calls) |
+| `remaining_lag < sample_interval` | Wait remaining_lag (avoid waiting too long for next opportunity) |
+
+```
+Long lag:   [sample]---[sample]---[TRADE]-------[remaining_lag]-------[sample]
+Short lag:  [sample]---[sample]---[TRADE]--[remaining_lag]--[sample]
+```
+
+- **Trigger**: After any trade execution
+- **Duration**: `optimal_lag - execution_wait_time` (remaining lag)
+- **Benefit**: Optimal timing for both API efficiency and trade opportunities
+
+#### Example: Autonomous Operation
+```bash
+python leading_indicator_tester.py --pair BTC:NVDAX \
+  --min-win-rate 0.45 \
+  --win-rate-window 10 \
+  --auto-refresh yes \
+  --max-data-age 12
+```
+
+This will:
+- Trade based on BTC→NVDAX correlation
+- Monitor win rate over last 10 trades
+- If win rate drops below 45%: refresh analyzer data and continue
+- Warn if data becomes older than 12 hours
+
+### Configuration Example
+
+```python
+@dataclass
+class LiveTradingConfig:
+    trading_mode: str = "paper"          # "paper" or "live"
+    position_size_usd: float = 100.0     # USD per trade
+    max_position_usd: float = 500.0      # Max single position
+    slippage_bps: int = 50               # 0.5% max slippage
+    daily_loss_limit_pct: float = 5.0    # Stop at -5% daily
+    wallet_path: Optional[str] = None    # Path to keypair
+    rpc_url: str = "https://api.mainnet-beta.solana.com"
+```
+
+### Output: Live Trade Log
+
+```json
+{
+  "trades": [
+    {
+      "id": "lt_20260506_143022_001",
+      "mode": "live",
+      "signal": {
+        "direction": "BUY",
+        "leader_move_pct": 1.25,
+        "trigger_time": "2026-05-06T14:30:22Z"
+      },
+      "execution": {
+        "input_token": "USDC",
+        "output_token": "WTAO",
+        "input_amount": 100.0,
+        "output_amount": 0.315,
+        "price": 317.46,
+        "slippage_bps": 12,
+        "fee_sol": 0.000125,
+        "tx_signature": "5Kj9...abc",
+        "confirmed_at": "2026-05-06T14:30:24Z"
+      },
+      "outcome": {
+        "exit_price": 325.80,
+        "exit_amount": 102.63,
+        "pnl_usd": 2.63,
+        "pnl_pct": 2.63,
+        "exit_tx": "7Mn3...xyz"
+      }
+    }
+  ],
+  "summary": {
+    "total_trades": 8,
+    "winning_trades": 5,
+    "total_pnl_usd": 42.15,
+    "total_fees_sol": 0.001
+  }
+}
+```
+
+### Implementation Phases
+
+#### Phase 1: Foundation (MVP)
+- [ ] Add `--trading-mode` CLI parameter
+- [ ] Wallet loading from file/env
+- [ ] Jupiter quote fetching for position sizing
+- [ ] Dry-run mode showing intended trades
+
+#### Phase 2: Execution
+- [ ] Jupiter swap execution
+- [ ] Transaction confirmation waiting
+- [ ] Position tracking (open/close)
+- [ ] Trade logging with tx signatures
+
+#### Phase 3: Safety & Polish
+- [ ] Daily loss limit enforcement
+- [ ] Balance checks before trades
+- [ ] Slippage monitoring and alerts
+- [ ] Retry logic for failed transactions
+
+### Dependencies
+
+```
+# Already in repo
+dex/jupiterutil.py      - Jupiter API client
+dex/local_wallet.py     - Solana wallet loading
+dex/token_cache.py      - Token mint address lookup
+
+# Additional (if needed)
+solana-py               - Solana transaction signing
+solders                 - Solana primitives
+```
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JUPITER_API_KEY` | Yes | Jupiter API key for quotes |
+| `SOLANA_PRIVATE_KEY` | Optional | Base58 private key (alternative to file) |
+| `SOLANA_WALLET_PATH` | Optional | Path to keypair JSON file |
+| `SOLANA_RPC_URL` | Optional | Custom RPC endpoint |
+
+### Alternatives
+
+#### Trade Execution
+
+| Approach | Pros | Cons | Recommendation |
+|----------|------|------|----------------|
+| **Jupiter API + local signing** | Full control, no browser needed | Requires private key management | ✅ MVP |
+| **WalletConnect** | Hardware wallet support, no key exposure | Requires user interaction per trade | Future enhancement |
+| **Jito bundles** | MEV protection, atomic execution | More complex, additional fees | Consider for high-value trades |
+| **Helius RPC** | Faster confirmations, better reliability | $50+/month | Production recommendation |
+
+#### Position Sizing
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| **Fixed USD** | Same $ amount per trade | Simple, predictable |
+| **Kelly Criterion** | Size based on edge and confidence | Optimal growth, higher variance |
+| **Volatility-adjusted** | Reduce size in high-vol periods | Risk management |
+| **Trailing with profits** | Increase size as account grows | Compound gains |
+
+#### Exit Strategy
+
+| Strategy | Description | Trade-offs |
+|----------|-------------|------------|
+| **Time-based** | Exit at outcome check time (lag seconds) | Matches paper trading, simple |
+| **Take-profit** | Exit when target % reached | Captures gains, may miss larger moves |
+| **Stop-loss** | Exit when loss exceeds threshold | Limits downside, may exit prematurely |
+| **Trailing stop** | Dynamic stop that follows price up | Locks in gains, complex to tune |
+| **Next signal** | Hold until opposite signal | Maximizes position time, higher exposure |
+
+### Open Questions (Live Mode)
+
+1. **Position management across restarts**
+   - ~~Should we persist open positions to disk?~~
+   - ~~How do we handle a restart with an open position?~~
+   - ~~Do we query wallet balance on startup to detect existing positions?~~
+   - **MVP Decision**: No persistence. User must manage restarts manually.
+
+2. **Multiple pairs simultaneously**
+   - ~~Should live mode support monitoring multiple pairs?~~
+   - ~~How do we allocate capital across pairs?~~
+   - ~~Do positions in different pairs share the daily loss limit?~~
+   - **MVP Decision**: Single pair only.
+
+3. **Quote currency preference**
+   - ~~Default to USDC for stability?~~
+   - ~~Support SOL as quote for lower fees?~~
+   - ~~Allow user to specify preferred quote currency?~~
+   - **MVP Decision**: Default to USDC. No SOL quote support initially.
+
+4. **Transaction priority fees**
+   - ~~Should we add priority fees for faster confirmation?~~
+   - ~~How much priority fee is acceptable?~~
+   - ~~Should this be configurable or auto-calculated?~~
+   - **MVP Decision**: No priority fees. Use default transaction settings.
+
+5. **Partial fills and failed transactions**
+   - ~~How do we handle partial fills from Jupiter?~~
+   - ~~Retry logic for failed transactions (network issues)?~~
+   - ~~Maximum retry attempts before giving up?~~
+   - **MVP Decision**: No retry logic. Log failures and continue.
+
+6. **Tax and reporting considerations**
+   - ~~Should we generate trade reports for tax purposes?~~
+   - ~~What format (CSV, JSON, specific tax software)?~~
+   - ~~Track cost basis for each position?~~
+   - **MVP Decision**: Yes. CSV export with cost basis tracking.
+
+7. **Notification system**
+   - ~~Send alerts on trade execution (Telegram, Discord)?~~
+   - ~~Alert on errors or daily loss limit hit?~~
+   - ~~Summary report at end of day?~~
+   - **MVP Decision**: No real-time alerts. Daily summary report with ability to generate summary across all historical trades.
+
+8. **Backtesting integration**
+   - ~~Can we replay paper trade history as if it were live?~~
+   - ~~Estimate actual slippage from historical liquidity?~~
+   - ~~Compare paper vs live performance for same signals?~~
+   - **MVP Decision**: Slippage estimation report for MVP. Full backtesting deferred.
+
+---
+
+## Swap Mode (Pair-to-Pair Trading)
+
+### Concept
+
+Instead of trading against a quote currency (USDC), swap mode treats the correlated pair as a self-contained trading universe. When a signal suggests one token will outperform the other, swap directly between them.
+
+**Current USDC mode:**
+```
+BUY TAO signal  → Buy TAO with USDC
+SELL TAO signal → Sell TAO for USDC
+```
+
+**Proposed swap mode:**
+```
+BUY TAO signal  → Swap WTAO → TAO  (expecting TAO to outperform WTAO)
+SELL TAO signal → Swap TAO → WTAO  (expecting WTAO to outperform TAO)
+```
+
+### Motivation
+
+- **No quote currency capital needed** - Always holding ecosystem exposure
+- **Relative performance trading** - Profit from correlation divergence, not absolute moves
+- **Natural for wrapped pairs** - TAO/WTAO, ETH/WETH, SOL/mSOL
+- **Private liquidity pool analogy** - Rebalancing between two correlated assets
+- **Lower friction** - Direct swaps often have better liquidity than USDC routes
+
+### CLI Extension
+
+```bash
+# Current USDC mode (default)
+python leading_indicator_tester.py --leader WTAO --follower TAO
+
+# Swap mode - trade directly between the pair
+python leading_indicator_tester.py --leader WTAO --follower TAO --swap
+
+# With live trading
+python leading_indicator_tester.py --leader WTAO --follower TAO --swap --trading-mode live
+```
+
+### P&L Calculation
+
+In swap mode, P&L is measured in **equivalent units** rather than USDC:
+
+```
+Initial: 100 WTAO
+Signal: BUY TAO → Swap to 98 TAO (after fees)
+Later: SELL TAO → Swap to 102 WTAO (after fees)
+P&L: +2 WTAO (+2%)
+```
+
+The session summary would show:
+- Total P&L in base token (WTAO-equivalent)
+- Optional: USDC-equivalent using current prices
+
+### Implementation Considerations
+
+1. **Initial position required** - User must hold one of the pair tokens
+2. **Swap fees** - Jupiter ~0.3-0.5% per swap (double for round-trip)
+3. **Liquidity depth** - Direct pair pools may have less liquidity than USDC routes
+4. **Price tracking** - Monitor both tokens to calculate relative P&L
+
+### Risk Profile by Correlation Sign
+
+The sign of the correlation between the pair tokens fundamentally changes the risk/reward profile of swap mode:
+
+#### Positively Correlated Pairs (e.g., TAO/WTAO, ETH/WETH)
+
+Both tokens tend to move in the same direction (up together, down together).
+
+| Aspect | Implication |
+|--------|-------------|
+| **Absolute gain potential** | Higher - if both tokens moon, your portfolio value increases regardless of which you hold |
+| **Permanent loss risk** | Higher - if both tokens crash (e.g., ecosystem failure), you have no hedge and lose absolute value |
+| **Relative gain potential** | Lower - since they move together, relative outperformance opportunities are smaller |
+| **Best for** | Capturing small timing differences between tightly coupled assets |
+
+**Risk summary**: You're fully exposed to the ecosystem. Swap mode optimizes *which* token to hold, but cannot protect against systemic decline.
+
+#### Negatively Correlated Pairs (inverse relationship)
+
+Tokens move in opposite directions (one rises when the other falls).
+
+| Aspect | Implication |
+|--------|-------------|
+| **Absolute gain potential** | Lower - you're always partially "wrong" in absolute terms since one is rising while the other falls |
+| **Permanent loss risk** | Lower - natural hedge; when one crashes, the other rises, preserving portfolio value |
+| **Relative gain potential** | Higher - large divergences mean significant relative P&L opportunities |
+| **Best for** | Risk-managed trading with built-in downside protection |
+
+**Risk summary**: You sacrifice potential absolute gains for reduced permanent loss risk. The strategy becomes more about timing the oscillations between the two.
+
+#### Implications for Swap Mode
+
+- **Positive correlation**: Treat swap mode as an optimization within an already-committed position. You've decided to hold the ecosystem; swap mode helps you hold the better-performing token.
+- **Negative correlation**: Swap mode acts more like a hedged strategy. You're trading relative performance while maintaining natural portfolio protection.
+
+Consider adding a `--warn-positive-correlation` flag that alerts users when using swap mode with highly positively correlated pairs (correlation > 0.7) about the concentrated risk.
+
+#### Partial Position Strategy (Hold Both Tokens)
+
+Rather than swapping 100% of holdings, a partial swap strategy maintains exposure to both tokens simultaneously:
+
+```
+Initial: 100 WTAO, 0 TAO
+BUY TAO signal (50% swap): 50 WTAO, ~49 TAO
+SELL TAO signal (50% swap): 75 WTAO, ~24 TAO
+```
+
+| Strategy | Positive Correlation | Negative Correlation |
+|----------|---------------------|---------------------|
+| **100% swaps** | Maximum relative gain, full ecosystem risk | Maximum relative gain, natural hedge |
+| **Partial swaps** | Reduced relative gain, slightly diversified | Reduced relative gain, enhanced hedge |
+
+**Benefits of partial positions:**
+- Never fully wrong on direction
+- Smoother P&L curve (less volatile)
+- Always have liquidity in both tokens
+- For negative correlation: amplifies the natural hedge effect
+
+**Trade-offs:**
+- Lower magnitude of relative gains
+- More complex position tracking
+- Fee efficiency reduced (smaller swaps, same base fees)
+
+This could be implemented via a `--swap-percentage 50` parameter (default 100 for full swaps).
+
+#### Directionality Requirement
+
+**Critical insight**: Swap mode only works reliably if the correlation holds in *both* directions (UP and DOWN movements of the leader).
+
+Consider a pair where:
+- When leader rises → follower rises (correlation holds)
+- When leader falls → follower behavior is random (correlation breaks)
+
+In this asymmetric case:
+- BUY signals (leader rising) would be reliable
+- SELL signals (leader falling) would be unreliable
+- The strategy would only work "half the time"
+
+**Why this matters for swap mode specifically:**
+
+In USDC mode, an unreliable SELL signal means you might miss a gain or take an unnecessary loss, but you exit to stable USDC.
+
+In swap mode, an unreliable SELL signal means you swap to the other token based on a false premise. If the correlation doesn't hold on downs, you're now holding a token that may not behave as expected—with no stable exit.
+
+**Integration with Directional Analysis:**
+
+This is exactly what the directional correlation analysis (TEST 6 in `correlation_tracker.py`) measures:
+
+```
+TEST 6: Directional Analysis (UP vs DOWN)
+├─ UP (rises):   correlation=-0.33, p=0.60 ✗ (not significant)
+├─ DOWN (drops): correlation=-0.42, p=0.03 ✓ (significant)
+└─ Asymmetry: 0.47 (moderate)
+```
+
+**Recommendation for swap mode:**
+- Require both `up_significant` AND `down_significant` from directional analysis
+- Or at minimum, warn if only one direction is significant
+- Consider a `--require-bidirectional` flag (default ON for swap mode)
+
+| Scenario | Swap Mode Suitability |
+|----------|----------------------|
+| Both UP and DOWN significant | ✅ Ideal for swap mode |
+| Only UP significant | ⚠️ Only swap on BUY signals, hold otherwise |
+| Only DOWN significant | ⚠️ Only swap on SELL signals, hold otherwise |
+| Neither significant | ❌ Do not use swap mode |
+
+### Open Questions (Swap Mode)
+
+1. **Base token selection**
+   - ~~Which token is the "base" for P&L calculation?~~
+   - ~~Should it be the leader, follower, or user-specified?~~
+   - ~~How do we handle the initial position check?~~
+   - **MVP Decision**: Calculate P&L based on USDC-equivalent value. Report what gain/loss would occur if entire position (both leader and follower holdings) were sold for USDC at current prices.
+
+2. **Swap routing**
+   - Direct pool swap vs multi-hop through USDC?
+   - Let Jupiter auto-route for best price?
+   - Should we compare routes and warn if direct is worse?
+   - **Private LP consideration**: If user owns a private liquidity pool for the pair (Meteora, Orca, Raydium), routing through that pool could eliminate or reduce swap fees. This changes the economics significantly:
+     
+     | Route | Typical Fee | Notes |
+     |-------|-------------|-------|
+     | Public pool direct | 0.3-0.5% | Standard DEX fees |
+     | Multi-hop via USDC | 0.6-1.0% | Double fees (two swaps) |
+     | Private LP (owner) | 0% or reduced | Platform-dependent; may earn fees instead of paying |
+     
+   - Platforms supporting private/concentrated LPs:
+     - **Meteora DLMM** - Dynamic fee pools, owner can set parameters
+     - **Orca Whirlpools** - Concentrated liquidity with owner control
+     - **Raydium CLMM** - Concentrated liquidity market maker
+   - Open questions for private LP integration:
+     - Can we detect if user owns an LP for this pair?
+     - Should we route directly to user's LP instead of Jupiter?
+     - How do we handle the case where our own swap moves the pool price?
+
+3. **Position sizing in swap mode**
+   - Swap entire holding or fixed percentage?
+   - Should `--position-size-usd` still apply (as equivalent value)?
+   - Reserve some for fees or go all-in?
+
+4. **Partial swaps**
+   - Support swapping only a percentage of holdings?
+   - Gradual position building vs single swap?
+   - Risk management through partial positions?
+
+5. **Mixed mode**
+   - Allow both USDC and swap trades in same session?
+   - Use swap when direct pool is favorable, USDC otherwise?
+   - How would P&L reporting work in mixed mode?
+
+6. **Correlation requirements**
+   - Should swap mode require minimum correlation threshold?
+   - Warn if pair correlation is weak (higher divergence risk)?
+   - Auto-disable if correlation degrades during session?
+
+7. **Wrapped token edge case**
+   - For TAO/WTAO, should we consider wrap/unwrap instead of swap?
+   - Wrap/unwrap has no slippage but may have other constraints
+   - How do we detect which pairs support direct wrap/unwrap?
+
+8. **Rebalancing frequency**
+   - Should there be a minimum time between swaps?
+   - Cooldown to avoid excessive fee burn on noisy signals?
+   - How does this interact with the existing cooldown logic?
+
+---
+
+## Profitability Analysis (Design - Not Yet Implemented)
+
+### Motivation
+
+Before running the performance tester, we need to answer a fundamental question:
+
+> **Is this pair worth trading at all?**
+
+This requires combining three analyses:
+1. **Cost analysis** - What % move is needed to break even?
+2. **Volatility analysis** - At what interval does the follower move that much?
+3. **Correlation analysis** - Does the leader predict the follower at that interval?
+
+### The Three-Part Framework
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  1. COST: What % move do I need to break even?                      │
+│     └─ Depends on: follower liquidity, position size, spread        │
+│                                                                      │
+│  2. VOLATILITY: At what interval does follower move that much?      │
+│     └─ Depends on: historical price data, percentile threshold      │
+│                                                                      │
+│  3. CORRELATION: Does leader predict follower at that interval?     │
+│     └─ Depends on: lag, correlation strength, Granger causality     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Trading Overhead Costs (Jupiter/Solana)
+
+#### Fixed Costs Per Trade
+
+| Cost Type | Amount | Notes |
+|-----------|--------|-------|
+| Solana Transaction Fee | ~0.000005 SOL (~$0.001) | Negligible |
+| Jupiter Platform Fee | 0% | No platform fee on swaps |
+| Priority Fee (optional) | 0.0001-0.001 SOL | For faster execution |
+
+#### Variable Costs (Significant)
+
+| Cost Type | Typical Range | Notes |
+|-----------|---------------|-------|
+| Slippage | 0.1% - 1.0% | Depends on liquidity, position size |
+| Price Impact | 0.05% - 0.5% | Larger trades = more impact |
+| Spread | 0.1% - 0.3% | Bid/ask spread on the pool |
+
+#### Price Impact Explained
+
+Price impact occurs because AMM pools use the constant product formula (`x × y = k`). As you buy tokens, each successive token costs more because you're depleting the pool.
+
+| Your Trade Size vs Pool Liquidity | Price Impact |
+|----------------------------------|--------------|
+| <0.1% of pool | Negligible |
+| 1% of pool | ~0.5% |
+| 5% of pool | ~2.5% |
+| 10% of pool | ~5%+ |
+
+Jupiter mitigates this by splitting across multiple pools, but impact is unavoidable.
+
+#### Round-Trip Consideration
+
+Since each trade involves BUY then SELL (or vice versa), double the overhead:
+
+```
+Round-trip cost ≈ 2 × single-trade overhead
+$1,000 position → ~0.4% - 1.0% round-trip overhead
+```
+
+#### Special Case: Wrapped Token Pairs (e.g., TAO:WTAO)
+
+Wrapped tokens (like WTAO for TAO) often trade at a premium/discount to the native token due to bridge friction and liquidity isolation. This spread adds to trading costs:
+
+| Pair Type | Typical Break-Even Move |
+|-----------|-------------------------|
+| Unrelated tokens (BTC:WTAO) | ~0.8% |
+| Wrapped pairs (TAO:WTAO) | ~1.3% (includes spread) |
+
+### Pool Liquidity Analysis
+
+Jupiter's Price API returns aggregated liquidity across all pools for a token:
+
+```python
+# Example: Check WTAO liquidity
+curl "https://api.jup.ag/price/v3?ids={WTAO_MINT}"
+# Returns: { "liquidity": 490000, "usdPrice": 326.33, ... }
+```
+
+#### Safe Trade Sizes (targeting ~1% price impact)
+
+| Token | Liquidity | Safe Trade Size |
+|-------|-----------|-----------------|
+| SOL | $753M | ~$7.5M |
+| JLP | $11.7M | ~$117K |
+| BONK | $4.0M | ~$40K |
+| WTAO | $490K | ~$5K |
+
+### Proposed Analysis Output
+
+```
+═══════════════════════════════════════════════════════════════════════
+                    PROFITABILITY ANALYSIS: BTC → WTAO
+═══════════════════════════════════════════════════════════════════════
+
+STEP 1: COST ANALYSIS
+  Follower liquidity:     $490,000
+  Position size:          $1,000
+  Estimated round-trip:   ~0.8%
+  Break-even move:        0.8%
+  Target profit (0.5%):   1.3%
+
+STEP 2: VOLATILITY ANALYSIS (from collected data)
+  ┌──────────────┬────────────┬────────────┬────────────┐
+  │ Interval     │ Median Δ%  │ % > 0.8%   │ % > 1.3%   │
+  ├──────────────┼────────────┼────────────┼────────────┤
+  │ 1 min        │ 0.05%      │ 2%         │ 0.5%       │
+  │ 5 min        │ 0.15%      │ 8%         │ 3%         │
+  │ 15 min       │ 0.35%      │ 18%        │ 9%         │
+  │ 1 hour       │ 0.80%      │ 45%        │ 28%        │  ← VIABLE
+  │ 4 hour       │ 1.50%      │ 65%        │ 52%        │  ← BEST
+  └──────────────┴────────────┴────────────┴────────────┘
+  
+  Recommended interval: 1hr+ (45% chance of profitable move)
+
+STEP 3: CORRELATION ANALYSIS (at recommended interval)
+  Optimal lag:            42 min (0.7 periods)
+  Correlation:            0.72
+  Granger p-value:        0.003 (significant)
+  Confidence:             0.78 (HIGH)
+  
+═══════════════════════════════════════════════════════════════════════
+VERDICT: VIABLE - Trade 1hr intervals, expect ~45% opportunity rate
+═══════════════════════════════════════════════════════════════════════
+```
+
+### Implementation Alternatives
+
+#### Option A: Standalone Analyzer Script
+
+```bash
+python profitability_analyzer.py --leader BTC --follower WTAO --position-size 1000
+```
+
+**Pros:**
+- Clean separation of concerns
+- Can run independently without collected data (uses live API queries)
+- Easy to extend with additional analysis
+
+**Cons:**
+- Another script to maintain
+- May duplicate code from correlation_tracker.py
+
+#### Option B: Add to correlation_tracker.py as `--profitability` Mode
+
+```bash
+python correlation_tracker.py --analyze --leader BTC --follower WTAO --profitability
+```
+
+**Pros:**
+- Leverages existing correlation analysis infrastructure
+- Single tool for all correlation-related analysis
+- Uses already-collected data
+
+**Cons:**
+- Adds complexity to correlation_tracker.py
+- Requires collected data to exist
+
+#### Option C: Add to Performance Tester as `--analyze-profitability` Pre-Check
+
+```bash
+python leading_indicator_tester.py --pair BTC:WTAO --analyze-profitability
+```
+
+**Pros:**
+- Natural workflow: analyze profitability → run tester
+- Can warn/block if pair isn't profitable
+- Uses discovery report data
+
+**Cons:**
+- Mixes analysis with testing
+- May need to fetch additional data not in discovery report
+
+### Design Decisions
+
+1. **Data source for volatility analysis**
+   - **Decision:** Query CoinGecko historical API for quick analysis
+
+2. **Multi-interval analysis**
+   - **Decision:** Automatically test multiple intervals (1min, 5min, 15min, 1hr, 4hr)
+
+3. **Liquidity thresholds**
+   - **Decision:** Warn only (don't hard-block), let user decide
+
+4. **Integration with existing tools**
+   - **Decision:** Integrate with `correlation_tracker.py --analyze` mode
+
+5. **Historical vs real-time costs**
+   - **Decision:** Not for MVP; defer tracking actual vs estimated costs
+
+6. **Minimum viable analysis**
+   - **Decision:** Tool must auto-search intervals to find viable ones (not burden user)
+
+### MVP Implementation
+
+The MVP must automatically find viable trading intervals, not require user experimentation.
+
+**Logic:**
+1. Fetch follower liquidity from Jupiter → calculate break-even %
+2. Resample collected data at multiple intervals (1min, 5min, 15min, 1hr, 4hr)
+3. Calculate median % move at each interval
+4. Report which intervals meet the profitability threshold
+
+**Example Output:**
+```
+PROFITABILITY ANALYSIS: BTC → WTAO
+  Break-even move: ~0.8% (based on $490K liquidity, $1K position)
+
+  Interval   Median Move   Viable?   Notes
+  ─────────────────────────────────────────────
+  1 min      0.05%         ✗         Need 16x more volatility
+  5 min      0.15%         ✗         Need 5x more volatility
+  15 min     0.35%         ✗         Need 2x more volatility
+  1 hour     0.82%         ✓         Marginal
+  4 hour     1.45%         ✓         Good margin
+
+  RECOMMENDATION: Use 1hr+ intervals for this pair
+```
+
+**If no interval is viable:**
+```
+  ⚠️  NO VIABLE INTERVAL FOUND
+  Even at 4hr intervals, median move (0.3%) < break-even (0.8%)
+  This pair may not be profitable to trade.
+```
+

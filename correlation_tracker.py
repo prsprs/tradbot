@@ -11,10 +11,10 @@ Usage:
     python correlation_tracker.py --coins BTC,ETH,SOL --interval 30 --output-dir ./correlation_data
 
     # Analyze specific pair
-    python correlation_tracker.py --analyze --leader BTC --follower ETH --data-dir ./correlation_data
+    python correlation_tracker.py --analyze --leader BTC --follower ETH
 
     # Discovery mode (find all leading indicator pairs)
-    python correlation_tracker.py --analyze --data-dir ./correlation_data --min-confidence 0.6
+    python correlation_tracker.py --analyze --min-confidence 0.6
 """
 
 import argparse
@@ -1111,10 +1111,10 @@ Examples:
   python correlation_tracker.py --coins BTC,ETH --interval 30sec --duration 3600
   
   # Analyze specific pair
-  python correlation_tracker.py --analyze --leader BTC --follower ETH --data-dir ./correlation_data
+  python correlation_tracker.py --analyze --leader BTC --follower ETH
   
   # Discovery mode (find all leading indicator pairs)
-  python correlation_tracker.py --analyze --data-dir ./correlation_data --min-confidence 0.6
+  python correlation_tracker.py --analyze --min-confidence 0.6
   
   # Use YAML config file
   python correlation_tracker.py --config correlation_tracker_config.yaml
@@ -1155,7 +1155,7 @@ IMPORTANT WARNINGS:
     # Analyzer options
     analyzer = parser.add_argument_group('Analyzer Options')
     analyzer.add_argument('--data-dir', type=str, default='./correlation_data',
-                         help='Directory containing collected data')
+                         help='Directory containing collected data (default: ./correlation_data)')
     analyzer.add_argument('--leader', type=str,
                          help='Leader coin symbol for specific pair analysis')
     analyzer.add_argument('--follower', type=str,
@@ -1177,7 +1177,8 @@ IMPORTANT WARNINGS:
     analyzer.add_argument('--end-date', type=str,
                          help='End date for analysis (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)')
     analyzer.add_argument('--output-report', type=str,
-                         help='Path to save the analysis report (JSON)')
+                         default='./correlation_data/discovery_report.json',
+                         help='Path to save the analysis report (JSON, default: ./correlation_data/discovery_report.json)')
     analyzer.add_argument('--verbose', '-v', action='store_true',
                          help='Output detailed test results for all pairs (not just significant)')
     

@@ -528,6 +528,130 @@ confidence_score = Σ (factor_i × weight_i)
 
 ---
 
+#### Step 7: Directional Analysis (UP vs DOWN)
+
+**Purpose:** Analyze correlations separately for upward vs downward leader movements to detect asymmetric behavior.
+
+**Motivation:** Markets often exhibit directional asymmetry:
+- Fear (drops) may propagate faster than greed (rallies)
+- Correlation strength may differ by direction
+- Optimal lag may vary based on whether leader is rising or falling
+
+**Algorithm:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    DIRECTIONAL CORRELATION ANALYSIS                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Input: Leader returns series, Follower returns series                      │
+│                          ↓                                                  │
+│  Step 7a: SPLIT BY DIRECTION                                                │
+│  ├─ UP dataset: samples where leader_return > 0                             │
+│  ├─ DOWN dataset: samples where leader_return < 0                           │
+│  └─ Each dataset includes corresponding follower returns at same timestamps │
+│                          ↓                                                  │
+│  Step 7b: ANALYZE EACH DIRECTION SEPARATELY                                 │
+│  ├─ For UP dataset:                                                         │
+│  │   ├─ Cross-correlation at various lags                                   │
+│  │   ├─ Find optimal_lag_up                                                 │
+│  │   ├─ Calculate correlation_up                                            │
+│  │   └─ Granger test → significance_up                                      │
+│  │                                                                          │
+│  └─ For DOWN dataset:                                                       │
+│      ├─ Cross-correlation at various lags                                   │
+│      ├─ Find optimal_lag_down                                               │
+│      ├─ Calculate correlation_down                                          │
+│      └─ Granger test → significance_down                                    │
+│                          ↓                                                  │
+│  Step 7c: COMPARE DIRECTIONS                                                │
+│  ├─ Lag difference: |optimal_lag_up - optimal_lag_down|                     │
+│  ├─ Correlation difference: |correlation_up| - |correlation_down|          │
+│  ├─ Significance comparison: both significant? one only?                    │
+│  └─ Generate directional_asymmetry_score                                    │
+│                          ↓                                                  │
+│  Step 7d: GENERATE DIRECTIONAL RECOMMENDATIONS                              │
+│  ├─ If only DOWN significant → "Trade only on leader drops"                 │
+│  ├─ If only UP significant → "Trade only on leader rises"                   │
+│  ├─ If DOWN stronger → "Higher confidence on leader drops"                  │
+│  └─ If similar → "Symmetric behavior, trade both directions"                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Output Metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `correlation_up` | Correlation when leader moves up |
+| `correlation_down` | Correlation when leader moves down |
+| `optimal_lag_up` | Best lag for upward movements |
+| `optimal_lag_down` | Best lag for downward movements |
+| `significance_up` | Granger p-value for UP dataset |
+| `significance_down` | Granger p-value for DOWN dataset |
+| `samples_up` | Number of upward movement samples |
+| `samples_down` | Number of downward movement samples |
+| `asymmetry_score` | Degree of directional difference (0-1) |
+
+**Asymmetry Score Calculation:**
+
+```
+asymmetry_score = (
+    0.4 × |correlation_up - correlation_down| +
+    0.3 × (lag_difference / max_lag) +
+    0.3 × significance_difference
+)
+```
+
+Where:
+- `lag_difference` = normalized difference in optimal lags
+- `significance_difference` = 1 if only one direction significant, 0 if both or neither
+
+**Interpretation:**
+
+| Asymmetry Score | Interpretation | Trading Implication |
+|-----------------|----------------|---------------------|
+| 0.0 - 0.2 | Symmetric | Trade both directions equally |
+| 0.2 - 0.5 | Moderate asymmetry | Favor stronger direction |
+| 0.5 - 1.0 | Strong asymmetry | Consider single-direction trading |
+
+**Example Output:**
+
+```
+Directional Analysis: TAO → WTAO
+────────────────────────────────────────────────────────
+Direction   | Samples | Correlation | Lag    | Granger p
+────────────────────────────────────────────────────────
+UP (rises)  |   412   |   -0.12     | 72s    | 0.18
+DOWN (falls)|   388   |   -0.24     | 48s    | 0.02 ✓
+────────────────────────────────────────────────────────
+Asymmetry Score: 0.58 (Strong)
+
+Recommendation: Trade primarily on TAO drops
+├─ DOWN direction shows 2x stronger correlation
+├─ DOWN direction is statistically significant (p=0.02)
+├─ DOWN direction has faster response (48s vs 72s lag)
+└─ UP direction is NOT significant (p=0.18)
+```
+
+**CLI Extension:**
+
+```bash
+# Enable directional analysis (on by default in discovery mode)
+python correlation_tracker.py --analyze --directional
+
+# Disable directional analysis for faster runs
+python correlation_tracker.py --analyze --no-directional
+```
+
+**Minimum Samples per Direction:**
+
+To ensure statistical validity, each direction requires minimum samples:
+- Default: `min_directional_samples = 100`
+- If either direction has insufficient samples, directional analysis is skipped with warning
+
+---
+
 ### Example: Complete Analysis Flow
 
 ```
@@ -761,6 +885,27 @@ The detailed per-test statistics should also be included in the JSON output repo
         "total_score": 0.79,
         "confidence_level": "very_high",
         "reason": "All factors contribute positively, score 0.79 indicates strong reliability"
+      },
+      "directional_analysis": {
+        "enabled": true,
+        "up_direction": {
+          "samples": 512,
+          "correlation": 0.68,
+          "optimal_lag_seconds": 35,
+          "granger_p_value": 0.008,
+          "significant": true
+        },
+        "down_direction": {
+          "samples": 473,
+          "correlation": 0.76,
+          "optimal_lag_seconds": 25,
+          "granger_p_value": 0.001,
+          "significant": true
+        },
+        "asymmetry_score": 0.24,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "recommendation": "DOWN direction shows stronger correlation (0.76 vs 0.68) and faster lag (25s vs 35s)"
       }
     },
     "conclusion": {
@@ -770,7 +915,8 @@ The detailed per-test statistics should also be included in the JSON output repo
       "correlation": 0.72,
       "confidence": 0.79,
       "recommendation": "Strong leading indicator - BTC movements predict ETH ~30s later",
-      "caveats": []
+      "caveats": [],
+      "directional_recommendation": "Both directions significant; DOWN slightly stronger"
     }
   }
 }
