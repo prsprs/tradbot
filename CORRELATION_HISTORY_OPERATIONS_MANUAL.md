@@ -72,7 +72,16 @@ python correlation_tracker.py --analyze --data-dir ./correlation_data
 | `--recent` | duration string | *(all data)* | Only analyze recent data (e.g., `14days`, `48hr`) |
 | `--start-date` | date | *(empty)* | Start date for analysis (`YYYY-MM-DD`) |
 | `--end-date` | date | *(empty)* | End date for analysis (`YYYY-MM-DD`) |
-| `--output-report` | path | *(empty)* | Path to save analysis report (JSON) |
+| `--output-report` | path | `./correlation_data/discovery_report.json` | Path to save analysis report (JSON) |
+| `--verbose`, `-v` | flag | `false` | Output detailed test results for all pairs |
+
+### Profitability Analysis Options
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--profitability` | flag | `false` | Run profitability/volatility analysis |
+| `--position-size` | float | `1000` | Position size in USD for cost calculations |
+| `--target-profit` | float | `0.5` | Target profit percentage per trade |
 
 ### Duration Format
 
@@ -470,6 +479,121 @@ python correlation_tracker.py --analyze --leader BTC --follower SOL --output-rep
 ```bash
 python correlation_tracker.py --config ./my_config.yaml
 ```
+
+---
+
+## Profitability Analysis
+
+Profitability analysis combines cost, volatility, and correlation analysis to determine if a pair is worth trading.
+
+### Single Pair Analysis
+
+```bash
+python correlation_tracker.py --analyze --profitability --leader BTC --follower WTAO
+```
+
+### Batch Analysis (All Significant Pairs)
+
+```bash
+python correlation_tracker.py --analyze --profitability
+```
+
+### Filter by Leader
+
+Analyze a specific leader with all its significant followers:
+
+```bash
+python correlation_tracker.py --analyze --profitability --leader SOL
+```
+
+### Filter by Follower
+
+Analyze a specific follower with all its significant leaders:
+
+```bash
+python correlation_tracker.py --analyze --profitability --follower WTAO
+```
+
+### Custom Position Size
+
+```bash
+python correlation_tracker.py --analyze --profitability --position-size 500
+```
+
+### Output Format
+
+Single pair analysis shows detailed cost, volatility, and correlation breakdown:
+
+```
+===========================================================================
+          PROFITABILITY ANALYSIS: TAO → WTAO
+===========================================================================
+
+STEP 1: COST ANALYSIS
+  Follower:             WTAO
+  Liquidity:            $489,472 (jupiter)
+  Position size:        $1,000
+  Est. slippage:        0.20%
+  Est. spread:          0.15%
+  Round-trip cost:      ~0.70%
+  Break-even move:      0.70%
+  Target profit:        0.50%
+  Target move:          1.20%
+
+STEP 2: VOLATILITY ANALYSIS (from collected data)
+  ┌──────────────┬────────────┬────────────┬────────────┬─────────┐
+  │ Interval     │ Median Δ%  │ % > B/E    │ % > Target │ Viable? │
+  ├──────────────┼────────────┼────────────┼────────────┼─────────┤
+  │ 1 min        │      0.02% │       4.7% │       1.1% │    ✗   │
+  │ 5 min        │      0.18% │      10.8% │       4.4% │    ✗   │
+  │ 15 min       │      0.30% │      19.9% │       9.9% │    ✗   │
+  │ 1 hour       │      0.58% │      46.2% │      26.9% │    ✓   │ ←
+  │ 4 hour       │      1.23% │      68.8% │      56.2% │    ✓   │ ←
+  └──────────────┴────────────┴────────────┴────────────┴─────────┘
+
+  Recommended interval: 1 hour+
+
+STEP 3: CORRELATION ANALYSIS (at recommended interval)
+  Correlation:          0.0467
+  Granger significant:  No ✗
+
+===========================================================================
+VERDICT: ⚠️ VOLATILITY OK, CORRELATION WEAK
+---------------------------------------------------------------------------
+  Sufficient volatility at 1 hour+ intervals, but correlation between TAO
+  and WTAO is weak. The leader may not reliably predict the follower.
+===========================================================================
+```
+
+Batch analysis shows a summary table:
+
+```
+==========================================================================================
+                         PROFITABILITY ANALYSIS SUMMARY
+==========================================================================================
+┌─────────────────────────┬─────────────┬──────────────┬───────────────┬─────────────────────┐
+│ Pair                    │ Break-even  │ Best Interval│ Correlation   │ Verdict             │
+├─────────────────────────┼─────────────┼──────────────┼───────────────┼─────────────────────┤
+│ BTC → SOL               │       0.50% │       4 hour │         0.171 │ ✓ VIABLE            │
+│ SOL → WTAO              │       0.70% │       1 hour │        -0.129 │ ✓ VIABLE            │
+└─────────────────────────┴─────────────┴──────────────┴───────────────┴─────────────────────┘
+
+Summary: 2 pairs analyzed
+  ✓ VIABLE: 2
+  ? POSSIBLY VIABLE: 0
+  ⚠ VOLATILITY OK, CORRELATION WEAK: 0
+  ✗ NOT VIABLE: 0
+==========================================================================================
+```
+
+### Verdict Categories
+
+| Verdict | Meaning |
+|---------|---------|
+| **VIABLE** | Sufficient volatility AND statistically significant correlation |
+| **POSSIBLY VIABLE** | Sufficient volatility, correlation exists but Granger not significant |
+| **VOLATILITY OK, CORRELATION WEAK** | Sufficient volatility but weak correlation |
+| **NOT VIABLE** | Insufficient volatility at all intervals |
 
 ---
 

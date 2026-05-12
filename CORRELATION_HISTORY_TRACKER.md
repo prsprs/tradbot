@@ -1335,6 +1335,83 @@ Write to S3 / GCS / Cloud Storage
 
 ---
 
+## Alternative Data Source: CoinGecko Historical API (Evaluated, Deferred)
+
+### Motivation
+
+Collecting sufficient samples for large time interval analysis (e.g., 4-hour intervals) requires days of continuous data collection. CoinGecko's historical API could provide instant access to historical price data without waiting.
+
+### CoinGecko Historical API Endpoints
+
+| Endpoint | Resolution | Max Range | Free Tier |
+|----------|------------|-----------|-----------|
+| `/coins/{id}/market_chart` | Auto (5min-daily) | 365 days | ✓ |
+| `/coins/{id}/market_chart/range` | Auto | Any with timestamps | ✓ |
+| `/coins/{id}/ohlc` | 1-4hr candles | 90 days | ✓ |
+
+### Granularity Limitations (Critical)
+
+CoinGecko **auto-adjusts granularity** based on requested range:
+
+| Requested Range | Returned Granularity |
+|-----------------|---------------------|
+| 1-2 days | 5-minute intervals |
+| 2-90 days | Hourly intervals |
+| 90+ days | Daily intervals |
+
+**Impact:** Cannot get sub-5-minute data for periods longer than 2 days on free tier.
+
+### Cost Analysis
+
+| Tier | Rate Limit | Granularity | Cost |
+|------|------------|-------------|------|
+| **Free** | 10-30 req/min | Auto (limited) | $0 |
+| **Analyst** | 500 req/min | Better | ~$129/mo |
+| **Pro** | 1000 req/min | Best | ~$449/mo |
+
+### Implementation Requirements
+
+1. Add `get_historical_prices()` to `coingeckoutil.py`
+2. Add `--source coingecko` CLI flag
+3. Resample CoinGecko data to consistent intervals
+4. Handle cross-coin timestamp alignment
+
+### Challenges Identified
+
+| Challenge | Description |
+|-----------|-------------|
+| **Rate limiting** | 6+ seconds between requests on free tier |
+| **Granularity** | Can't get 30-sec data for analysis periods >2 days |
+| **Timestamp alignment** | Each coin returns different timestamps |
+| **Wrapped tokens** | WTAO and similar may lack historical data |
+| **Cost** | Pro tier needed for high-frequency analysis |
+
+### Comparison: Local Collection vs CoinGecko
+
+| Aspect | Local Collection | CoinGecko Free | CoinGecko Pro |
+|--------|------------------|----------------|---------------|
+| Resolution | 30-sec | 5-min (2 days) / hourly | 1-min possible |
+| History depth | Unlimited | 365 days | Longer |
+| Cost | $0 (compute time) | $0 | ~$129-449/mo |
+| Setup time | Days of collection | Instant | Instant |
+| Custom coins | Any with price feed | Listed coins only | Listed coins only |
+
+### Decision
+
+**Deferred** - CoinGecko free tier granularity limitations make it unsuitable for sub-hourly analysis. Pro tier cost (~$129/mo) is not justified for current use case.
+
+### Future Alternatives to Evaluate
+
+| Source | Notes |
+|--------|-------|
+| **Binance API** | 1-minute candles, free, but limited to Binance-listed pairs |
+| **CryptoCompare** | Free tier with historical data, evaluate limits |
+| **Messari** | Free tier available, check historical endpoints |
+| **DeFiLlama** | Free historical TVL/prices for DeFi tokens |
+| **Pyth Network** | On-chain price feeds with history |
+
+---
+
 ## References
 
 - **Cross-Correlation:** [Wikipedia](https://en.wikipedia.org/wiki/Cross-correlation)

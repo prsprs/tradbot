@@ -205,6 +205,30 @@ class TestResult:
 
 
 @dataclass
+class DirectionalAnalysis:
+    """Results from directional (UP vs DOWN) correlation analysis."""
+    enabled: bool = True
+    # UP direction (leader moves up)
+    up_samples: int = 0
+    up_correlation: float = 0.0
+    up_optimal_lag_seconds: int = 0
+    up_granger_pvalue: float = 1.0
+    up_significant: bool = False
+    # DOWN direction (leader moves down)
+    down_samples: int = 0
+    down_correlation: float = 0.0
+    down_optimal_lag_seconds: int = 0
+    down_granger_pvalue: float = 1.0
+    down_significant: bool = False
+    # Comparison
+    asymmetry_score: float = 0.0
+    asymmetry_level: str = "symmetric"  # symmetric, moderate, strong
+    stronger_direction: Optional[str] = None  # "up", "down", or None
+    recommendation: str = ""
+    skip_reason: Optional[str] = None  # If analysis was skipped
+
+
+@dataclass
 class CorrelationReport:
     """Results from correlation analysis between two coins."""
     generated_at: str
@@ -228,6 +252,8 @@ class CorrelationReport:
     # Detailed test results
     test_results: List[TestResult] = field(default_factory=list)
     caveats: List[str] = field(default_factory=list)
+    # Directional analysis (UP vs DOWN)
+    directional_analysis: Optional[DirectionalAnalysis] = None
 
 
 @dataclass
@@ -240,6 +266,53 @@ class DiscoveryReport:
     pairs_tested: int
     significant_pairs: List[Dict[str, Any]]
     no_significant_relationship: List[Dict[str, Any]]
+
+
+@dataclass
+class IntervalAnalysis:
+    """Volatility analysis for a single time interval."""
+    interval_seconds: int
+    interval_label: str
+    median_move_pct: float
+    mean_move_pct: float
+    pct_above_breakeven: float  # % of moves > break-even threshold
+    pct_above_target: float     # % of moves > target profit threshold
+    sample_count: int
+    viable: bool
+    notes: str = ""
+
+
+@dataclass
+class CostAnalysis:
+    """Trading cost analysis for a token."""
+    follower_symbol: str
+    liquidity_usd: Optional[float]
+    position_size_usd: float
+    estimated_slippage_pct: float
+    estimated_spread_pct: float
+    round_trip_cost_pct: float
+    break_even_move_pct: float
+    target_profit_pct: float
+    target_move_pct: float
+    liquidity_source: str  # 'jupiter' or 'estimated'
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ProfitabilityReport:
+    """Complete profitability analysis report."""
+    generated_at: str
+    leader_symbol: str
+    follower_symbol: str
+    cost_analysis: CostAnalysis
+    interval_analyses: List[IntervalAnalysis]
+    recommended_interval_seconds: Optional[int]
+    recommended_interval_label: Optional[str]
+    viable_intervals: List[str]
+    verdict: str
+    verdict_details: str
+    correlation_at_recommended: Optional[float] = None
+    granger_significant_at_recommended: Optional[bool] = None
 
 
 @dataclass
@@ -269,6 +342,10 @@ class AnalyzerConfig:
     start_date: Optional[datetime] = None  # Explicit start date filter
     end_date: Optional[datetime] = None    # Explicit end date filter
     verbose: bool = False  # Output detailed test results for all pairs
+    # Profitability analysis options
+    profitability: bool = False  # Run profitability/volatility analysis
+    position_size_usd: float = 1000.0  # Position size for cost calculations
+    target_profit_pct: float = 0.5  # Target profit percentage per trade
 
 
 # ============================================================================
@@ -685,6 +762,205 @@ class CorrelationAnalyzer:
         
         return score, level, factors
 
+    def analyze_directional(self, leader_returns: pd.Series, follower_returns: pd.Series,
+                           max_lag_periods: int, interval_seconds: int,
+                           min_samples: int = 100) -> DirectionalAnalysis:
+        """
+        Analyze correlations separately for UP and DOWN leader movements.
+        
+        Args:
+            leader_returns: Leader coin percentage returns
+            follower_returns: Follower coin percentage returns
+            max_lag_periods: Maximum lag periods to test
+            interval_seconds: Seconds per period
+            min_samples: Minimum samples required per direction
+            
+        Returns:
+            DirectionalAnalysis with separate stats for UP and DOWN movements
+        """
+        import warnings
+        
+        # Align the series
+        aligned = pd.concat([leader_returns, follower_returns], axis=1, join='inner')
+        aligned.columns = ['leader', 'follower']
+        aligned = aligned.dropna()
+        
+        if len(aligned) < min_samples * 2:
+            return DirectionalAnalysis(
+                enabled=False,
+                skip_reason=f"Insufficient total samples ({len(aligned)} < {min_samples * 2})"
+            )
+        
+        # Split by leader direction
+        up_mask = aligned['leader'] > 0
+        down_mask = aligned['leader'] < 0
+        
+        up_data = aligned[up_mask]
+        down_data = aligned[down_mask]
+        
+        up_samples = len(up_data)
+        down_samples = len(down_data)
+        
+        # Check minimum samples per direction
+        if up_samples < min_samples or down_samples < min_samples:
+            return DirectionalAnalysis(
+                enabled=False,
+                up_samples=up_samples,
+                down_samples=down_samples,
+                skip_reason=f"Insufficient directional samples (UP={up_samples}, DOWN={down_samples}, need {min_samples} each)"
+            )
+        
+        # Analyze UP direction
+        up_leader = up_data['leader']
+        up_follower = up_data['follower']
+        
+        # Check for sufficient variance (avoid divide-by-zero)
+        up_leader_var = np.var(up_leader)
+        up_follower_var = np.var(up_follower)
+        if up_leader_var < 1e-10 or up_follower_var < 1e-10:
+            return DirectionalAnalysis(
+                enabled=False,
+                up_samples=up_samples,
+                down_samples=down_samples,
+                skip_reason=f"Insufficient variance in UP direction data"
+            )
+        
+        # Suppress numpy warnings during directional correlation (small subsets may have edge cases)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            up_lags, up_correlations = self.cross_correlation(up_leader, up_follower, max_lag_periods)
+        
+        if len(up_correlations) > 0:
+            # Find optimal positive lag for UP
+            positive_mask = up_lags > 0
+            if np.any(positive_mask):
+                pos_idx = np.argmax(np.abs(up_correlations[positive_mask]))
+                up_optimal_lag = int(up_lags[positive_mask][pos_idx])
+                up_correlation = float(up_correlations[positive_mask][pos_idx])
+            else:
+                up_optimal_lag = 0
+                up_correlation = float(up_correlations[len(up_correlations)//2])
+        else:
+            up_optimal_lag = 0
+            up_correlation = 0.0
+        
+        # Flag suspicious perfect correlations as unreliable
+        if abs(up_correlation) >= 0.999:
+            up_correlation = 0.0  # Reset to 0 - perfect correlation is a numerical artifact
+            logger.debug(f"UP correlation reset: perfect correlation detected (numerical artifact)")
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            up_pvalue, up_significant = self.granger_causality_test(up_leader, up_follower)
+        
+        # Analyze DOWN direction
+        down_leader = down_data['leader']
+        down_follower = down_data['follower']
+        
+        # Check for sufficient variance (avoid divide-by-zero)
+        down_leader_var = np.var(down_leader)
+        down_follower_var = np.var(down_follower)
+        if down_leader_var < 1e-10 or down_follower_var < 1e-10:
+            return DirectionalAnalysis(
+                enabled=False,
+                up_samples=up_samples,
+                down_samples=down_samples,
+                skip_reason=f"Insufficient variance in DOWN direction data"
+            )
+        
+        # Suppress numpy warnings during directional correlation
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            down_lags, down_correlations = self.cross_correlation(down_leader, down_follower, max_lag_periods)
+        
+        if len(down_correlations) > 0:
+            # Find optimal positive lag for DOWN
+            positive_mask = down_lags > 0
+            if np.any(positive_mask):
+                pos_idx = np.argmax(np.abs(down_correlations[positive_mask]))
+                down_optimal_lag = int(down_lags[positive_mask][pos_idx])
+                down_correlation = float(down_correlations[positive_mask][pos_idx])
+            else:
+                down_optimal_lag = 0
+                down_correlation = float(down_correlations[len(down_correlations)//2])
+        else:
+            down_optimal_lag = 0
+            down_correlation = 0.0
+        
+        # Flag suspicious perfect correlations as unreliable
+        if abs(down_correlation) >= 0.999:
+            down_correlation = 0.0  # Reset to 0 - perfect correlation is a numerical artifact
+            logger.debug(f"DOWN correlation reset: perfect correlation detected (numerical artifact)")
+        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            down_pvalue, down_significant = self.granger_causality_test(down_leader, down_follower)
+        
+        # Calculate asymmetry score
+        corr_diff = abs(abs(up_correlation) - abs(down_correlation))
+        lag_diff = abs(up_optimal_lag - down_optimal_lag) / max(max_lag_periods, 1)
+        
+        # Significance difference: 1 if only one direction significant, 0 if both or neither
+        sig_diff = 1.0 if (up_significant != down_significant) else 0.0
+        
+        asymmetry_score = (
+            0.4 * corr_diff +
+            0.3 * min(1.0, lag_diff) +
+            0.3 * sig_diff
+        )
+        
+        # Classify asymmetry level
+        if asymmetry_score < 0.2:
+            asymmetry_level = "symmetric"
+        elif asymmetry_score < 0.5:
+            asymmetry_level = "moderate"
+        else:
+            asymmetry_level = "strong"
+        
+        # Determine stronger direction
+        up_strength = abs(up_correlation) * (1.0 if up_significant else 0.5)
+        down_strength = abs(down_correlation) * (1.0 if down_significant else 0.5)
+        
+        if up_strength > down_strength * 1.1:
+            stronger_direction = "up"
+        elif down_strength > up_strength * 1.1:
+            stronger_direction = "down"
+        else:
+            stronger_direction = None
+        
+        # Generate recommendation
+        if not up_significant and not down_significant:
+            recommendation = "Neither direction is statistically significant"
+        elif up_significant and not down_significant:
+            recommendation = f"Trade only on leader RISES (UP significant, p={up_pvalue:.3f})"
+        elif down_significant and not up_significant:
+            recommendation = f"Trade only on leader DROPS (DOWN significant, p={down_pvalue:.3f})"
+        elif asymmetry_level == "strong":
+            dir_name = "RISES" if stronger_direction == "up" else "DROPS"
+            recommendation = f"Strong asymmetry: favor leader {dir_name}"
+        elif asymmetry_level == "moderate":
+            recommendation = f"Moderate asymmetry: {stronger_direction.upper() if stronger_direction else 'similar'} direction slightly stronger"
+        else:
+            recommendation = "Symmetric behavior: trade both directions equally"
+        
+        return DirectionalAnalysis(
+            enabled=True,
+            up_samples=up_samples,
+            up_correlation=round(up_correlation, 4),
+            up_optimal_lag_seconds=up_optimal_lag * interval_seconds,
+            up_granger_pvalue=round(up_pvalue, 4),
+            up_significant=up_significant,
+            down_samples=down_samples,
+            down_correlation=round(down_correlation, 4),
+            down_optimal_lag_seconds=down_optimal_lag * interval_seconds,
+            down_granger_pvalue=round(down_pvalue, 4),
+            down_significant=down_significant,
+            asymmetry_score=round(asymmetry_score, 4),
+            asymmetry_level=asymmetry_level,
+            stronger_direction=stronger_direction,
+            recommendation=recommendation
+        )
+
     def _get_recommendation(self, confidence_level: str, correlation: float, lag: int) -> str:
         """Generate recommendation text based on analysis results."""
         if confidence_level == 'very_high':
@@ -894,6 +1170,47 @@ class CorrelationAnalyzer:
         # Determine date range
         timestamps = df['timestamp']
         
+        # TEST 6: Directional analysis (UP vs DOWN)
+        directional = self.analyze_directional(
+            leader_returns, follower_returns,
+            max_lag_periods, interval_seconds
+        )
+        
+        if directional.enabled:
+            test_results.append(TestResult(
+                test_name="Directional Analysis (UP vs DOWN)",
+                passed=True,  # Informational, not pass/fail
+                metrics={
+                    'up_samples': directional.up_samples,
+                    'up_correlation': directional.up_correlation,
+                    'up_optimal_lag_seconds': directional.up_optimal_lag_seconds,
+                    'up_granger_pvalue': directional.up_granger_pvalue,
+                    'up_significant': directional.up_significant,
+                    'down_samples': directional.down_samples,
+                    'down_correlation': directional.down_correlation,
+                    'down_optimal_lag_seconds': directional.down_optimal_lag_seconds,
+                    'down_granger_pvalue': directional.down_granger_pvalue,
+                    'down_significant': directional.down_significant,
+                    'asymmetry_score': directional.asymmetry_score,
+                    'asymmetry_level': directional.asymmetry_level,
+                    'stronger_direction': directional.stronger_direction
+                },
+                reason=directional.recommendation
+            ))
+        else:
+            # Show that TEST 6 was skipped and why
+            test_results.append(TestResult(
+                test_name="Directional Analysis (UP vs DOWN)",
+                passed="Skipped",
+                metrics={
+                    'up_samples': directional.up_samples,
+                    'down_samples': directional.down_samples,
+                    'min_required_per_direction': 100
+                },
+                reason=directional.skip_reason or "Insufficient samples for directional analysis",
+                reason_code="DIRECTIONAL_SKIPPED"
+            ))
+        
         report = CorrelationReport(
             generated_at=datetime.now(timezone.utc).isoformat(),
             data_range_start=str(timestamps.min()),
@@ -914,7 +1231,8 @@ class CorrelationAnalyzer:
             recommendation=self._get_recommendation(confidence_level, correlation_at_optimal, optimal_lag * interval_seconds),
             trading_signal_strength=self._get_signal_strength(confidence_level),
             test_results=test_results,
-            caveats=caveats
+            caveats=caveats,
+            directional_analysis=directional
         )
         
         return report
@@ -1000,6 +1318,27 @@ class CorrelationAnalyzer:
                     })
                     continue
                 
+                # Build directional analysis dict if available
+                directional_dict = None
+                if report.directional_analysis and report.directional_analysis.enabled:
+                    da = report.directional_analysis
+                    directional_dict = {
+                        'up_samples': da.up_samples,
+                        'up_correlation': da.up_correlation,
+                        'up_optimal_lag_seconds': da.up_optimal_lag_seconds,
+                        'up_granger_pvalue': da.up_granger_pvalue,
+                        'up_significant': da.up_significant,
+                        'down_samples': da.down_samples,
+                        'down_correlation': da.down_correlation,
+                        'down_optimal_lag_seconds': da.down_optimal_lag_seconds,
+                        'down_granger_pvalue': da.down_granger_pvalue,
+                        'down_significant': da.down_significant,
+                        'asymmetry_score': da.asymmetry_score,
+                        'asymmetry_level': da.asymmetry_level,
+                        'stronger_direction': da.stronger_direction,
+                        'directional_recommendation': da.recommendation
+                    }
+                
                 pair_data = {
                     'leader': report.leader_symbol,
                     'follower': report.follower_symbol,
@@ -1012,7 +1351,8 @@ class CorrelationAnalyzer:
                     'caveats': report.caveats,
                     'stability': report.correlation_stability,
                     'stable_relationship': report.stable_relationship,
-                    'data_range_end': report.data_range_end
+                    'data_range_end': report.data_range_end,
+                    'directional_analysis': directional_dict
                 }
                 
                 if report.confidence_score >= self.config.min_confidence:
@@ -1037,6 +1377,462 @@ class CorrelationAnalyzer:
         )
         
         return discovery_report
+
+
+# ============================================================================
+# Profitability Analyzer
+# ============================================================================
+
+class ProfitabilityAnalyzer:
+    """
+    Analyzes trading profitability by combining cost, volatility, and correlation analysis.
+    
+    The three-part framework:
+    1. COST: What % move is needed to break even?
+    2. VOLATILITY: At what interval does follower move that much?
+    3. CORRELATION: Does leader predict follower at that interval?
+    """
+    
+    # Standard intervals to test (in seconds)
+    INTERVALS = [
+        (60, "1 min"),
+        (300, "5 min"),
+        (900, "15 min"),
+        (3600, "1 hour"),
+        (14400, "4 hour"),
+    ]
+    
+    def __init__(self, config: AnalyzerConfig):
+        self.config = config
+        self.loader = DataLoader(config.data_dir)
+        self.correlation_analyzer = CorrelationAnalyzer(config)
+    
+    def _get_liquidity(self, symbol: str) -> Tuple[Optional[float], str]:
+        """Get token liquidity from Jupiter or estimate it.
+        
+        Returns:
+            Tuple of (liquidity_usd, source)
+        """
+        try:
+            from dex.jupiterutil import get_token_liquidity
+            liquidity = get_token_liquidity(symbol)
+            if liquidity and liquidity > 0:
+                return liquidity, "jupiter"
+        except ImportError:
+            logger.debug("Jupiter util not available for liquidity lookup")
+        except Exception as e:
+            logger.debug(f"Jupiter liquidity lookup failed: {e}")
+        
+        # Fallback estimates for common tokens
+        estimates = {
+            'BTC': 100_000_000,
+            'ETH': 50_000_000,
+            'SOL': 10_000_000,
+            'USDC': 100_000_000,
+            'USDT': 100_000_000,
+            'BONK': 4_000_000,
+            'JLP': 12_000_000,
+            'WTAO': 500_000,
+            'TAO': 5_000_000,
+            'JUP': 8_000_000,
+        }
+        
+        symbol_upper = symbol.upper()
+        if symbol_upper in estimates:
+            return estimates[symbol_upper], "estimated"
+        
+        # Conservative default for unknown tokens
+        return 100_000, "estimated"
+    
+    def _calculate_costs(self, symbol: str, position_size_usd: float,
+                        target_profit_pct: float) -> CostAnalysis:
+        """Calculate trading costs and break-even requirements."""
+        liquidity, source = self._get_liquidity(symbol)
+        warnings = []
+        
+        # Estimate slippage based on position size vs liquidity
+        if liquidity and liquidity > 0:
+            position_ratio = position_size_usd / liquidity
+            if position_ratio < 0.001:
+                slippage_pct = 0.1
+            elif position_ratio < 0.01:
+                slippage_pct = 0.2
+            elif position_ratio < 0.05:
+                slippage_pct = 0.5
+            else:
+                slippage_pct = 1.0
+                warnings.append(f"Large position relative to liquidity ({position_ratio*100:.1f}%)")
+        else:
+            slippage_pct = 0.5
+            warnings.append("Liquidity unknown, using conservative estimate")
+        
+        # Estimated spread (bid/ask)
+        spread_pct = 0.15
+        
+        # Round-trip cost (buy + sell)
+        round_trip_pct = 2 * (slippage_pct + spread_pct)
+        
+        # Break-even = round-trip cost
+        break_even_pct = round_trip_pct
+        
+        # Target move = break-even + target profit
+        target_move_pct = break_even_pct + target_profit_pct
+        
+        if liquidity and liquidity < 100_000:
+            warnings.append(f"Low liquidity (${liquidity:,.0f})")
+        
+        return CostAnalysis(
+            follower_symbol=symbol.upper(),
+            liquidity_usd=liquidity,
+            position_size_usd=position_size_usd,
+            estimated_slippage_pct=round(slippage_pct, 3),
+            estimated_spread_pct=round(spread_pct, 3),
+            round_trip_cost_pct=round(round_trip_pct, 3),
+            break_even_move_pct=round(break_even_pct, 3),
+            target_profit_pct=target_profit_pct,
+            target_move_pct=round(target_move_pct, 3),
+            liquidity_source=source,
+            warnings=warnings
+        )
+    
+    def _analyze_volatility_at_interval(self, df: pd.DataFrame, symbol: str,
+                                        interval_seconds: int, interval_label: str,
+                                        break_even_pct: float, target_move_pct: float) -> Optional[IntervalAnalysis]:
+        """Analyze price volatility at a specific time interval."""
+        # Get price series
+        prices = self.loader.get_price_series(df, symbol)
+        
+        if len(prices) < 10:
+            return None
+        
+        # Resample to the target interval
+        # Use the last price in each interval
+        interval_str = f"{interval_seconds}s"
+        resampled = prices.resample(interval_str).last().dropna()
+        
+        if len(resampled) < 5:
+            return None
+        
+        # Calculate percentage moves between intervals
+        pct_moves = resampled.pct_change().abs() * 100
+        pct_moves = pct_moves.dropna()
+        
+        if len(pct_moves) < 3:
+            return None
+        
+        median_move = float(pct_moves.median())
+        mean_move = float(pct_moves.mean())
+        
+        # Calculate % of moves above thresholds
+        pct_above_breakeven = float((pct_moves >= break_even_pct).mean() * 100)
+        pct_above_target = float((pct_moves >= target_move_pct).mean() * 100)
+        
+        # Viable if median move >= break-even OR >30% of moves exceed break-even
+        viable = median_move >= break_even_pct or pct_above_breakeven >= 30
+        
+        # Generate notes
+        if viable:
+            if pct_above_target >= 50:
+                notes = "Good margin"
+            elif pct_above_target >= 30:
+                notes = "Adequate margin"
+            else:
+                notes = "Marginal"
+        else:
+            if break_even_pct > 0:
+                multiplier = break_even_pct / median_move if median_move > 0 else float('inf')
+                if multiplier < 2:
+                    notes = f"Need {multiplier:.1f}x more volatility"
+                else:
+                    notes = f"Need {multiplier:.0f}x more volatility"
+            else:
+                notes = "Insufficient volatility"
+        
+        return IntervalAnalysis(
+            interval_seconds=interval_seconds,
+            interval_label=interval_label,
+            median_move_pct=round(median_move, 4),
+            mean_move_pct=round(mean_move, 4),
+            pct_above_breakeven=round(pct_above_breakeven, 1),
+            pct_above_target=round(pct_above_target, 1),
+            sample_count=len(pct_moves),
+            viable=viable,
+            notes=notes
+        )
+    
+    def analyze(self, leader: str, follower: str) -> Optional[ProfitabilityReport]:
+        """Run complete profitability analysis for a leader-follower pair."""
+        # Load data
+        df = self.loader.load_all(
+            recent_seconds=self.config.recent_seconds,
+            start_date=self.config.start_date,
+            end_date=self.config.end_date
+        )
+        
+        if df.empty:
+            logger.error("No data loaded")
+            return None
+        
+        # Check both symbols exist in data
+        available_symbols = df['symbol'].unique()
+        leader_upper = leader.upper()
+        follower_upper = follower.upper()
+        
+        if leader_upper not in available_symbols:
+            logger.error(f"Leader symbol '{leader}' not found in data")
+            return None
+        if follower_upper not in available_symbols:
+            logger.error(f"Follower symbol '{follower}' not found in data")
+            return None
+        
+        # Step 1: Cost Analysis
+        cost_analysis = self._calculate_costs(
+            follower,
+            self.config.position_size_usd,
+            self.config.target_profit_pct
+        )
+        
+        # Step 2: Volatility Analysis at multiple intervals
+        interval_analyses = []
+        for interval_sec, interval_label in self.INTERVALS:
+            analysis = self._analyze_volatility_at_interval(
+                df, follower, interval_sec, interval_label,
+                cost_analysis.break_even_move_pct,
+                cost_analysis.target_move_pct
+            )
+            if analysis:
+                interval_analyses.append(analysis)
+        
+        if not interval_analyses:
+            logger.error("Could not analyze any intervals - insufficient data")
+            return None
+        
+        # Find viable intervals
+        viable_intervals = [ia for ia in interval_analyses if ia.viable]
+        viable_labels = [ia.interval_label for ia in viable_intervals]
+        
+        # Determine recommended interval (first viable, preferring shorter)
+        recommended_interval = None
+        recommended_label = None
+        if viable_intervals:
+            # Sort by interval (shorter is better for trading frequency)
+            viable_intervals.sort(key=lambda x: x.interval_seconds)
+            recommended_interval = viable_intervals[0].interval_seconds
+            recommended_label = viable_intervals[0].interval_label
+        
+        # Step 3: Correlation Analysis at recommended interval (if viable)
+        correlation_at_recommended = None
+        granger_significant = None
+        
+        if recommended_interval:
+            # Create a temporary config with the recommended lag range
+            temp_config = AnalyzerConfig(
+                data_dir=self.config.data_dir,
+                min_samples=50,  # Lower threshold for interval-specific analysis
+                lag_range_seconds=(0, recommended_interval * 2),
+                recent_seconds=self.config.recent_seconds,
+                start_date=self.config.start_date,
+                end_date=self.config.end_date
+            )
+            temp_analyzer = CorrelationAnalyzer(temp_config)
+            
+            corr_report = temp_analyzer.analyze_pair(
+                df, leader, follower,
+                interval_seconds=recommended_interval // 10 if recommended_interval >= 60 else 6
+            )
+            
+            if corr_report:
+                correlation_at_recommended = corr_report.correlation_at_optimal_lag
+                granger_significant = corr_report.granger_causality_significant
+        
+        # Generate verdict
+        if not viable_intervals:
+            verdict = "NOT VIABLE"
+            verdict_details = (
+                f"No viable interval found. Even at the longest tested interval "
+                f"({interval_analyses[-1].interval_label}), median move "
+                f"({interval_analyses[-1].median_move_pct:.2f}%) < break-even "
+                f"({cost_analysis.break_even_move_pct:.2f}%). This pair may not be profitable to trade."
+            )
+        elif granger_significant:
+            verdict = "VIABLE"
+            best = viable_intervals[0]
+            verdict_details = (
+                f"Trade at {recommended_label}+ intervals, expect ~{best.pct_above_breakeven:.0f}% "
+                f"opportunity rate. Correlation is statistically significant."
+            )
+        elif correlation_at_recommended and abs(correlation_at_recommended) >= 0.3:
+            verdict = "POSSIBLY VIABLE"
+            best = viable_intervals[0]
+            verdict_details = (
+                f"Trade at {recommended_label}+ intervals. Correlation exists "
+                f"({correlation_at_recommended:.2f}) but Granger causality not significant. "
+                f"Use with caution."
+            )
+        else:
+            verdict = "VOLATILITY OK, CORRELATION WEAK"
+            verdict_details = (
+                f"Sufficient volatility at {recommended_label}+ intervals, but correlation "
+                f"between {leader} and {follower} is weak. The leader may not reliably predict the follower."
+            )
+        
+        return ProfitabilityReport(
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            leader_symbol=leader_upper,
+            follower_symbol=follower_upper,
+            cost_analysis=cost_analysis,
+            interval_analyses=interval_analyses,
+            recommended_interval_seconds=recommended_interval,
+            recommended_interval_label=recommended_label,
+            viable_intervals=viable_labels,
+            verdict=verdict,
+            verdict_details=verdict_details,
+            correlation_at_recommended=round(correlation_at_recommended, 4) if correlation_at_recommended else None,
+            granger_significant_at_recommended=granger_significant
+        )
+    
+    def analyze_batch(self, pairs: List[Tuple[str, str]], verbose: bool = False) -> List[ProfitabilityReport]:
+        """Analyze profitability for multiple pairs.
+        
+        Args:
+            pairs: List of (leader, follower) tuples
+            verbose: If True, print detailed report for each pair
+            
+        Returns:
+            List of ProfitabilityReport objects (only successful analyses)
+        """
+        reports = []
+        for leader, follower in pairs:
+            logger.info(f"Analyzing profitability: {leader} -> {follower}")
+            try:
+                report = self.analyze(leader, follower)
+                if report:
+                    reports.append(report)
+                    if verbose:
+                        self.print_report(report)
+            except Exception as e:
+                logger.warning(f"Failed to analyze {leader} -> {follower}: {e}")
+        return reports
+    
+    def print_batch_summary(self, reports: List[ProfitabilityReport]):
+        """Print a summary table of batch profitability analysis."""
+        if not reports:
+            print("\nNo viable pairs found.")
+            return
+        
+        print("\n" + "=" * 90)
+        print("                         PROFITABILITY ANALYSIS SUMMARY")
+        print("=" * 90)
+        print("┌─────────────────────────┬─────────────┬──────────────┬───────────────┬─────────────────────┐")
+        print("│ Pair                    │ Break-even  │ Best Interval│ Correlation   │ Verdict             │")
+        print("├─────────────────────────┼─────────────┼──────────────┼───────────────┼─────────────────────┤")
+        
+        # Sort by verdict (VIABLE first, then POSSIBLY, then others)
+        def verdict_sort_key(r):
+            if r.verdict == "VIABLE":
+                return (0, -abs(r.correlation_at_recommended or 0))
+            elif r.verdict == "POSSIBLY VIABLE":
+                return (1, -abs(r.correlation_at_recommended or 0))
+            elif "VOLATILITY OK" in r.verdict:
+                return (2, 0)
+            else:
+                return (3, 0)
+        
+        sorted_reports = sorted(reports, key=verdict_sort_key)
+        
+        for r in sorted_reports:
+            pair = f"{r.leader_symbol} → {r.follower_symbol}"
+            be = f"{r.cost_analysis.break_even_move_pct:.2f}%"
+            interval = r.recommended_interval_label or "N/A"
+            corr = f"{r.correlation_at_recommended:.3f}" if r.correlation_at_recommended else "N/A"
+            
+            # Truncate verdict if needed
+            verdict = r.verdict[:19] if len(r.verdict) > 19 else r.verdict
+            
+            # Add marker for viable
+            if r.verdict == "VIABLE":
+                verdict = "✓ " + verdict
+            elif r.verdict == "POSSIBLY VIABLE":
+                verdict = "? " + verdict  
+            elif "NOT VIABLE" in r.verdict:
+                verdict = "✗ " + verdict[:17]
+            
+            print(f"│ {pair:<23} │ {be:>11} │ {interval:>12} │ {corr:>13} │ {verdict:<19} │")
+        
+        print("└─────────────────────────┴─────────────┴──────────────┴───────────────┴─────────────────────┘")
+        
+        # Count by verdict
+        viable_count = sum(1 for r in reports if r.verdict == "VIABLE")
+        possibly_count = sum(1 for r in reports if r.verdict == "POSSIBLY VIABLE")
+        not_viable_count = sum(1 for r in reports if "NOT VIABLE" in r.verdict)
+        weak_corr_count = sum(1 for r in reports if "WEAK" in r.verdict)
+        
+        print(f"\nSummary: {len(reports)} pairs analyzed")
+        print(f"  ✓ VIABLE: {viable_count}")
+        print(f"  ? POSSIBLY VIABLE: {possibly_count}")
+        print(f"  ⚠ VOLATILITY OK, CORRELATION WEAK: {weak_corr_count}")
+        print(f"  ✗ NOT VIABLE: {not_viable_count}")
+        print("=" * 90 + "\n")
+
+    def print_report(self, report: ProfitabilityReport):
+        """Print a formatted profitability report to console."""
+        print("\n" + "=" * 75)
+        print(f"          PROFITABILITY ANALYSIS: {report.leader_symbol} → {report.follower_symbol}")
+        print("=" * 75)
+        
+        # Step 1: Cost Analysis
+        cost = report.cost_analysis
+        print("\nSTEP 1: COST ANALYSIS")
+        print(f"  Follower:             {cost.follower_symbol}")
+        if cost.liquidity_usd:
+            print(f"  Liquidity:            ${cost.liquidity_usd:,.0f} ({cost.liquidity_source})")
+        else:
+            print(f"  Liquidity:            Unknown")
+        print(f"  Position size:        ${cost.position_size_usd:,.0f}")
+        print(f"  Est. slippage:        {cost.estimated_slippage_pct:.2f}%")
+        print(f"  Est. spread:          {cost.estimated_spread_pct:.2f}%")
+        print(f"  Round-trip cost:      ~{cost.round_trip_cost_pct:.2f}%")
+        print(f"  Break-even move:      {cost.break_even_move_pct:.2f}%")
+        print(f"  Target profit:        {cost.target_profit_pct:.2f}%")
+        print(f"  Target move:          {cost.target_move_pct:.2f}%")
+        
+        if cost.warnings:
+            print(f"  ⚠️  Warnings:")
+            for w in cost.warnings:
+                print(f"      - {w}")
+        
+        # Step 2: Volatility Analysis
+        print("\nSTEP 2: VOLATILITY ANALYSIS (from collected data)")
+        print("  ┌──────────────┬────────────┬────────────┬────────────┬─────────┐")
+        print("  │ Interval     │ Median Δ%  │ % > B/E    │ % > Target │ Viable? │")
+        print("  ├──────────────┼────────────┼────────────┼────────────┼─────────┤")
+        
+        for ia in report.interval_analyses:
+            viable_mark = "✓" if ia.viable else "✗"
+            arrow = " ←" if ia.viable else ""
+            print(f"  │ {ia.interval_label:<12} │ {ia.median_move_pct:>9.2f}% │ {ia.pct_above_breakeven:>9.1f}% │ {ia.pct_above_target:>9.1f}% │    {viable_mark}   │{arrow}")
+        
+        print("  └──────────────┴────────────┴────────────┴────────────┴─────────┘")
+        
+        if report.recommended_interval_label:
+            print(f"\n  Recommended interval: {report.recommended_interval_label}+")
+        else:
+            print("\n  ⚠️  NO VIABLE INTERVAL FOUND")
+        
+        # Step 3: Correlation Analysis
+        if report.correlation_at_recommended is not None:
+            print("\nSTEP 3: CORRELATION ANALYSIS (at recommended interval)")
+            print(f"  Correlation:          {report.correlation_at_recommended:.4f}")
+            granger_str = "Yes ✓" if report.granger_significant_at_recommended else "No ✗"
+            print(f"  Granger significant:  {granger_str}")
+        
+        # Verdict
+        print("\n" + "=" * 75)
+        verdict_symbol = "✓" if "VIABLE" in report.verdict and "NOT" not in report.verdict else "⚠️" if "POSSIBLY" in report.verdict or "WEAK" in report.verdict else "✗"
+        print(f"VERDICT: {verdict_symbol} {report.verdict}")
+        print("-" * 75)
+        print(f"  {report.verdict_details}")
+        print("=" * 75 + "\n")
 
 
 # ============================================================================
@@ -1121,6 +1917,12 @@ Examples:
   
   # Generate default config file
   python correlation_tracker.py --generate-config
+  
+  # Profitability analysis (volatility + cost + correlation)
+  python correlation_tracker.py --analyze --profitability --leader BTC --follower WTAO
+  
+  # Profitability analysis with custom position size
+  python correlation_tracker.py --analyze --profitability --leader BTC --follower WTAO --position-size 500
 
 IMPORTANT WARNINGS:
   - Correlation does NOT imply causation
@@ -1182,12 +1984,66 @@ IMPORTANT WARNINGS:
     analyzer.add_argument('--verbose', '-v', action='store_true',
                          help='Output detailed test results for all pairs (not just significant)')
     
+    # Profitability analysis options
+    profitability = parser.add_argument_group('Profitability Analysis Options')
+    profitability.add_argument('--profitability', action='store_true',
+                               help='Run profitability/volatility analysis (requires --leader and --follower)')
+    profitability.add_argument('--position-size', type=float, default=1000.0,
+                               help='Position size in USD for cost calculations (default: 1000)')
+    profitability.add_argument('--target-profit', type=float, default=0.5,
+                               help='Target profit percentage per trade (default: 0.5)')
+    
+    # Background execution
+    parser.add_argument('--run-in-background', action='store_true',
+                        help='Run the process in the background (daemonize)')
+    
     return parser.parse_args()
+
+
+def run_in_background():
+    """Fork the process to run in the background (Unix daemonization)."""
+    # First fork
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # Parent process - print child PID and exit
+            print(f"Started background process with PID: {pid}")
+            sys.exit(0)
+    except OSError as e:
+        logger.error(f"Fork failed: {e}")
+        sys.exit(1)
+    
+    # Decouple from parent environment
+    os.setsid()
+    os.umask(0)
+    
+    # Second fork to prevent zombie processes
+    try:
+        pid = os.fork()
+        if pid > 0:
+            sys.exit(0)
+    except OSError as e:
+        logger.error(f"Second fork failed: {e}")
+        sys.exit(1)
+    
+    # Redirect standard file descriptors to /dev/null
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
+    with open('/dev/null', 'r') as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+    
+    # Keep stdout/stderr for logging (or redirect to log file if desired)
+    # For now, keep them open so logger output still works
 
 
 def main():
     """Main entry point."""
     args = parse_args()
+    
+    # Run in background if requested (must be before any other processing)
+    if args.run_in_background:
+        run_in_background()
     
     # Generate default config if requested
     if args.generate_config:
@@ -1276,6 +2132,11 @@ def main():
         # Apply verbose flag
         config.verbose = args.verbose
         
+        # Apply profitability options
+        config.profitability = args.profitability
+        config.position_size_usd = args.position_size
+        config.target_profit_pct = args.target_profit
+        
         analyzer = CorrelationAnalyzer(config)
         
         # Print warnings
@@ -1287,7 +2148,89 @@ def main():
         print("• Results should be one input among many for trading decisions")
         print("="*70 + "\n")
         
-        if config.leader and config.follower:
+        if config.profitability:
+            # Profitability analysis mode (various sub-modes)
+            profitability_analyzer = ProfitabilityAnalyzer(config)
+            
+            if config.leader and config.follower:
+                # Single pair mode
+                logger.info(f"Running profitability analysis for {config.leader} -> {config.follower}")
+                report = profitability_analyzer.analyze(config.leader, config.follower)
+                
+                if report:
+                    profitability_analyzer.print_report(report)
+                    
+                    if config.output_report:
+                        output_path = config.output_report.replace('.json', '_profitability.json')
+                        with open(output_path, 'w') as f:
+                            json.dump(asdict(report), f, indent=2, default=str)
+                        logger.info(f"Profitability report saved to: {output_path}")
+                else:
+                    print("Profitability analysis failed - insufficient data")
+            
+            else:
+                # Batch mode: discover significant pairs first, then filter
+                logger.info("Discovering significant pairs for profitability analysis...")
+                discovery_report = analyzer.discover_pairs()
+                
+                if not discovery_report or not discovery_report.significant_pairs:
+                    print("No significant pairs found in data. Cannot run profitability analysis.")
+                else:
+                    # Build list of pairs to analyze based on filters (deduplicate)
+                    seen_pairs = set()
+                    pairs_to_analyze = []
+                    
+                    for pair in discovery_report.significant_pairs:
+                        leader = pair['leader']
+                        follower = pair['follower']
+                        pair_key = (leader, follower)
+                        
+                        # Skip duplicates
+                        if pair_key in seen_pairs:
+                            continue
+                        seen_pairs.add(pair_key)
+                        
+                        # Apply filters
+                        if config.leader and config.leader.upper() != leader:
+                            continue
+                        if config.follower and config.follower.upper() != follower:
+                            continue
+                        
+                        pairs_to_analyze.append((leader, follower))
+                    
+                    if not pairs_to_analyze:
+                        if config.leader:
+                            print(f"No significant pairs found with leader '{config.leader}'")
+                        elif config.follower:
+                            print(f"No significant pairs found with follower '{config.follower}'")
+                        else:
+                            print("No pairs to analyze after filtering")
+                    else:
+                        # Describe what we're doing
+                        if config.leader and not config.follower:
+                            logger.info(f"Analyzing profitability for {config.leader} -> all significant followers ({len(pairs_to_analyze)} pairs)")
+                        elif config.follower and not config.leader:
+                            logger.info(f"Analyzing profitability for all significant leaders -> {config.follower} ({len(pairs_to_analyze)} pairs)")
+                        else:
+                            logger.info(f"Analyzing profitability for all {len(pairs_to_analyze)} significant pairs")
+                        
+                        # Run batch analysis (with verbose output if requested)
+                        reports = profitability_analyzer.analyze_batch(
+                            pairs_to_analyze, 
+                            verbose=config.verbose
+                        )
+                        
+                        # Print summary table
+                        profitability_analyzer.print_batch_summary(reports)
+                        
+                        # Save detailed reports if requested
+                        if config.output_report and reports:
+                            output_path = config.output_report.replace('.json', '_profitability_batch.json')
+                            with open(output_path, 'w') as f:
+                                json.dump([asdict(r) for r in reports], f, indent=2, default=str)
+                            logger.info(f"Batch profitability reports saved to: {output_path}")
+        
+        elif config.leader and config.follower:
             # Specific pair analysis
             logger.info(f"Analyzing pair: {config.leader} -> {config.follower}")
             report = analyzer.analyze_specific_pair(config.leader, config.follower)

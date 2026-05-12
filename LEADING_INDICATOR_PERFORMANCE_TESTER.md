@@ -1681,7 +1681,7 @@ TEST 6: Directional Analysis (UP vs DOWN)
 
 ---
 
-## Profitability Analysis (Design - Not Yet Implemented)
+## Profitability Analysis (Implemented)
 
 ### Motivation
 
@@ -1815,103 +1815,92 @@ VERDICT: VIABLE - Trade 1hr intervals, expect ~45% opportunity rate
 ═══════════════════════════════════════════════════════════════════════
 ```
 
-### Implementation Alternatives
+### Implementation (Completed)
 
-#### Option A: Standalone Analyzer Script
+Profitability analysis is integrated into `correlation_tracker.py` via the `--profitability` flag.
 
-```bash
-python profitability_analyzer.py --leader BTC --follower WTAO --position-size 1000
-```
+#### Usage Modes
 
-**Pros:**
-- Clean separation of concerns
-- Can run independently without collected data (uses live API queries)
-- Easy to extend with additional analysis
+| Mode | Command | Description |
+|------|---------|-------------|
+| Single pair | `--profitability --leader BTC --follower WTAO` | Analyze one specific pair |
+| Leader filter | `--profitability --leader BTC` | Analyze BTC with all significant followers |
+| Follower filter | `--profitability --follower WTAO` | Analyze WTAO with all significant leaders |
+| All pairs | `--profitability` | Analyze all significant pairs |
 
-**Cons:**
-- Another script to maintain
-- May duplicate code from correlation_tracker.py
+#### CLI Options
 
-#### Option B: Add to correlation_tracker.py as `--profitability` Mode
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--profitability` | `false` | Enable profitability analysis mode |
+| `--position-size` | `1000` | Position size in USD for cost calculations |
+| `--target-profit` | `0.5` | Target profit percentage per trade |
 
-```bash
-python correlation_tracker.py --analyze --leader BTC --follower WTAO --profitability
-```
-
-**Pros:**
-- Leverages existing correlation analysis infrastructure
-- Single tool for all correlation-related analysis
-- Uses already-collected data
-
-**Cons:**
-- Adds complexity to correlation_tracker.py
-- Requires collected data to exist
-
-#### Option C: Add to Performance Tester as `--analyze-profitability` Pre-Check
+#### Examples
 
 ```bash
-python leading_indicator_tester.py --pair BTC:WTAO --analyze-profitability
+# Single pair analysis
+python correlation_tracker.py --analyze --profitability --leader BTC --follower WTAO
+
+# All pairs with custom position size
+python correlation_tracker.py --analyze --profitability --position-size 500
+
+# All followers for a specific leader
+python correlation_tracker.py --analyze --profitability --leader SOL
+
+# All leaders for a specific follower  
+python correlation_tracker.py --analyze --profitability --follower WTAO
 ```
 
-**Pros:**
-- Natural workflow: analyze profitability → run tester
-- Can warn/block if pair isn't profitable
-- Uses discovery report data
+#### Batch Output
 
-**Cons:**
-- Mixes analysis with testing
-- May need to fetch additional data not in discovery report
+When analyzing multiple pairs, a summary table is displayed:
+
+```
+==========================================================================================
+                         PROFITABILITY ANALYSIS SUMMARY
+==========================================================================================
+┌─────────────────────────┬─────────────┬──────────────┬───────────────┬─────────────────────┐
+│ Pair                    │ Break-even  │ Best Interval│ Correlation   │ Verdict             │
+├─────────────────────────┼─────────────┼──────────────┼───────────────┼─────────────────────┤
+│ BTC → SOL               │       0.50% │       4 hour │         0.171 │ ✓ VIABLE            │
+│ SOL → WTAO              │       0.70% │       1 hour │        -0.129 │ ✓ VIABLE            │
+└─────────────────────────┴─────────────┴──────────────┴───────────────┴─────────────────────┘
+
+Summary: 2 pairs analyzed
+  ✓ VIABLE: 2
+  ? POSSIBLY VIABLE: 0
+  ⚠ VOLATILITY OK, CORRELATION WEAK: 0
+  ✗ NOT VIABLE: 0
+==========================================================================================
+```
+
+#### Verdict Categories
+
+| Verdict | Meaning |
+|---------|---------|
+| **VIABLE** | Sufficient volatility AND statistically significant correlation |
+| **POSSIBLY VIABLE** | Sufficient volatility, correlation exists but Granger not significant |
+| **VOLATILITY OK, CORRELATION WEAK** | Sufficient volatility but weak correlation |
+| **NOT VIABLE** | Insufficient volatility at all intervals |
 
 ### Design Decisions
 
 1. **Data source for volatility analysis**
-   - **Decision:** Query CoinGecko historical API for quick analysis
+   - Uses collected correlation data (resampled at multiple intervals)
 
 2. **Multi-interval analysis**
-   - **Decision:** Automatically test multiple intervals (1min, 5min, 15min, 1hr, 4hr)
+   - Automatically tests 5 intervals: 1min, 5min, 15min, 1hr, 4hr
 
-3. **Liquidity thresholds**
-   - **Decision:** Warn only (don't hard-block), let user decide
+3. **Liquidity source**
+   - Fetches live liquidity from Jupiter Price API V3
+   - Falls back to estimates for common tokens if API unavailable
 
-4. **Integration with existing tools**
-   - **Decision:** Integrate with `correlation_tracker.py --analyze` mode
+4. **Viability threshold**
+   - Median move ≥ break-even OR ≥30% of moves exceed break-even
 
-5. **Historical vs real-time costs**
-   - **Decision:** Not for MVP; defer tracking actual vs estimated costs
-
-6. **Minimum viable analysis**
-   - **Decision:** Tool must auto-search intervals to find viable ones (not burden user)
-
-### MVP Implementation
-
-The MVP must automatically find viable trading intervals, not require user experimentation.
-
-**Logic:**
-1. Fetch follower liquidity from Jupiter → calculate break-even %
-2. Resample collected data at multiple intervals (1min, 5min, 15min, 1hr, 4hr)
-3. Calculate median % move at each interval
-4. Report which intervals meet the profitability threshold
-
-**Example Output:**
-```
-PROFITABILITY ANALYSIS: BTC → WTAO
-  Break-even move: ~0.8% (based on $490K liquidity, $1K position)
-
-  Interval   Median Move   Viable?   Notes
-  ─────────────────────────────────────────────
-  1 min      0.05%         ✗         Need 16x more volatility
-  5 min      0.15%         ✗         Need 5x more volatility
-  15 min     0.35%         ✗         Need 2x more volatility
-  1 hour     0.82%         ✓         Marginal
-  4 hour     1.45%         ✓         Good margin
-
-  RECOMMENDATION: Use 1hr+ intervals for this pair
-```
-
-**If no interval is viable:**
-```
-  ⚠️  NO VIABLE INTERVAL FOUND
-  Even at 4hr intervals, median move (0.3%) < break-even (0.8%)
-  This pair may not be profitable to trade.
-```
+5. **Batch mode workflow**
+   - Runs discovery first to find significant pairs
+   - Filters by leader/follower if specified
+   - Deduplicates pairs before analysis
 

@@ -321,6 +321,77 @@ class JupiterClient:
         return summary
 
 
+def get_jupiter_prices_v3(mint_addresses: List[str], api_key: str = None) -> Dict:
+    """Get prices and liquidity from Jupiter Price API V3.
+    
+    Args:
+        mint_addresses: List of token mint addresses.
+        api_key: Optional API key for better rate limits.
+    
+    Returns:
+        Dict mapping mint address to price info:
+        {
+            "mint_address": {
+                "usdPrice": float,
+                "liquidity": float (USD),
+                "priceChange24h": float (%)
+            }
+        }
+    """
+    if not mint_addresses:
+        return {}
+    
+    api_key = api_key or os.environ.get(JUPITER_API_KEY_ENV)
+    headers = {"x-api-key": api_key} if api_key else {}
+    
+    try:
+        with httpx.Client(timeout=15.0, headers=headers) as client:
+            response = client.get(
+                "https://api.jup.ag/price/v3",
+                params={"ids": ",".join(mint_addresses)}
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            result = {}
+            for mint, info in data.items():
+                if isinstance(info, dict):
+                    result[mint] = {
+                        "usdPrice": float(info.get("usdPrice", 0) or 0),
+                        "liquidity": float(info.get("liquidity", 0) or 0),
+                        "priceChange24h": float(info.get("priceChange24h", 0) or 0),
+                    }
+            return result
+            
+    except httpx.HTTPError as e:
+        print(f"[JUPITER] Price API V3 error: {e}")
+        return {}
+    except Exception as e:
+        print(f"[JUPITER] Price API V3 error: {type(e).__name__}: {e}")
+        return {}
+
+
+def get_token_liquidity(symbol: str, api_key: str = None) -> Optional[float]:
+    """Get token liquidity in USD from Jupiter Price API V3.
+    
+    Args:
+        symbol: Token symbol (e.g., 'WTAO', 'BONK').
+        api_key: Optional API key.
+    
+    Returns:
+        Liquidity in USD or None if not found.
+    """
+    mint = get_mint_with_fallback(symbol)
+    if not mint:
+        print(f"[JUPITER] Unknown token symbol: {symbol}")
+        return None
+    
+    prices = get_jupiter_prices_v3([mint], api_key)
+    if mint in prices:
+        return prices[mint].get("liquidity")
+    return None
+
+
 def symbol_to_mint(symbol: str) -> Optional[str]:
     """Convert a token symbol to its mint address.
     
