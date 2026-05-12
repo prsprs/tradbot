@@ -1040,6 +1040,199 @@ python leading_indicator_tester.py --pair BTC:ETH --exchange auto
 
 Once paper trading validates a correlation strategy, live trading can be enabled to execute real trades on the follower token via Jupiter DEX.
 
+### Pre-Flight Validation (Required for Live Mode)
+
+**Conservative MVP approach**: Live mode requires automatic profitability validation before trading begins. This is enforced by the code with no override option.
+
+#### Validation Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    LIVE MODE PRE-FLIGHT VALIDATION                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. User specifies: --trading-mode live --pair LEADER:FOLLOWER              │
+│                                                                              │
+│  2. Auto-run profitability analyzer:                                         │
+│     └─ correlation_tracker.py --analyze --profitability                     │
+│        --leader LEADER --follower FOLLOWER --recent 48hr                    │
+│                                                                              │
+│  3. Check verdict:                                                           │
+│     ┌─────────────────────────────────────────────────────────────────────┐ │
+│     │ VIABLE?                                                             │ │
+│     │   ├─ YES → Extract recommended_interval, proceed to trading         │ │
+│     │   └─ NO  → FAIL FAST with clear error message, exit immediately     │ │
+│     └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  4. Configure trading intervals from profitability analysis:                 │
+│     └─ sample_interval = derived from recommended_interval                  │
+│     └─ trade_frequency = 2 × recommended_interval                          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### MVP Constraints (Enforced, No Override)
+
+| Constraint | Value | Rationale |
+|------------|-------|-----------|
+| **Profitability check** | Always runs | Prevents trading unprofitable pairs |
+| **Data window** | 48 hours | Consistent, recent data for validation |
+| **Required verdict** | VIABLE only | Conservative; POSSIBLY VIABLE rejected |
+| **Interval source** | Auto from analysis | Removes guesswork, uses data-driven intervals |
+
+#### Interval Mapping
+
+| Profitability `recommended_interval` | `sample_interval` | `trade_frequency` |
+|--------------------------------------|-------------------|-------------------|
+| 1 min | 15 sec | 2 min |
+| 5 min | 75 sec | 10 min |
+| 15 min | 225 sec (~4 min) | 30 min |
+| 1 hour | 15 min | 2 hours |
+| 4 hour | 1 hour | 8 hours |
+
+Formula: `sample_interval = max(15, recommended_interval / 4)`
+
+#### Fail-Fast Error Messages
+
+```
+ERROR: Live trading rejected - pair TAO:WTAO is NOT VIABLE
+
+Pre-flight profitability analysis (last 48 hours):
+  Break-even move required: 1.3%
+  Best interval found: 15 min
+  Median move at interval: 0.4%
+  Verdict: NOT VIABLE - insufficient volatility
+
+To proceed with live trading, the pair must be VIABLE.
+Consider:
+  - Using paper trading mode to monitor this pair
+  - Waiting for higher volatility market conditions
+  - Testing a different pair
+
+Exiting.
+```
+
+```
+ERROR: Live trading rejected - pair BTC:UNKNOWN not found
+
+The pair BTC:UNKNOWN was not found in the discovery report.
+Run discovery first: python correlation_tracker.py --analyze
+
+Exiting.
+```
+
+#### Future Enhancements (Post-MVP)
+
+- `--preflight-recent` parameter to customize data window (default 48hr)
+- `--preflight warn` option to proceed with warning on POSSIBLY VIABLE
+- Periodic re-validation during long-running sessions
+
+### Directional Filter (`--directional-filter`)
+
+Optional parameter that enables direction-aware profitability analysis and runtime signal filtering.
+
+#### Behavior Summary
+
+| `--directional-filter` | Profitability Analysis | Runtime Signal Filter |
+|------------------------|------------------------|----------------------|
+| `false` (default) | Single pass (all samples) | Trade all signals from significant pairs |
+| `true` | Two passes (UP/DOWN subsets) | Trade only signals where direction is viable |
+
+#### Two-Pass Profitability Analysis
+
+When `--directional-filter=true`, pre-flight runs profitability analysis twice:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    DIRECTIONAL PROFITABILITY ANALYSIS                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  PASS 1: UP Direction                                                        │
+│  ├─ Filter data: only samples where leader moved UP                         │
+│  ├─ Run cost/volatility/correlation analysis on UP subset                   │
+│  └─ Verdict: UP-VIABLE or UP-NOT-VIABLE                                     │
+│                                                                              │
+│  PASS 2: DOWN Direction                                                      │
+│  ├─ Filter data: only samples where leader moved DOWN                       │
+│  ├─ Run cost/volatility/correlation analysis on DOWN subset                 │
+│  └─ Verdict: DOWN-VIABLE or DOWN-NOT-VIABLE                                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Directional Pre-Flight Output
+
+```
+═══════════════════════════════════════════════════════════════════════
+              DIRECTIONAL PROFITABILITY ANALYSIS: BTC → SOL
+═══════════════════════════════════════════════════════════════════════
+
+UP DIRECTION (leader rises):
+  Samples: 1,247
+  Volatility: 45% of moves exceed 0.8% break-even
+  Correlation: 0.72 (p=0.003, significant)
+  Recommended interval: 1 hour
+  Verdict: ✓ UP-VIABLE
+
+DOWN DIRECTION (leader falls):
+  Samples: 1,189
+  Volatility: 28% of moves exceed 0.8% break-even
+  Correlation: 0.31 (p=0.18, not significant)
+  Recommended interval: N/A
+  Verdict: ✗ DOWN-NOT-VIABLE
+
+═══════════════════════════════════════════════════════════════════════
+COMBINED VERDICT: PARTIALLY VIABLE (UP only)
+  → Will trade on leader RISE signals only
+  → Leader FALL signals will be skipped
+═══════════════════════════════════════════════════════════════════════
+```
+
+#### Verdict Matrix
+
+| UP-VIABLE | DOWN-VIABLE | Combined Verdict | Behavior |
+|-----------|-------------|------------------|----------|
+| ✓ | ✓ | **FULLY VIABLE** | Trade both directions |
+| ✓ | ✗ | **PARTIALLY VIABLE (UP)** | Trade only on leader rises |
+| ✗ | ✓ | **PARTIALLY VIABLE (DOWN)** | Trade only on leader falls |
+| ✗ | ✗ | **NOT VIABLE** | Fail pre-flight |
+
+**Note**: PARTIALLY VIABLE is allowed for both USDC and swap modes. In swap mode with only one direction viable, the system will only execute swaps in that direction (continuously buying or selling based on viable direction).
+
+#### Runtime Signal Filtering
+
+When `--directional-filter=true`, signals are filtered at runtime:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SIGNAL FILTER                                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Leader moved UP?                                                │
+│    ├─ UP-VIABLE = true  → GENERATE BUY SIGNAL                   │
+│    └─ UP-VIABLE = false → SKIP (log: "UP direction not viable") │
+│                                                                  │
+│  Leader moved DOWN?                                              │
+│    ├─ DOWN-VIABLE = true  → GENERATE SELL SIGNAL                │
+│    └─ DOWN-VIABLE = false → SKIP (log: "DOWN direction not      │
+│                                    viable")                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Interval Selection
+
+When both directions are viable with different recommended intervals:
+- Use the more conservative (longer) interval
+- Example: UP recommends 1hr, DOWN recommends 4hr → use 4hr
+
+When only one direction is viable:
+- Use that direction's recommended interval
+
+#### Minimum Samples
+
+Directional analysis requires minimum samples per direction (default: 100, configurable via `--min-samples`). If insufficient samples exist for a direction, that direction is marked NOT-VIABLE.
+
 ### Architecture
 
 ```
@@ -1629,55 +1822,110 @@ TEST 6: Directional Analysis (UP vs DOWN)
    - **MVP Decision**: Calculate P&L based on USDC-equivalent value. Report what gain/loss would occur if entire position (both leader and follower holdings) were sold for USDC at current prices.
 
 2. **Swap routing**
-   - Direct pool swap vs multi-hop through USDC?
-   - Let Jupiter auto-route for best price?
-   - Should we compare routes and warn if direct is worse?
-   - **Private LP consideration**: If user owns a private liquidity pool for the pair (Meteora, Orca, Raydium), routing through that pool could eliminate or reduce swap fees. This changes the economics significantly:
-     
-     | Route | Typical Fee | Notes |
-     |-------|-------------|-------|
-     | Public pool direct | 0.3-0.5% | Standard DEX fees |
-     | Multi-hop via USDC | 0.6-1.0% | Double fees (two swaps) |
-     | Private LP (owner) | 0% or reduced | Platform-dependent; may earn fees instead of paying |
-     
-   - Platforms supporting private/concentrated LPs:
-     - **Meteora DLMM** - Dynamic fee pools, owner can set parameters
-     - **Orca Whirlpools** - Concentrated liquidity with owner control
-     - **Raydium CLMM** - Concentrated liquidity market maker
-   - Open questions for private LP integration:
-     - Can we detect if user owns an LP for this pair?
-     - Should we route directly to user's LP instead of Jupiter?
-     - How do we handle the case where our own swap moves the pool price?
+   - ~~Direct pool swap vs multi-hop through USDC?~~
+   - ~~Let Jupiter auto-route for best price?~~
+   - ~~Should we compare routes and warn if direct is worse?~~
+   - **MVP Decision**: Use Jupiter auto-routing for best price. Private LP option evaluated and deferred.
+   
+   **Private LP Analysis (Evaluated, Not Implementing)**
+   
+   The concept: Create your own liquidity pool, route trades through it, and recapture fees instead of paying them to third parties.
+   
+   *Platforms supporting private/concentrated LPs:*
+   | Platform | Pool Type | Direct Routing | API Support |
+   |----------|-----------|----------------|-------------|
+   | Meteora DLMM | Concentrated | ✅ Via SDK | ✅ |
+   | Orca Whirlpools | Concentrated | ✅ Via SDK | ✅ |
+   | Raydium CLMM | Concentrated | ✅ Via SDK | ✅ |
+   
+   *Key finding: Pools are always public.* You cannot create an exclusive pool - anyone can swap through it. However, fees paid by all traders (including yourself) go to you as the LP owner.
+   
+   *Critical limitation: Slippage in small pools.*
+   
+   | Trade Size | Slippage in $10k Pool | Jupiter Fee |
+   |------------|----------------------|-------------|
+   | $100 | ~1% ($1) | ~0.3% ($0.30) |
+   | $500 | ~5% ($25) | ~0.3% ($1.50) |
+   | $1,000 | ~10% ($100) | ~0.3% ($3) |
+   
+   For a $10k pool, slippage on trades >$200 exceeds Jupiter fees. Private LP only makes economic sense with:
+   - Very small trades (<$200), OR
+   - Very large pool ($100k+ for $1k trades)
+   
+   *Additional risks:*
+   - **Impermanent loss**: Pool value decreases when token prices diverge (conflicts with correlation trading strategy which profits from divergence)
+   - **Operational complexity**: Must bypass Jupiter, use platform-specific SDKs
+   - **Non-native tokens**: BTC requires bridging to wBTC (Portal/Wormhole)
+   
+   *Decision:* Not implementing. Jupiter routing provides better economics at planned trade sizes.
 
 3. **Position sizing in swap mode**
-   - Swap entire holding or fixed percentage?
-   - Should `--position-size-usd` still apply (as equivalent value)?
-   - Reserve some for fees or go all-in?
+   - ~~Swap entire holding or fixed percentage?~~
+   - ~~Should `--position-size-usd` still apply (as equivalent value)?~~
+   - ~~Reserve some for fees or go all-in?~~
+   - **MVP Decision**: `--position-size-usd` applies in swap mode as equivalent value. Swap the USD-equivalent amount, reserve remainder for fees.
 
 4. **Partial swaps**
-   - Support swapping only a percentage of holdings?
-   - Gradual position building vs single swap?
-   - Risk management through partial positions?
+   - ~~Support swapping only a percentage of holdings?~~
+   - ~~Gradual position building vs single swap?~~
+   - ~~Risk management through partial positions?~~
+   - **MVP Decision**: Support partial swaps. Swap only `--position-size-usd` equivalent per signal, not entire holding.
 
 5. **Mixed mode**
-   - Allow both USDC and swap trades in same session?
-   - Use swap when direct pool is favorable, USDC otherwise?
-   - How would P&L reporting work in mixed mode?
+   - ~~Allow both USDC and swap trades in same session?~~
+   - ~~Use swap when direct pool is favorable, USDC otherwise?~~
+   - ~~How would P&L reporting work in mixed mode?~~
+   - **MVP Decision**: Single mode per session. Choose USDC mode OR swap mode at startup, not both.
 
 6. **Correlation requirements**
-   - Should swap mode require minimum correlation threshold?
-   - Warn if pair correlation is weak (higher divergence risk)?
-   - Auto-disable if correlation degrades during session?
+   - ~~Should swap mode require minimum correlation threshold?~~
+   - ~~Warn if pair correlation is weak (higher divergence risk)?~~
+   - ~~Auto-disable if correlation degrades during session?~~
+   - **MVP Decision**: Pre-flight validation enforces VIABLE verdict which requires significant correlation. Runtime degradation check deferred to post-MVP. See "Pre-Flight Validation" section.
 
 7. **Wrapped token edge case**
-   - For TAO/WTAO, should we consider wrap/unwrap instead of swap?
-   - Wrap/unwrap has no slippage but may have other constraints
-   - How do we detect which pairs support direct wrap/unwrap?
+   - ~~For TAO/WTAO, should we consider wrap/unwrap instead of swap?~~
+   - ~~Wrap/unwrap has no slippage but may have other constraints~~
+   - ~~How do we detect which pairs support direct wrap/unwrap?~~
+   - **MVP Decision**: Not implementing wrap/unwrap. Use swap via Jupiter.
+   
+   **Wrap/Unwrap Feasibility Analysis (Evaluated, Not Implementing)**
+   
+   *Two types of "wrapped" tokens on Solana:*
+   
+   | Type | Example | Wrap/Unwrap Mechanism | Latency |
+   |------|---------|----------------------|---------|
+   | **Native wrap** | SOL → wSOL | SPL Token program (on-chain) | ~1 second |
+   | **Bridge wrap** | TAO → WTAO | Wormhole cross-chain bridge | 5-15 minutes |
+   
+   *TAO/WTAO is a bridge wrap (Wormhole):*
+   - WTAO on Solana is TAO bridged from Bittensor via Wormhole
+   - Unwrapping requires cross-chain transaction back to Bittensor
+   - Process involves: lock/burn → VAA generation by Guardians → mint/release
+   - **Latency: 5-15 minutes per operation** (unsuitable for trading)
+   
+   *Wormhole SDK availability:*
+   - TypeScript SDK: `@wormhole-foundation/sdk` (well-documented)
+   - Python SDK: Limited, community-maintained
+   - Programmatic wrap/unwrap is technically feasible but slow
+   
+   *Why swap is better for trading:*
+   
+   | Approach | Latency | Slippage | Complexity |
+   |----------|---------|----------|------------|
+   | Jupiter swap | ~2 seconds | 0.1-0.5% | Low (existing code) |
+   | Wormhole wrap/unwrap | 5-15 minutes | 0% | High (new integration) |
+   
+   For trading frequency measured in minutes/hours, the 5-15 minute wrap latency makes wrap/unwrap impractical. Jupiter swap is the correct approach despite small slippage cost.
+   
+   *Exception - native wraps (SOL/wSOL):*
+   Could be optimized in future since SPL wrap is instant. Not prioritized for MVP.
 
 8. **Rebalancing frequency**
-   - Should there be a minimum time between swaps?
-   - Cooldown to avoid excessive fee burn on noisy signals?
-   - How does this interact with the existing cooldown logic?
+   - ~~Should there be a minimum time between swaps?~~
+   - ~~Cooldown to avoid excessive fee burn on noisy signals?~~
+   - ~~How does this interact with the existing cooldown logic?~~
+   - **MVP Decision**: Use existing `--trade-frequency` cooldown parameter. Same cooldown applies to swaps as USDC trades.
 
 ---
 
