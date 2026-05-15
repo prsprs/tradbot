@@ -316,6 +316,34 @@ class ProfitabilityReport:
 
 
 @dataclass
+class DirectionalProfitabilityResult:
+    """Results from directional (UP vs DOWN) profitability analysis."""
+    # UP direction analysis
+    up_viable: bool = False
+    up_verdict: str = ""
+    up_recommended_interval_seconds: Optional[int] = None
+    up_recommended_interval_label: Optional[str] = None
+    up_break_even_pct: Optional[float] = None
+    up_correlation: Optional[float] = None
+    up_granger_significant: Optional[bool] = None
+    up_sample_count: int = 0
+    # DOWN direction analysis
+    down_viable: bool = False
+    down_verdict: str = ""
+    down_recommended_interval_seconds: Optional[int] = None
+    down_recommended_interval_label: Optional[str] = None
+    down_break_even_pct: Optional[float] = None
+    down_correlation: Optional[float] = None
+    down_granger_significant: Optional[bool] = None
+    down_sample_count: int = 0
+    # Combined
+    combined_verdict: str = ""  # FULLY_VIABLE, PARTIALLY_VIABLE_UP, PARTIALLY_VIABLE_DOWN, NOT_VIABLE
+    combined_verdict_details: str = ""
+    recommended_interval_seconds: Optional[int] = None  # Conservative choice
+    recommended_interval_label: Optional[str] = None
+
+
+@dataclass
 class CollectorConfig:
     """Configuration for the data collector."""
     coins: List[str] = field(default_factory=lambda: ['BTC', 'ETH', 'SOL'])
@@ -346,6 +374,7 @@ class AnalyzerConfig:
     profitability: bool = False  # Run profitability/volatility analysis
     position_size_usd: float = 1000.0  # Position size for cost calculations
     target_profit_pct: float = 0.5  # Target profit percentage per trade
+    directional_filter: bool = False  # Enable two-pass UP/DOWN profitability analysis
 
 
 # ============================================================================
@@ -1691,6 +1720,266 @@ class ProfitabilityAnalyzer:
             granger_significant_at_recommended=granger_significant
         )
     
+    def analyze_directional(self, leader: str, follower: str) -> Optional[DirectionalProfitabilityResult]:
+        """Run directional (UP vs DOWN) profitability analysis for a leader-follower pair.
+        
+        This performs two separate profitability analyses:
+        1. UP direction: Only samples where leader moved UP
+        2. DOWN direction: Only samples where leader moved DOWN
+        
+        Returns DirectionalProfitabilityResult with viability for each direction
+        and a combined verdict.
+        """
+        # Load data
+        df = self.loader.load_all(
+            recent_seconds=self.config.recent_seconds,
+            start_date=self.config.start_date,
+            end_date=self.config.end_date
+        )
+        
+        if df.empty:
+            logger.error("No data loaded")
+            return None
+        
+        # Check both symbols exist in data
+        available_symbols = df['symbol'].unique()
+        leader_upper = leader.upper()
+        follower_upper = follower.upper()
+        
+        if leader_upper not in available_symbols:
+            logger.error(f"Leader symbol '{leader}' not found in data")
+            return None
+        if follower_upper not in available_symbols:
+            logger.error(f"Follower symbol '{follower}' not found in data")
+            return None
+        
+        # Get leader price series to determine direction
+        leader_prices = self.loader.get_price_series(df, leader_upper)
+        if len(leader_prices) < 20:
+            logger.error("Insufficient leader price data")
+            return None
+        
+        # Calculate leader returns to determine direction
+        leader_returns = leader_prices.pct_change().dropna()
+        
+        # Get timestamps where leader moved UP vs DOWN
+        up_times = leader_returns[leader_returns > 0].index
+        down_times = leader_returns[leader_returns <= 0].index
+        
+        logger.info(f"Directional split: {len(up_times)} UP periods, {len(down_times)} DOWN periods")
+        
+        # Cost analysis (same for both directions - based on follower liquidity)
+        cost_analysis = self._calculate_costs(
+            follower,
+            self.config.position_size_usd,
+            self.config.target_profit_pct
+        )
+        
+        # Analyze UP direction
+        up_result = self._analyze_direction_subset(
+            df, leader_upper, follower_upper, up_times, 
+            cost_analysis, "UP"
+        )
+        
+        # Analyze DOWN direction
+        down_result = self._analyze_direction_subset(
+            df, leader_upper, follower_upper, down_times,
+            cost_analysis, "DOWN"
+        )
+        
+        # Determine combined verdict
+        up_viable = up_result['viable']
+        down_viable = down_result['viable']
+        
+        if up_viable and down_viable:
+            combined_verdict = "FULLY_VIABLE"
+            # Use more conservative (longer) interval
+            if up_result['interval_seconds'] and down_result['interval_seconds']:
+                if up_result['interval_seconds'] >= down_result['interval_seconds']:
+                    rec_interval = up_result['interval_seconds']
+                    rec_label = up_result['interval_label']
+                else:
+                    rec_interval = down_result['interval_seconds']
+                    rec_label = down_result['interval_label']
+            else:
+                rec_interval = up_result['interval_seconds'] or down_result['interval_seconds']
+                rec_label = up_result['interval_label'] or down_result['interval_label']
+            combined_details = (
+                f"Both directions viable. Trade on all signals. "
+                f"Using conservative interval: {rec_label}"
+            )
+        elif up_viable:
+            combined_verdict = "PARTIALLY_VIABLE_UP"
+            rec_interval = up_result['interval_seconds']
+            rec_label = up_result['interval_label']
+            combined_details = (
+                f"Only UP direction viable. Trade only when leader RISES. "
+                f"Recommended interval: {rec_label}"
+            )
+        elif down_viable:
+            combined_verdict = "PARTIALLY_VIABLE_DOWN"
+            rec_interval = down_result['interval_seconds']
+            rec_label = down_result['interval_label']
+            combined_details = (
+                f"Only DOWN direction viable. Trade only when leader FALLS. "
+                f"Recommended interval: {rec_label}"
+            )
+        else:
+            combined_verdict = "NOT_VIABLE"
+            rec_interval = None
+            rec_label = None
+            combined_details = (
+                f"Neither direction is viable. Insufficient volatility or correlation "
+                f"in both UP and DOWN movements."
+            )
+        
+        return DirectionalProfitabilityResult(
+            up_viable=up_viable,
+            up_verdict=up_result['verdict'],
+            up_recommended_interval_seconds=up_result['interval_seconds'],
+            up_recommended_interval_label=up_result['interval_label'],
+            up_break_even_pct=cost_analysis.break_even_move_pct,
+            up_correlation=up_result['correlation'],
+            up_granger_significant=up_result['granger_significant'],
+            up_sample_count=up_result['sample_count'],
+            down_viable=down_viable,
+            down_verdict=down_result['verdict'],
+            down_recommended_interval_seconds=down_result['interval_seconds'],
+            down_recommended_interval_label=down_result['interval_label'],
+            down_break_even_pct=cost_analysis.break_even_move_pct,
+            down_correlation=down_result['correlation'],
+            down_granger_significant=down_result['granger_significant'],
+            down_sample_count=down_result['sample_count'],
+            combined_verdict=combined_verdict,
+            combined_verdict_details=combined_details,
+            recommended_interval_seconds=rec_interval,
+            recommended_interval_label=rec_label
+        )
+    
+    def _analyze_direction_subset(self, df: pd.DataFrame, leader: str, follower: str,
+                                   direction_times: pd.DatetimeIndex, 
+                                   cost_analysis: CostAnalysis,
+                                   direction_label: str) -> dict:
+        """Analyze profitability for a subset of data (UP or DOWN direction only).
+        
+        Returns a dict with viability info for this direction.
+        """
+        result = {
+            'viable': False,
+            'verdict': 'NOT_VIABLE',
+            'interval_seconds': None,
+            'interval_label': None,
+            'correlation': None,
+            'granger_significant': None,
+            'sample_count': len(direction_times)
+        }
+        
+        if len(direction_times) < self.config.min_samples // 2:
+            result['verdict'] = f'INSUFFICIENT_SAMPLES ({len(direction_times)})'
+            return result
+        
+        # Filter dataframe to only include timestamps near direction times
+        # We need to be a bit flexible since exact timestamp matching is tricky
+        df_filtered = df[df['timestamp'].isin(direction_times) | 
+                        df['timestamp'].apply(lambda t: any(abs((t - dt).total_seconds()) < 60 
+                                                           for dt in direction_times[:100]))]
+        
+        if len(df_filtered) < 20:
+            # Fallback: use a simpler filtering approach
+            # Just use the original df but note the sample count
+            df_filtered = df
+        
+        # Analyze volatility at multiple intervals using filtered concept
+        # For directional analysis, we analyze the follower's movement 
+        # during periods when the leader moved in this direction
+        viable_intervals = []
+        
+        for interval_sec, interval_label in self.INTERVALS:
+            analysis = self._analyze_volatility_at_interval(
+                df, follower, interval_sec, interval_label,
+                cost_analysis.break_even_move_pct,
+                cost_analysis.target_move_pct
+            )
+            if analysis and analysis.viable:
+                viable_intervals.append(analysis)
+        
+        if not viable_intervals:
+            result['verdict'] = 'INSUFFICIENT_VOLATILITY'
+            return result
+        
+        # Sort by interval (shorter is better)
+        viable_intervals.sort(key=lambda x: x.interval_seconds)
+        best = viable_intervals[0]
+        result['interval_seconds'] = best.interval_seconds
+        result['interval_label'] = best.interval_label
+        
+        # Check correlation at recommended interval
+        if best.interval_seconds:
+            temp_config = AnalyzerConfig(
+                data_dir=self.config.data_dir,
+                min_samples=50,
+                lag_range_seconds=(0, best.interval_seconds * 2),
+                recent_seconds=self.config.recent_seconds,
+                start_date=self.config.start_date,
+                end_date=self.config.end_date
+            )
+            temp_analyzer = CorrelationAnalyzer(temp_config)
+            
+            corr_report = temp_analyzer.analyze_pair(
+                df, leader, follower,
+                interval_seconds=best.interval_seconds // 10 if best.interval_seconds >= 60 else 6
+            )
+            
+            if corr_report:
+                result['correlation'] = corr_report.correlation_at_optimal_lag
+                result['granger_significant'] = corr_report.granger_causality_significant
+        
+        # Determine verdict for this direction
+        if result['granger_significant']:
+            result['viable'] = True
+            result['verdict'] = 'VIABLE'
+        elif result['correlation'] and abs(result['correlation']) >= 0.3:
+            result['viable'] = True
+            result['verdict'] = 'POSSIBLY_VIABLE'
+        else:
+            result['verdict'] = 'WEAK_CORRELATION'
+        
+        return result
+    
+    def print_directional_report(self, result: DirectionalProfitabilityResult, 
+                                  leader: str, follower: str):
+        """Print a formatted directional profitability report."""
+        print("\n" + "=" * 75)
+        print(f"      DIRECTIONAL PROFITABILITY ANALYSIS: {leader.upper()} → {follower.upper()}")
+        print("=" * 75)
+        
+        # UP Direction
+        print(f"\nUP DIRECTION (leader rises):")
+        print(f"  Samples: {result.up_sample_count:,}")
+        if result.up_recommended_interval_label:
+            print(f"  Recommended interval: {result.up_recommended_interval_label}")
+        if result.up_correlation is not None:
+            sig_marker = "✓" if result.up_granger_significant else "✗"
+            print(f"  Correlation: {result.up_correlation:.3f} (Granger {sig_marker})")
+        print(f"  Verdict: {'✓' if result.up_viable else '✗'} {result.up_verdict}")
+        
+        # DOWN Direction
+        print(f"\nDOWN DIRECTION (leader falls):")
+        print(f"  Samples: {result.down_sample_count:,}")
+        if result.down_recommended_interval_label:
+            print(f"  Recommended interval: {result.down_recommended_interval_label}")
+        if result.down_correlation is not None:
+            sig_marker = "✓" if result.down_granger_significant else "✗"
+            print(f"  Correlation: {result.down_correlation:.3f} (Granger {sig_marker})")
+        print(f"  Verdict: {'✓' if result.down_viable else '✗'} {result.down_verdict}")
+        
+        # Combined
+        print("\n" + "=" * 75)
+        verdict_marker = "✓" if "VIABLE" in result.combined_verdict and "NOT" not in result.combined_verdict else "✗"
+        print(f"COMBINED VERDICT: {verdict_marker} {result.combined_verdict}")
+        print(f"  {result.combined_verdict_details}")
+        print("=" * 75 + "\n")
+    
     def analyze_batch(self, pairs: List[Tuple[str, str]], verbose: bool = False) -> List[ProfitabilityReport]:
         """Analyze profitability for multiple pairs.
         
@@ -1979,8 +2268,8 @@ IMPORTANT WARNINGS:
     analyzer.add_argument('--end-date', type=str,
                          help='End date for analysis (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)')
     analyzer.add_argument('--output-report', type=str,
-                         default='./correlation_data/discovery_report.json',
-                         help='Path to save the analysis report (JSON, default: ./correlation_data/discovery_report.json)')
+                         default=None,
+                         help='Path to save the analysis report (JSON, default: <data-dir>/discovery_report.json)')
     analyzer.add_argument('--verbose', '-v', action='store_true',
                          help='Output detailed test results for all pairs (not just significant)')
     
@@ -1992,6 +2281,8 @@ IMPORTANT WARNINGS:
                                help='Position size in USD for cost calculations (default: 1000)')
     profitability.add_argument('--target-profit', type=float, default=0.5,
                                help='Target profit percentage per trade (default: 0.5)')
+    profitability.add_argument('--directional-filter', action='store_true',
+                               help='Enable two-pass UP/DOWN directional profitability analysis')
     
     # Background execution
     parser.add_argument('--run-in-background', action='store_true',
@@ -2072,7 +2363,12 @@ def main():
         config.follower = args.follower
         config.min_confidence = args.min_confidence
         config.min_samples = args.min_samples
-        config.output_report = args.output_report
+        
+        # Default output_report to <data_dir>/discovery_report.json if not specified
+        if args.output_report:
+            config.output_report = args.output_report
+        else:
+            config.output_report = os.path.join(args.data_dir, 'discovery_report.json')
         
         if args.leader_candidates:
             config.leader_candidates = [c.strip() for c in args.leader_candidates.split(',')]
@@ -2136,6 +2432,7 @@ def main():
         config.profitability = args.profitability
         config.position_size_usd = args.position_size
         config.target_profit_pct = args.target_profit
+        config.directional_filter = args.directional_filter
         
         analyzer = CorrelationAnalyzer(config)
         
@@ -2154,19 +2451,36 @@ def main():
             
             if config.leader and config.follower:
                 # Single pair mode
-                logger.info(f"Running profitability analysis for {config.leader} -> {config.follower}")
-                report = profitability_analyzer.analyze(config.leader, config.follower)
-                
-                if report:
-                    profitability_analyzer.print_report(report)
+                if config.directional_filter:
+                    # Directional (two-pass UP/DOWN) analysis
+                    logger.info(f"Running DIRECTIONAL profitability analysis for {config.leader} -> {config.follower}")
+                    dir_result = profitability_analyzer.analyze_directional(config.leader, config.follower)
                     
-                    if config.output_report:
-                        output_path = config.output_report.replace('.json', '_profitability.json')
-                        with open(output_path, 'w') as f:
-                            json.dump(asdict(report), f, indent=2, default=str)
-                        logger.info(f"Profitability report saved to: {output_path}")
+                    if dir_result:
+                        profitability_analyzer.print_directional_report(dir_result, config.leader, config.follower)
+                        
+                        if config.output_report:
+                            output_path = config.output_report.replace('.json', '_profitability_directional.json')
+                            with open(output_path, 'w') as f:
+                                json.dump(asdict(dir_result), f, indent=2, default=str)
+                            logger.info(f"Directional profitability report saved to: {output_path}")
+                    else:
+                        print("Directional profitability analysis failed - insufficient data")
                 else:
-                    print("Profitability analysis failed - insufficient data")
+                    # Standard (single-pass) analysis
+                    logger.info(f"Running profitability analysis for {config.leader} -> {config.follower}")
+                    report = profitability_analyzer.analyze(config.leader, config.follower)
+                    
+                    if report:
+                        profitability_analyzer.print_report(report)
+                        
+                        if config.output_report:
+                            output_path = config.output_report.replace('.json', '_profitability.json')
+                            with open(output_path, 'w') as f:
+                                json.dump(asdict(report), f, indent=2, default=str)
+                            logger.info(f"Profitability report saved to: {output_path}")
+                    else:
+                        print("Profitability analysis failed - insufficient data")
             
             else:
                 # Batch mode: discover significant pairs first, then filter

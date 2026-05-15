@@ -255,7 +255,7 @@ python leading_indicator_tester.py --pairs BTC:TAO,ETH:SOL,BTC:BONK \
 | `--auto-interval` | **Disabled** (must specify `--sample-interval` manually) |
 | `--execution-pct` | Single value applies to all pairs |
 | `--trade-frequency` | Single value applies to all pairs |
-| Live trading | **Not supported** (paper mode only) |
+| Live trading | **Supported** via Jupiter DEX (USDC mode) |
 | Missing pairs | Skipped with warning |
 
 ### Design Decisions

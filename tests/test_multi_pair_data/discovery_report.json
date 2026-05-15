@@ -1,0 +1,3655 @@
+{
+  "generated_at": "2026-05-13T02:09:58.962991+00:00",
+  "data_range_start": "2026-05-10 02:03:47.940933+00:00",
+  "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+  "coins_analyzed": [
+    "SOL",
+    "WEAK2",
+    "WEAK1",
+    "BTC",
+    "ETH",
+    "TAO"
+  ],
+  "pairs_tested": 30,
+  "significant_pairs": [
+    {
+      "leader": "ETH",
+      "follower": "TAO",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.9217,
+      "confidence": 0.9647,
+      "granger_significant": "True",
+      "recommendation": "Strong leading indicator (lag=60s, corr=0.92)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": true,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0022,
+            "correlation_at_optimal": 0.9217,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.9195,
+            "improvement_pct": 42241.6,
+            "roles_swapped": false
+          },
+          "reason": "Leader precedes follower by 2 periods",
+          "reason_code": null
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0000 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0098,
+            "std_deviation": 0.0191,
+            "stability_score": 0.9809,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "True",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.9217,
+                "weight": 0.3,
+                "contribution": 0.2765
+              },
+              "statistical_significance": {
+                "value": 1.0,
+                "weight": 0.25,
+                "contribution": 0.25
+              },
+              "relationship_stability": {
+                "value": 0.9809,
+                "weight": 0.2,
+                "contribution": 0.1962
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.9195,
+                "weight": 0.1,
+                "contribution": 0.092
+              }
+            },
+            "total_score": 0.9647,
+            "confidence_level": "very_high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.96 indicates very_high confidence",
+          "reason_code": null
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4306,
+            "up_correlation": 0.2539,
+            "up_optimal_lag_seconds": 60,
+            "up_granger_pvalue": 0.0,
+            "up_significant": "True",
+            "down_samples": 4333,
+            "down_correlation": 0.2621,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.0,
+            "down_significant": "True",
+            "asymmetry_score": 0.0033,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": null
+          },
+          "reason": "Symmetric behavior: trade both directions equally",
+          "reason_code": null
+        }
+      ],
+      "caveats": [],
+      "stability": 0.9809,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4306,
+        "up_correlation": 0.2539,
+        "up_optimal_lag_seconds": 60,
+        "up_granger_pvalue": 0.0,
+        "up_significant": "True",
+        "down_samples": 4333,
+        "down_correlation": 0.2621,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.0,
+        "down_significant": "True",
+        "asymmetry_score": 0.0033,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": null,
+        "directional_recommendation": "Symmetric behavior: trade both directions equally"
+      }
+    },
+    {
+      "leader": "ETH",
+      "follower": "TAO",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.9217,
+      "confidence": 0.9647,
+      "granger_significant": "True",
+      "recommendation": "Strong leading indicator (lag=60s, corr=0.92)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": true,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0022,
+            "correlation_at_optimal": 0.9217,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.9195,
+            "improvement_pct": 42241.6,
+            "roles_swapped": true
+          },
+          "reason": "Roles swapped - Leader precedes follower by 2 periods",
+          "reason_code": null
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0000 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0098,
+            "std_deviation": 0.0191,
+            "stability_score": 0.9809,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "True",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.9217,
+                "weight": 0.3,
+                "contribution": 0.2765
+              },
+              "statistical_significance": {
+                "value": 1.0,
+                "weight": 0.25,
+                "contribution": 0.25
+              },
+              "relationship_stability": {
+                "value": 0.9809,
+                "weight": 0.2,
+                "contribution": 0.1962
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.9195,
+                "weight": 0.1,
+                "contribution": 0.092
+              }
+            },
+            "total_score": 0.9647,
+            "confidence_level": "very_high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.96 indicates very_high confidence",
+          "reason_code": null
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4306,
+            "up_correlation": 0.2539,
+            "up_optimal_lag_seconds": 60,
+            "up_granger_pvalue": 0.0,
+            "up_significant": "True",
+            "down_samples": 4333,
+            "down_correlation": 0.2621,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.0,
+            "down_significant": "True",
+            "asymmetry_score": 0.0033,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": null
+          },
+          "reason": "Symmetric behavior: trade both directions equally",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: ETH leads TAO"
+      ],
+      "stability": 0.9809,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4306,
+        "up_correlation": 0.2539,
+        "up_optimal_lag_seconds": 60,
+        "up_granger_pvalue": 0.0,
+        "up_significant": "True",
+        "down_samples": 4333,
+        "down_correlation": 0.2621,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.0,
+        "down_significant": "True",
+        "asymmetry_score": 0.0033,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": null,
+        "directional_recommendation": "Symmetric behavior: trade both directions equally"
+      }
+    },
+    {
+      "leader": "BTC",
+      "follower": "SOL",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.9175,
+      "confidence": 0.9634,
+      "granger_significant": "True",
+      "recommendation": "Strong leading indicator (lag=60s, corr=0.92)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": true,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0022,
+            "correlation_at_optimal": 0.9175,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.9153,
+            "improvement_pct": 41847.9,
+            "roles_swapped": false
+          },
+          "reason": "Leader precedes follower by 2 periods",
+          "reason_code": null
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0000 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0109,
+            "std_deviation": 0.017,
+            "stability_score": 0.983,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "True",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.9175,
+                "weight": 0.3,
+                "contribution": 0.2752
+              },
+              "statistical_significance": {
+                "value": 1.0,
+                "weight": 0.25,
+                "contribution": 0.25
+              },
+              "relationship_stability": {
+                "value": 0.983,
+                "weight": 0.2,
+                "contribution": 0.1966
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.9153,
+                "weight": 0.1,
+                "contribution": 0.0915
+              }
+            },
+            "total_score": 0.9634,
+            "confidence_level": "very_high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.96 indicates very_high confidence",
+          "reason_code": null
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": 0.2216,
+            "up_optimal_lag_seconds": 30,
+            "up_granger_pvalue": 0.0,
+            "up_significant": "True",
+            "down_samples": 4345,
+            "down_correlation": 0.2501,
+            "down_optimal_lag_seconds": 30,
+            "down_granger_pvalue": 0.0,
+            "down_significant": "True",
+            "asymmetry_score": 0.0114,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "down"
+          },
+          "reason": "Symmetric behavior: trade both directions equally",
+          "reason_code": null
+        }
+      ],
+      "caveats": [],
+      "stability": 0.983,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": 0.2216,
+        "up_optimal_lag_seconds": 30,
+        "up_granger_pvalue": 0.0,
+        "up_significant": "True",
+        "down_samples": 4345,
+        "down_correlation": 0.2501,
+        "down_optimal_lag_seconds": 30,
+        "down_granger_pvalue": 0.0,
+        "down_significant": "True",
+        "asymmetry_score": 0.0114,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "down",
+        "directional_recommendation": "Symmetric behavior: trade both directions equally"
+      }
+    },
+    {
+      "leader": "BTC",
+      "follower": "SOL",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.9175,
+      "confidence": 0.9634,
+      "granger_significant": "True",
+      "recommendation": "Strong leading indicator (lag=60s, corr=0.92)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": true,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0022,
+            "correlation_at_optimal": 0.9175,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.9153,
+            "improvement_pct": 41847.9,
+            "roles_swapped": true
+          },
+          "reason": "Roles swapped - Leader precedes follower by 2 periods",
+          "reason_code": null
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0000 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0109,
+            "std_deviation": 0.017,
+            "stability_score": 0.983,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "True",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.9175,
+                "weight": 0.3,
+                "contribution": 0.2752
+              },
+              "statistical_significance": {
+                "value": 1.0,
+                "weight": 0.25,
+                "contribution": 0.25
+              },
+              "relationship_stability": {
+                "value": 0.983,
+                "weight": 0.2,
+                "contribution": 0.1966
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.9153,
+                "weight": 0.1,
+                "contribution": 0.0915
+              }
+            },
+            "total_score": 0.9634,
+            "confidence_level": "very_high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.96 indicates very_high confidence",
+          "reason_code": null
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": 0.2216,
+            "up_optimal_lag_seconds": 30,
+            "up_granger_pvalue": 0.0,
+            "up_significant": "True",
+            "down_samples": 4345,
+            "down_correlation": 0.2501,
+            "down_optimal_lag_seconds": 30,
+            "down_granger_pvalue": 0.0,
+            "down_significant": "True",
+            "asymmetry_score": 0.0114,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "down"
+          },
+          "reason": "Symmetric behavior: trade both directions equally",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: BTC leads SOL"
+      ],
+      "stability": 0.983,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": 0.2216,
+        "up_optimal_lag_seconds": 30,
+        "up_granger_pvalue": 0.0,
+        "up_significant": "True",
+        "down_samples": 4345,
+        "down_correlation": 0.2501,
+        "down_optimal_lag_seconds": 30,
+        "down_granger_pvalue": 0.0,
+        "down_significant": "True",
+        "asymmetry_score": 0.0114,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "down",
+        "directional_recommendation": "Symmetric behavior: trade both directions equally"
+      }
+    }
+  ],
+  "no_significant_relationship": [
+    {
+      "leader": "BTC",
+      "follower": "ETH",
+      "optimal_lag_seconds": 300,
+      "correlation": -0.0494,
+      "confidence": 0.3523,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=300s, corr=-0.05)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0082,
+            "correlation_at_optimal": -0.0494,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": 0.0412,
+            "improvement_pct": 500.9,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.8511,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.8511 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0051,
+            "std_deviation": 0.2693,
+            "stability_score": 0.7307,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.73 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0494,
+                "weight": 0.3,
+                "contribution": 0.0148
+              },
+              "statistical_significance": {
+                "value": 0.1489,
+                "weight": 0.25,
+                "contribution": 0.0372
+              },
+              "relationship_stability": {
+                "value": 0.7307,
+                "weight": 0.2,
+                "contribution": 0.1461
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0412,
+                "weight": 0.1,
+                "contribution": 0.0041
+              }
+            },
+            "total_score": 0.3523,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.35 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0235,
+            "up_optimal_lag_seconds": 180,
+            "up_granger_pvalue": 0.2066,
+            "up_significant": "False",
+            "down_samples": 4345,
+            "down_correlation": 0.0295,
+            "down_optimal_lag_seconds": 240,
+            "down_granger_pvalue": 0.3039,
+            "down_significant": "False",
+            "asymmetry_score": 0.0624,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "down"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.7307,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0235,
+        "up_optimal_lag_seconds": 180,
+        "up_granger_pvalue": 0.2066,
+        "up_significant": "False",
+        "down_samples": 4345,
+        "down_correlation": 0.0295,
+        "down_optimal_lag_seconds": 240,
+        "down_granger_pvalue": 0.3039,
+        "down_significant": "False",
+        "asymmetry_score": 0.0624,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "down",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.35)"
+    },
+    {
+      "leader": "BTC",
+      "follower": "TAO",
+      "optimal_lag_seconds": 60,
+      "correlation": -0.0271,
+      "confidence": 0.5969,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=60s, corr=-0.03)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0023,
+            "correlation_at_optimal": -0.0271,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.0248,
+            "improvement_pct": 1057.6,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0403,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0403 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.002,
+            "std_deviation": 0.0182,
+            "stability_score": 0.9818,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0271,
+                "weight": 0.3,
+                "contribution": 0.0081
+              },
+              "statistical_significance": {
+                "value": 0.9597,
+                "weight": 0.25,
+                "contribution": 0.2399
+              },
+              "relationship_stability": {
+                "value": 0.9818,
+                "weight": 0.2,
+                "contribution": 0.1964
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0248,
+                "weight": 0.1,
+                "contribution": 0.0025
+              }
+            },
+            "total_score": 0.5969,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.60 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0343,
+            "up_optimal_lag_seconds": 60,
+            "up_granger_pvalue": 0.0236,
+            "up_significant": "True",
+            "down_samples": 4345,
+            "down_correlation": -0.0174,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.4047,
+            "down_significant": "False",
+            "asymmetry_score": 0.3067,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "up"
+          },
+          "reason": "Trade only on leader RISES (UP significant, p=0.024)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation"
+      ],
+      "stability": 0.9818,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0343,
+        "up_optimal_lag_seconds": 60,
+        "up_granger_pvalue": 0.0236,
+        "up_significant": "True",
+        "down_samples": 4345,
+        "down_correlation": -0.0174,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.4047,
+        "down_significant": "False",
+        "asymmetry_score": 0.3067,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "up",
+        "directional_recommendation": "Trade only on leader RISES (UP significant, p=0.024)"
+      },
+      "reason": "Low confidence (0.60)"
+    },
+    {
+      "leader": "BTC",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 150,
+      "correlation": -0.0176,
+      "confidence": 0.488,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=150s, corr=-0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0068,
+            "correlation_at_optimal": -0.0176,
+            "optimal_lag_periods": 5,
+            "optimal_lag_seconds": 150,
+            "improvement_over_zero": 0.0108,
+            "improvement_pct": 158.3,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.3941,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.3941 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0064,
+            "std_deviation": 0.0989,
+            "stability_score": 0.9011,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.90 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0176,
+                "weight": 0.3,
+                "contribution": 0.0053
+              },
+              "statistical_significance": {
+                "value": 0.6059,
+                "weight": 0.25,
+                "contribution": 0.1515
+              },
+              "relationship_stability": {
+                "value": 0.9011,
+                "weight": 0.2,
+                "contribution": 0.1802
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0108,
+                "weight": 0.1,
+                "contribution": 0.0011
+              }
+            },
+            "total_score": 0.488,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.49 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0221,
+            "up_optimal_lag_seconds": 90,
+            "up_granger_pvalue": 0.2868,
+            "up_significant": "False",
+            "down_samples": 4345,
+            "down_correlation": -0.0382,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.0337,
+            "down_significant": "True",
+            "asymmetry_score": 0.3364,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "down"
+          },
+          "reason": "Trade only on leader DROPS (DOWN significant, p=0.034)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9011,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0221,
+        "up_optimal_lag_seconds": 90,
+        "up_granger_pvalue": 0.2868,
+        "up_significant": "False",
+        "down_samples": 4345,
+        "down_correlation": -0.0382,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.0337,
+        "down_significant": "True",
+        "asymmetry_score": 0.3364,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "directional_recommendation": "Trade only on leader DROPS (DOWN significant, p=0.034)"
+      },
+      "reason": "Low confidence (0.49)"
+    },
+    {
+      "leader": "BTC",
+      "follower": "WEAK2",
+      "optimal_lag_seconds": 300,
+      "correlation": 0.0217,
+      "confidence": 0.5804,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=300s, corr=0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0054,
+            "correlation_at_optimal": 0.0217,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": 0.0163,
+            "improvement_pct": 301.3,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.042,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0420 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0041,
+            "std_deviation": 0.0861,
+            "stability_score": 0.9139,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.91 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0217,
+                "weight": 0.3,
+                "contribution": 0.0065
+              },
+              "statistical_significance": {
+                "value": 0.958,
+                "weight": 0.25,
+                "contribution": 0.2395
+              },
+              "relationship_stability": {
+                "value": 0.9139,
+                "weight": 0.2,
+                "contribution": 0.1828
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0163,
+                "weight": 0.1,
+                "contribution": 0.0016
+              }
+            },
+            "total_score": 0.5804,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.58 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0361,
+            "up_optimal_lag_seconds": 30,
+            "up_granger_pvalue": 0.0103,
+            "up_significant": "True",
+            "down_samples": 4345,
+            "down_correlation": -0.0315,
+            "down_optimal_lag_seconds": 240,
+            "down_granger_pvalue": 0.2124,
+            "down_significant": "False",
+            "asymmetry_score": 0.5118,
+            "asymmetry_level": "strong",
+            "stronger_direction": "up"
+          },
+          "reason": "Trade only on leader RISES (UP significant, p=0.010)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation"
+      ],
+      "stability": 0.9139,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0361,
+        "up_optimal_lag_seconds": 30,
+        "up_granger_pvalue": 0.0103,
+        "up_significant": "True",
+        "down_samples": 4345,
+        "down_correlation": -0.0315,
+        "down_optimal_lag_seconds": 240,
+        "down_granger_pvalue": 0.2124,
+        "down_significant": "False",
+        "asymmetry_score": 0.5118,
+        "asymmetry_level": "strong",
+        "stronger_direction": "up",
+        "directional_recommendation": "Trade only on leader RISES (UP significant, p=0.010)"
+      },
+      "reason": "Low confidence (0.58)"
+    },
+    {
+      "leader": "BTC",
+      "follower": "ETH",
+      "optimal_lag_seconds": 300,
+      "correlation": -0.0494,
+      "confidence": 0.3523,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=300s, corr=-0.05)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0082,
+            "correlation_at_optimal": -0.0494,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": 0.0412,
+            "improvement_pct": 500.9,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.8511,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.8511 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0051,
+            "std_deviation": 0.2693,
+            "stability_score": 0.7307,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.73 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0494,
+                "weight": 0.3,
+                "contribution": 0.0148
+              },
+              "statistical_significance": {
+                "value": 0.1489,
+                "weight": 0.25,
+                "contribution": 0.0372
+              },
+              "relationship_stability": {
+                "value": 0.7307,
+                "weight": 0.2,
+                "contribution": 0.1461
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0412,
+                "weight": 0.1,
+                "contribution": 0.0041
+              }
+            },
+            "total_score": 0.3523,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.35 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0235,
+            "up_optimal_lag_seconds": 180,
+            "up_granger_pvalue": 0.2066,
+            "up_significant": "False",
+            "down_samples": 4345,
+            "down_correlation": 0.0295,
+            "down_optimal_lag_seconds": 240,
+            "down_granger_pvalue": 0.3039,
+            "down_significant": "False",
+            "asymmetry_score": 0.0624,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "down"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: BTC leads ETH",
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.7307,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0235,
+        "up_optimal_lag_seconds": 180,
+        "up_granger_pvalue": 0.2066,
+        "up_significant": "False",
+        "down_samples": 4345,
+        "down_correlation": 0.0295,
+        "down_optimal_lag_seconds": 240,
+        "down_granger_pvalue": 0.3039,
+        "down_significant": "False",
+        "asymmetry_score": 0.0624,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "down",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.35)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "ETH",
+      "optimal_lag_seconds": 240,
+      "correlation": -0.0405,
+      "confidence": 0.3972,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=240s, corr=-0.04)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0005,
+            "correlation_at_optimal": -0.0405,
+            "optimal_lag_periods": 8,
+            "optimal_lag_seconds": 240,
+            "improvement_over_zero": 0.0399,
+            "improvement_pct": 7286.9,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.8615,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.8615 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0015,
+            "std_deviation": 0.0176,
+            "stability_score": 0.9824,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0405,
+                "weight": 0.3,
+                "contribution": 0.0121
+              },
+              "statistical_significance": {
+                "value": 0.1385,
+                "weight": 0.25,
+                "contribution": 0.0346
+              },
+              "relationship_stability": {
+                "value": 0.9824,
+                "weight": 0.2,
+                "contribution": 0.1965
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0399,
+                "weight": 0.1,
+                "contribution": 0.004
+              }
+            },
+            "total_score": 0.3972,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.40 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0318,
+            "up_optimal_lag_seconds": 90,
+            "up_granger_pvalue": 0.1343,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": 0.0304,
+            "down_optimal_lag_seconds": 180,
+            "down_granger_pvalue": 0.0917,
+            "down_significant": "False",
+            "asymmetry_score": 0.0906,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": null
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: SOL leads ETH",
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9824,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0318,
+        "up_optimal_lag_seconds": 90,
+        "up_granger_pvalue": 0.1343,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": 0.0304,
+        "down_optimal_lag_seconds": 180,
+        "down_granger_pvalue": 0.0917,
+        "down_significant": "False",
+        "asymmetry_score": 0.0906,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": null,
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.40)"
+    },
+    {
+      "leader": "ETH",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.0239,
+      "confidence": 0.5782,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=60s, corr=0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0114,
+            "correlation_at_optimal": 0.0239,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.0125,
+            "improvement_pct": 109.1,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0489,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0489 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0122,
+            "std_deviation": 0.0897,
+            "stability_score": 0.9103,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.91 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0239,
+                "weight": 0.3,
+                "contribution": 0.0072
+              },
+              "statistical_significance": {
+                "value": 0.9511,
+                "weight": 0.25,
+                "contribution": 0.2378
+              },
+              "relationship_stability": {
+                "value": 0.9103,
+                "weight": 0.2,
+                "contribution": 0.1821
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0125,
+                "weight": 0.1,
+                "contribution": 0.0012
+              }
+            },
+            "total_score": 0.5782,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.58 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4306,
+            "up_correlation": -0.0192,
+            "up_optimal_lag_seconds": 180,
+            "up_granger_pvalue": 0.8465,
+            "up_significant": "False",
+            "down_samples": 4333,
+            "down_correlation": 0.0329,
+            "down_optimal_lag_seconds": 150,
+            "down_granger_pvalue": 0.2425,
+            "down_significant": "False",
+            "asymmetry_score": 0.0355,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "down"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation"
+      ],
+      "stability": 0.9103,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4306,
+        "up_correlation": -0.0192,
+        "up_optimal_lag_seconds": 180,
+        "up_granger_pvalue": 0.8465,
+        "up_significant": "False",
+        "down_samples": 4333,
+        "down_correlation": 0.0329,
+        "down_optimal_lag_seconds": 150,
+        "down_granger_pvalue": 0.2425,
+        "down_significant": "False",
+        "asymmetry_score": 0.0355,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "down",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.58)"
+    },
+    {
+      "leader": "ETH",
+      "follower": "WEAK2",
+      "optimal_lag_seconds": 90,
+      "correlation": 0.0248,
+      "confidence": 0.5784,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=90s, corr=0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0027,
+            "correlation_at_optimal": 0.0248,
+            "optimal_lag_periods": 3,
+            "optimal_lag_seconds": 90,
+            "improvement_over_zero": 0.0221,
+            "improvement_pct": 824.3,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0443,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0443 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0058,
+            "std_deviation": 0.101,
+            "stability_score": 0.899,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.90 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0248,
+                "weight": 0.3,
+                "contribution": 0.0074
+              },
+              "statistical_significance": {
+                "value": 0.9557,
+                "weight": 0.25,
+                "contribution": 0.2389
+              },
+              "relationship_stability": {
+                "value": 0.899,
+                "weight": 0.2,
+                "contribution": 0.1798
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0221,
+                "weight": 0.1,
+                "contribution": 0.0022
+              }
+            },
+            "total_score": 0.5784,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.58 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4306,
+            "up_correlation": -0.0271,
+            "up_optimal_lag_seconds": 210,
+            "up_granger_pvalue": 0.4571,
+            "up_significant": "False",
+            "down_samples": 4333,
+            "down_correlation": -0.0183,
+            "down_optimal_lag_seconds": 120,
+            "down_granger_pvalue": 0.7974,
+            "down_significant": "False",
+            "asymmetry_score": 0.0935,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "up"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation"
+      ],
+      "stability": 0.899,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4306,
+        "up_correlation": -0.0271,
+        "up_optimal_lag_seconds": 210,
+        "up_granger_pvalue": 0.4571,
+        "up_significant": "False",
+        "down_samples": 4333,
+        "down_correlation": -0.0183,
+        "down_optimal_lag_seconds": 120,
+        "down_granger_pvalue": 0.7974,
+        "down_significant": "False",
+        "asymmetry_score": 0.0935,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "up",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.58)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "ETH",
+      "optimal_lag_seconds": 240,
+      "correlation": -0.0405,
+      "confidence": 0.3972,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=240s, corr=-0.04)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0005,
+            "correlation_at_optimal": -0.0405,
+            "optimal_lag_periods": 8,
+            "optimal_lag_seconds": 240,
+            "improvement_over_zero": 0.0399,
+            "improvement_pct": 7286.9,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.8615,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.8615 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0015,
+            "std_deviation": 0.0176,
+            "stability_score": 0.9824,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0405,
+                "weight": 0.3,
+                "contribution": 0.0121
+              },
+              "statistical_significance": {
+                "value": 0.1385,
+                "weight": 0.25,
+                "contribution": 0.0346
+              },
+              "relationship_stability": {
+                "value": 0.9824,
+                "weight": 0.2,
+                "contribution": 0.1965
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0399,
+                "weight": 0.1,
+                "contribution": 0.004
+              }
+            },
+            "total_score": 0.3972,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.40 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0318,
+            "up_optimal_lag_seconds": 90,
+            "up_granger_pvalue": 0.1343,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": 0.0304,
+            "down_optimal_lag_seconds": 180,
+            "down_granger_pvalue": 0.0917,
+            "down_significant": "False",
+            "asymmetry_score": 0.0906,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": null
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9824,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0318,
+        "up_optimal_lag_seconds": 90,
+        "up_granger_pvalue": 0.1343,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": 0.0304,
+        "down_optimal_lag_seconds": 180,
+        "down_granger_pvalue": 0.0917,
+        "down_significant": "False",
+        "asymmetry_score": 0.0906,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": null,
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.40)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "TAO",
+      "optimal_lag_seconds": 300,
+      "correlation": -0.0716,
+      "confidence": 0.3547,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=300s, corr=-0.07)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0347,
+            "correlation_at_optimal": -0.0716,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": 0.0368,
+            "improvement_pct": 105.9,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.8751,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.8751 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0306,
+            "std_deviation": 0.2584,
+            "stability_score": 0.7416,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.74 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0716,
+                "weight": 0.3,
+                "contribution": 0.0215
+              },
+              "statistical_significance": {
+                "value": 0.1249,
+                "weight": 0.25,
+                "contribution": 0.0312
+              },
+              "relationship_stability": {
+                "value": 0.7416,
+                "weight": 0.2,
+                "contribution": 0.1483
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0368,
+                "weight": 0.1,
+                "contribution": 0.0037
+              }
+            },
+            "total_score": 0.3547,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.35 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0415,
+            "up_optimal_lag_seconds": 180,
+            "up_granger_pvalue": 0.2941,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": -0.0332,
+            "down_optimal_lag_seconds": 300,
+            "down_granger_pvalue": 0.7257,
+            "down_significant": "False",
+            "asymmetry_score": 0.1234,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "up"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.7416,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0415,
+        "up_optimal_lag_seconds": 180,
+        "up_granger_pvalue": 0.2941,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": -0.0332,
+        "down_optimal_lag_seconds": 300,
+        "down_granger_pvalue": 0.7257,
+        "down_significant": "False",
+        "asymmetry_score": 0.1234,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "up",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.35)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 90,
+      "correlation": -0.0201,
+      "confidence": 0.5336,
+      "granger_significant": "False",
+      "recommendation": "Moderate leading indicator (lag=90s, corr=-0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0095,
+            "correlation_at_optimal": -0.0201,
+            "optimal_lag_periods": 3,
+            "optimal_lag_seconds": 90,
+            "improvement_over_zero": 0.0106,
+            "improvement_pct": 112.1,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.2155,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.2155 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0101,
+            "std_deviation": 0.0979,
+            "stability_score": 0.9021,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.90 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0201,
+                "weight": 0.3,
+                "contribution": 0.006
+              },
+              "statistical_significance": {
+                "value": 0.7845,
+                "weight": 0.25,
+                "contribution": 0.1961
+              },
+              "relationship_stability": {
+                "value": 0.9021,
+                "weight": 0.2,
+                "contribution": 0.1804
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0106,
+                "weight": 0.1,
+                "contribution": 0.0011
+              }
+            },
+            "total_score": 0.5336,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.53 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0181,
+            "up_optimal_lag_seconds": 90,
+            "up_granger_pvalue": 0.4426,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": 0.0383,
+            "down_optimal_lag_seconds": 120,
+            "down_granger_pvalue": 0.0365,
+            "down_significant": "True",
+            "asymmetry_score": 0.3381,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "down"
+          },
+          "reason": "Trade only on leader DROPS (DOWN significant, p=0.037)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9021,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0181,
+        "up_optimal_lag_seconds": 90,
+        "up_granger_pvalue": 0.4426,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": 0.0383,
+        "down_optimal_lag_seconds": 120,
+        "down_granger_pvalue": 0.0365,
+        "down_significant": "True",
+        "asymmetry_score": 0.3381,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "directional_recommendation": "Trade only on leader DROPS (DOWN significant, p=0.037)"
+      },
+      "reason": "Low confidence (0.53)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "WEAK2",
+      "optimal_lag_seconds": 120,
+      "correlation": 0.0212,
+      "confidence": 0.5689,
+      "granger_significant": "False",
+      "recommendation": "Moderate leading indicator (lag=120s, corr=0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.016,
+            "correlation_at_optimal": 0.0212,
+            "optimal_lag_periods": 4,
+            "optimal_lag_seconds": 120,
+            "improvement_over_zero": 0.0053,
+            "improvement_pct": 33.0,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0796,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0796 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0138,
+            "std_deviation": 0.0904,
+            "stability_score": 0.9096,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.91 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0212,
+                "weight": 0.3,
+                "contribution": 0.0064
+              },
+              "statistical_significance": {
+                "value": 0.9204,
+                "weight": 0.25,
+                "contribution": 0.2301
+              },
+              "relationship_stability": {
+                "value": 0.9096,
+                "weight": 0.2,
+                "contribution": 0.1819
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0053,
+                "weight": 0.1,
+                "contribution": 0.0005
+              }
+            },
+            "total_score": 0.5689,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.57 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0329,
+            "up_optimal_lag_seconds": 240,
+            "up_granger_pvalue": 0.1053,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": 0.0258,
+            "down_optimal_lag_seconds": 150,
+            "down_granger_pvalue": 0.4982,
+            "down_significant": "False",
+            "asymmetry_score": 0.0928,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "up"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9096,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0329,
+        "up_optimal_lag_seconds": 240,
+        "up_granger_pvalue": 0.1053,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": 0.0258,
+        "down_optimal_lag_seconds": 150,
+        "down_granger_pvalue": 0.4982,
+        "down_significant": "False",
+        "asymmetry_score": 0.0928,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "up",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.57)"
+    },
+    {
+      "leader": "BTC",
+      "follower": "TAO",
+      "optimal_lag_seconds": 60,
+      "correlation": -0.0271,
+      "confidence": 0.5969,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=60s, corr=-0.03)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0023,
+            "correlation_at_optimal": -0.0271,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.0248,
+            "improvement_pct": 1057.6,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0403,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0403 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.002,
+            "std_deviation": 0.0182,
+            "stability_score": 0.9818,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.98 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0271,
+                "weight": 0.3,
+                "contribution": 0.0081
+              },
+              "statistical_significance": {
+                "value": 0.9597,
+                "weight": 0.25,
+                "contribution": 0.2399
+              },
+              "relationship_stability": {
+                "value": 0.9818,
+                "weight": 0.2,
+                "contribution": 0.1964
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0248,
+                "weight": 0.1,
+                "contribution": 0.0025
+              }
+            },
+            "total_score": 0.5969,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.60 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0343,
+            "up_optimal_lag_seconds": 60,
+            "up_granger_pvalue": 0.0236,
+            "up_significant": "True",
+            "down_samples": 4345,
+            "down_correlation": -0.0174,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.4047,
+            "down_significant": "False",
+            "asymmetry_score": 0.3067,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "up"
+          },
+          "reason": "Trade only on leader RISES (UP significant, p=0.024)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: BTC leads TAO",
+        "Weak correlation"
+      ],
+      "stability": 0.9818,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0343,
+        "up_optimal_lag_seconds": 60,
+        "up_granger_pvalue": 0.0236,
+        "up_significant": "True",
+        "down_samples": 4345,
+        "down_correlation": -0.0174,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.4047,
+        "down_significant": "False",
+        "asymmetry_score": 0.3067,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "up",
+        "directional_recommendation": "Trade only on leader RISES (UP significant, p=0.024)"
+      },
+      "reason": "Low confidence (0.60)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "TAO",
+      "optimal_lag_seconds": 300,
+      "correlation": -0.0716,
+      "confidence": 0.3547,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=300s, corr=-0.07)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0347,
+            "correlation_at_optimal": -0.0716,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": 0.0368,
+            "improvement_pct": 105.9,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.8751,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.8751 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0306,
+            "std_deviation": 0.2584,
+            "stability_score": 0.7416,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.74 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0716,
+                "weight": 0.3,
+                "contribution": 0.0215
+              },
+              "statistical_significance": {
+                "value": 0.1249,
+                "weight": 0.25,
+                "contribution": 0.0312
+              },
+              "relationship_stability": {
+                "value": 0.7416,
+                "weight": 0.2,
+                "contribution": 0.1483
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0368,
+                "weight": 0.1,
+                "contribution": 0.0037
+              }
+            },
+            "total_score": 0.3547,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.35 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0415,
+            "up_optimal_lag_seconds": 180,
+            "up_granger_pvalue": 0.2941,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": -0.0332,
+            "down_optimal_lag_seconds": 300,
+            "down_granger_pvalue": 0.7257,
+            "down_significant": "False",
+            "asymmetry_score": 0.1234,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "up"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: SOL leads TAO",
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.7416,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0415,
+        "up_optimal_lag_seconds": 180,
+        "up_granger_pvalue": 0.2941,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": -0.0332,
+        "down_optimal_lag_seconds": 300,
+        "down_granger_pvalue": 0.7257,
+        "down_significant": "False",
+        "asymmetry_score": 0.1234,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "up",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.35)"
+    },
+    {
+      "leader": "TAO",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 300,
+      "correlation": -0.0215,
+      "confidence": 0.3565,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=300s, corr=-0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0306,
+            "correlation_at_optimal": -0.0215,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": -0.0091,
+            "improvement_pct": -29.8,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.9299,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.9299 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0329,
+            "std_deviation": 0.0873,
+            "stability_score": 0.9127,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.91 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0215,
+                "weight": 0.3,
+                "contribution": 0.0065
+              },
+              "statistical_significance": {
+                "value": 0.0701,
+                "weight": 0.25,
+                "contribution": 0.0175
+              },
+              "relationship_stability": {
+                "value": 0.9127,
+                "weight": 0.2,
+                "contribution": 0.1825
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0,
+                "weight": 0.1,
+                "contribution": 0.0
+              }
+            },
+            "total_score": 0.3565,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.36 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4284,
+            "up_correlation": 0.0331,
+            "up_optimal_lag_seconds": 300,
+            "up_granger_pvalue": 0.4127,
+            "up_significant": "False",
+            "down_samples": 4355,
+            "down_correlation": 0.0355,
+            "down_optimal_lag_seconds": 120,
+            "down_granger_pvalue": 0.0134,
+            "down_significant": "True",
+            "asymmetry_score": 0.481,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "down"
+          },
+          "reason": "Trade only on leader DROPS (DOWN significant, p=0.013)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9127,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4284,
+        "up_correlation": 0.0331,
+        "up_optimal_lag_seconds": 300,
+        "up_granger_pvalue": 0.4127,
+        "up_significant": "False",
+        "down_samples": 4355,
+        "down_correlation": 0.0355,
+        "down_optimal_lag_seconds": 120,
+        "down_granger_pvalue": 0.0134,
+        "down_significant": "True",
+        "asymmetry_score": 0.481,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "directional_recommendation": "Trade only on leader DROPS (DOWN significant, p=0.013)"
+      },
+      "reason": "Low confidence (0.36)"
+    },
+    {
+      "leader": "TAO",
+      "follower": "WEAK2",
+      "optimal_lag_seconds": 30,
+      "correlation": 0.0233,
+      "confidence": 0.5804,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=30s, corr=0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0019,
+            "correlation_at_optimal": 0.0233,
+            "optimal_lag_periods": 1,
+            "optimal_lag_seconds": 30,
+            "improvement_over_zero": 0.0214,
+            "improvement_pct": 1108.2,
+            "roles_swapped": false
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.03,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0300 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0023,
+            "std_deviation": 0.1063,
+            "stability_score": 0.8937,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.89 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0233,
+                "weight": 0.3,
+                "contribution": 0.007
+              },
+              "statistical_significance": {
+                "value": 0.97,
+                "weight": 0.25,
+                "contribution": 0.2425
+              },
+              "relationship_stability": {
+                "value": 0.8937,
+                "weight": 0.2,
+                "contribution": 0.1787
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0214,
+                "weight": 0.1,
+                "contribution": 0.0021
+              }
+            },
+            "total_score": 0.5804,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.58 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4284,
+            "up_correlation": -0.0432,
+            "up_optimal_lag_seconds": 60,
+            "up_granger_pvalue": 0.0161,
+            "up_significant": "True",
+            "down_samples": 4355,
+            "down_correlation": 0.0349,
+            "down_optimal_lag_seconds": 30,
+            "down_granger_pvalue": 0.0214,
+            "down_significant": "True",
+            "asymmetry_score": 0.0333,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "up"
+          },
+          "reason": "Symmetric behavior: trade both directions equally",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Weak correlation"
+      ],
+      "stability": 0.8937,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4284,
+        "up_correlation": -0.0432,
+        "up_optimal_lag_seconds": 60,
+        "up_granger_pvalue": 0.0161,
+        "up_significant": "True",
+        "down_samples": 4355,
+        "down_correlation": 0.0349,
+        "down_optimal_lag_seconds": 30,
+        "down_granger_pvalue": 0.0214,
+        "down_significant": "True",
+        "asymmetry_score": 0.0333,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "up",
+        "directional_recommendation": "Symmetric behavior: trade both directions equally"
+      },
+      "reason": "Low confidence (0.58)"
+    },
+    {
+      "leader": "BTC",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 150,
+      "correlation": -0.0176,
+      "confidence": 0.488,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=150s, corr=-0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": -0.0068,
+            "correlation_at_optimal": -0.0176,
+            "optimal_lag_periods": 5,
+            "optimal_lag_seconds": 150,
+            "improvement_over_zero": 0.0108,
+            "improvement_pct": 158.3,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.3941,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.3941 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": -0.0064,
+            "std_deviation": 0.0989,
+            "stability_score": 0.9011,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.90 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0176,
+                "weight": 0.3,
+                "contribution": 0.0053
+              },
+              "statistical_significance": {
+                "value": 0.6059,
+                "weight": 0.25,
+                "contribution": 0.1515
+              },
+              "relationship_stability": {
+                "value": 0.9011,
+                "weight": 0.2,
+                "contribution": 0.1802
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0108,
+                "weight": 0.1,
+                "contribution": 0.0011
+              }
+            },
+            "total_score": 0.488,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.49 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4294,
+            "up_correlation": -0.0221,
+            "up_optimal_lag_seconds": 90,
+            "up_granger_pvalue": 0.2868,
+            "up_significant": "False",
+            "down_samples": 4345,
+            "down_correlation": -0.0382,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.0337,
+            "down_significant": "True",
+            "asymmetry_score": 0.3364,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "down"
+          },
+          "reason": "Trade only on leader DROPS (DOWN significant, p=0.034)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: BTC leads WEAK1",
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9011,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4294,
+        "up_correlation": -0.0221,
+        "up_optimal_lag_seconds": 90,
+        "up_granger_pvalue": 0.2868,
+        "up_significant": "False",
+        "down_samples": 4345,
+        "down_correlation": -0.0382,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.0337,
+        "down_significant": "True",
+        "asymmetry_score": 0.3364,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "directional_recommendation": "Trade only on leader DROPS (DOWN significant, p=0.034)"
+      },
+      "reason": "Low confidence (0.49)"
+    },
+    {
+      "leader": "ETH",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.0239,
+      "confidence": 0.5782,
+      "granger_significant": "True",
+      "recommendation": "Moderate leading indicator (lag=60s, corr=0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0114,
+            "correlation_at_optimal": 0.0239,
+            "optimal_lag_periods": 2,
+            "optimal_lag_seconds": 60,
+            "improvement_over_zero": 0.0125,
+            "improvement_pct": 109.1,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "True",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.0489,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.0489 < 0.05, statistically significant predictive relationship",
+          "reason_code": null
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0122,
+            "std_deviation": 0.0897,
+            "stability_score": 0.9103,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.91 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0239,
+                "weight": 0.3,
+                "contribution": 0.0072
+              },
+              "statistical_significance": {
+                "value": 0.9511,
+                "weight": 0.25,
+                "contribution": 0.2378
+              },
+              "relationship_stability": {
+                "value": 0.9103,
+                "weight": 0.2,
+                "contribution": 0.1821
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0125,
+                "weight": 0.1,
+                "contribution": 0.0012
+              }
+            },
+            "total_score": 0.5782,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.58 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4306,
+            "up_correlation": -0.0192,
+            "up_optimal_lag_seconds": 180,
+            "up_granger_pvalue": 0.8465,
+            "up_significant": "False",
+            "down_samples": 4333,
+            "down_correlation": 0.0329,
+            "down_optimal_lag_seconds": 150,
+            "down_granger_pvalue": 0.2425,
+            "down_significant": "False",
+            "asymmetry_score": 0.0355,
+            "asymmetry_level": "symmetric",
+            "stronger_direction": "down"
+          },
+          "reason": "Neither direction is statistically significant",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: ETH leads WEAK1",
+        "Weak correlation"
+      ],
+      "stability": 0.9103,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4306,
+        "up_correlation": -0.0192,
+        "up_optimal_lag_seconds": 180,
+        "up_granger_pvalue": 0.8465,
+        "up_significant": "False",
+        "down_samples": 4333,
+        "down_correlation": 0.0329,
+        "down_optimal_lag_seconds": 150,
+        "down_granger_pvalue": 0.2425,
+        "down_significant": "False",
+        "asymmetry_score": 0.0355,
+        "asymmetry_level": "symmetric",
+        "stronger_direction": "down",
+        "directional_recommendation": "Neither direction is statistically significant"
+      },
+      "reason": "Low confidence (0.58)"
+    },
+    {
+      "leader": "SOL",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 90,
+      "correlation": -0.0201,
+      "confidence": 0.5336,
+      "granger_significant": "False",
+      "recommendation": "Moderate leading indicator (lag=90s, corr=-0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0095,
+            "correlation_at_optimal": -0.0201,
+            "optimal_lag_periods": 3,
+            "optimal_lag_seconds": 90,
+            "improvement_over_zero": 0.0106,
+            "improvement_pct": 112.1,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.2155,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.2155 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0101,
+            "std_deviation": 0.0979,
+            "stability_score": 0.9021,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.90 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0201,
+                "weight": 0.3,
+                "contribution": 0.006
+              },
+              "statistical_significance": {
+                "value": 0.7845,
+                "weight": 0.25,
+                "contribution": 0.1961
+              },
+              "relationship_stability": {
+                "value": 0.9021,
+                "weight": 0.2,
+                "contribution": 0.1804
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0.0106,
+                "weight": 0.1,
+                "contribution": 0.0011
+              }
+            },
+            "total_score": 0.5336,
+            "confidence_level": "high",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.53 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4353,
+            "up_correlation": -0.0181,
+            "up_optimal_lag_seconds": 90,
+            "up_granger_pvalue": 0.4426,
+            "up_significant": "False",
+            "down_samples": 4286,
+            "down_correlation": 0.0383,
+            "down_optimal_lag_seconds": 120,
+            "down_granger_pvalue": 0.0365,
+            "down_significant": "True",
+            "asymmetry_score": 0.3381,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "down"
+          },
+          "reason": "Trade only on leader DROPS (DOWN significant, p=0.037)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: SOL leads WEAK1",
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9021,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4353,
+        "up_correlation": -0.0181,
+        "up_optimal_lag_seconds": 90,
+        "up_granger_pvalue": 0.4426,
+        "up_significant": "False",
+        "down_samples": 4286,
+        "down_correlation": 0.0383,
+        "down_optimal_lag_seconds": 120,
+        "down_granger_pvalue": 0.0365,
+        "down_significant": "True",
+        "asymmetry_score": 0.3381,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "directional_recommendation": "Trade only on leader DROPS (DOWN significant, p=0.037)"
+      },
+      "reason": "Low confidence (0.53)"
+    },
+    {
+      "leader": "TAO",
+      "follower": "WEAK1",
+      "optimal_lag_seconds": 300,
+      "correlation": -0.0215,
+      "confidence": 0.3565,
+      "granger_significant": "False",
+      "recommendation": "Weak leading indicator, use with caution (lag=300s, corr=-0.02)",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 8639,
+            "follower_samples": 8639,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples available",
+          "reason_code": null
+        },
+        {
+          "test_name": "Cross-Correlation Analysis",
+          "passed": false,
+          "metrics": {
+            "lag_range_periods": [
+              -10,
+              10
+            ],
+            "lag_range_seconds": [
+              -300,
+              300
+            ],
+            "correlation_at_zero": 0.0306,
+            "correlation_at_optimal": -0.0215,
+            "optimal_lag_periods": 10,
+            "optimal_lag_seconds": 300,
+            "improvement_over_zero": -0.0091,
+            "improvement_pct": -29.8,
+            "roles_swapped": true
+          },
+          "reason": "Weak correlation at all lags",
+          "reason_code": "WEAK_CORRELATION"
+        },
+        {
+          "test_name": "Granger Causality",
+          "passed": "False",
+          "metrics": {
+            "test_type": "ssr_ftest",
+            "p_value": 0.9299,
+            "significance_threshold": 0.05
+          },
+          "reason": "p=0.9299 >= 0.05, cannot reject null hypothesis",
+          "reason_code": "GRANGER_NOT_SIGNIFICANT"
+        },
+        {
+          "test_name": "Rolling Correlation Stability",
+          "passed": true,
+          "metrics": {
+            "window_size": 120,
+            "mean_correlation": 0.0329,
+            "std_deviation": 0.0873,
+            "stability_score": 0.9127,
+            "stability_threshold": 0.7
+          },
+          "reason": "Stability 0.91 > 0.70 threshold, correlation is consistent over time",
+          "reason_code": null
+        },
+        {
+          "test_name": "Confidence Score Calculation",
+          "passed": "False",
+          "metrics": {
+            "factors": {
+              "correlation_strength": {
+                "value": 0.0215,
+                "weight": 0.3,
+                "contribution": 0.0065
+              },
+              "statistical_significance": {
+                "value": 0.0701,
+                "weight": 0.25,
+                "contribution": 0.0175
+              },
+              "relationship_stability": {
+                "value": 0.9127,
+                "weight": 0.2,
+                "contribution": 0.1825
+              },
+              "sample_adequacy": {
+                "value": 1.0,
+                "weight": 0.15,
+                "contribution": 0.15
+              },
+              "lag_consistency": {
+                "value": 0,
+                "weight": 0.1,
+                "contribution": 0.0
+              }
+            },
+            "total_score": 0.3565,
+            "confidence_level": "medium",
+            "min_confidence_threshold": 0.6
+          },
+          "reason": "Score 0.36 below 0.6 threshold",
+          "reason_code": "LOW_CONFIDENCE"
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 4284,
+            "up_correlation": 0.0331,
+            "up_optimal_lag_seconds": 300,
+            "up_granger_pvalue": 0.4127,
+            "up_significant": "False",
+            "down_samples": 4355,
+            "down_correlation": 0.0355,
+            "down_optimal_lag_seconds": 120,
+            "down_granger_pvalue": 0.0134,
+            "down_significant": "True",
+            "asymmetry_score": 0.481,
+            "asymmetry_level": "moderate",
+            "stronger_direction": "down"
+          },
+          "reason": "Trade only on leader DROPS (DOWN significant, p=0.013)",
+          "reason_code": null
+        }
+      ],
+      "caveats": [
+        "Roles swapped: TAO leads WEAK1",
+        "Weak correlation",
+        "Granger causality not significant"
+      ],
+      "stability": 0.9127,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13 02:03:17.940933+00:00",
+      "directional_analysis": {
+        "up_samples": 4284,
+        "up_correlation": 0.0331,
+        "up_optimal_lag_seconds": 300,
+        "up_granger_pvalue": 0.4127,
+        "up_significant": "False",
+        "down_samples": 4355,
+        "down_correlation": 0.0355,
+        "down_optimal_lag_seconds": 120,
+        "down_granger_pvalue": 0.0134,
+        "down_significant": "True",
+        "asymmetry_score": 0.481,
+        "asymmetry_level": "moderate",
+        "stronger_direction": "down",
+        "directional_recommendation": "Trade only on leader DROPS (DOWN significant, p=0.013)"
+      },
+      "reason": "Low confidence (0.36)"
+    }
+  ]
+}

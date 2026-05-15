@@ -1332,6 +1332,527 @@ swap_eth_for_token(BRETT, w3.to_wei(0.01, "ether"), 0)
 
 ---
 
+## Trust Wallet Agent SDK Integration (Recommended)
+
+After experiencing key format issues with Jupiter and Phantom mobile wallets (non-standard derivation paths, mismatched public keys), **Trust Wallet's Agent SDK (TWAK)** is the recommended approach for programmatic DEX trading.
+
+### Why Trust Wallet
+
+| Issue with Jupiter/Phantom | Trust Wallet Solution |
+|---------------------------|----------------------|
+| Private key export produces wrong wallet address | Generates standard BIP39/BIP44 keys locally |
+| Mnemonic derivation path mismatch | Uses standard Solana derivation `m/44'/501'/0'/0'` |
+| Mobile-first design, difficult automation | CLI-first design, built for automation |
+| Key format varies by wallet version | Consistent encrypted keystore format |
+
+### Trust Wallet Agent SDK Features
+
+- **Multi-chain support** - Solana, Ethereum, Base, 25+ chains from one wallet
+- **Secure local keys** - BIP39 HD wallet encrypted with AES-256-GCM
+- **CLI-based** - `twak` command for all wallet operations
+- **Swap execution** - Direct swap commands with password authentication
+- **API Gateway** - Prices, balances, quotes without needing wallet password
+
+### Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   Trading Bot   │────▶│   Trust Wallet   │────▶│   Blockchain    │
+│  (Python/CLI)   │     │   Agent SDK      │     │   (Solana/EVM)  │
+└────────┬────────┘     └──────────────────┘     └─────────────────┘
+         │                       │
+         │  1. twak swap quote   │
+         │  2. twak swap execute │
+         │     (with password)   │
+         │                       │
+         │  3. Transaction hash  │◀────────────────────────────────
+         │  4. Confirmation      │
+         ▼                       │
+┌─────────────────┐     ┌──────────────────┐
+│  History Logger │     │  ~/.twak/        │
+│                 │     │  wallet.json     │
+│                 │     │  (encrypted)     │
+└─────────────────┘     └──────────────────┘
+```
+
+### Setup Steps
+
+1. **Get API credentials** at [portal.trustwallet.com](https://portal.trustwallet.com)
+
+2. **Install CLI**:
+   ```bash
+   npm install -g @trustwallet/cli
+   # or use without install:
+   npx @trustwallet/cli --version
+   ```
+
+3. **Initialize credentials**:
+   ```bash
+   twak init --api-key YOUR_ACCESS_ID --api-secret YOUR_HMAC_SECRET
+   ```
+
+4. **Create wallet**:
+   ```bash
+   twak wallet create
+   # Prompts for password, generates encrypted HD wallet
+   ```
+
+5. **Get Solana address**:
+   ```bash
+   twak wallet address --chain solana --password YOUR_PASSWORD
+   ```
+
+6. **Fund wallet** - Transfer SOL + USDC to the address
+
+### CLI Commands for Trading
+
+```bash
+# Check balance
+twak balance --chain solana --password YOUR_PASSWORD
+
+# Get swap quote (no password needed)
+twak swap quote --chain solana --from SOL --to USDC --amount 1
+
+# Execute swap (requires password)
+twak swap execute --chain solana --from SOL --to USDC --amount 1 --password YOUR_PASSWORD
+
+# Check token price
+twak price SOL
+```
+
+### Python Integration
+
+```python
+import subprocess
+import json
+import os
+
+class TrustWalletTrader:
+    """Trade via Trust Wallet Agent SDK CLI."""
+    
+    def __init__(self, password: str = None):
+        self.password = password or os.environ.get("TWAK_WALLET_PASSWORD")
+        self._address = None
+    
+    def _run_twak(self, args: list, needs_password: bool = False) -> dict:
+        """Run twak CLI command and return JSON output."""
+        cmd = ["twak"] + args + ["--json"]
+        if needs_password and self.password:
+            cmd.extend(["--password", self.password])
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"twak failed: {result.stderr}")
+        return json.loads(result.stdout)
+    
+    def get_address(self, chain: str = "solana") -> str:
+        """Get wallet address for chain."""
+        if not self._address:
+            result = self._run_twak(
+                ["wallet", "address", "--chain", chain],
+                needs_password=True
+            )
+            self._address = result["address"]
+        return self._address
+    
+    def get_balance(self, chain: str = "solana") -> dict:
+        """Get wallet balances."""
+        return self._run_twak(
+            ["balance", "--chain", chain],
+            needs_password=True
+        )
+    
+    def get_swap_quote(self, chain: str, from_token: str, 
+                       to_token: str, amount: float) -> dict:
+        """Get swap quote (no password needed)."""
+        return self._run_twak([
+            "swap", "quote",
+            "--chain", chain,
+            "--from", from_token,
+            "--to", to_token,
+            "--amount", str(amount)
+        ])
+    
+    def execute_swap(self, chain: str, from_token: str,
+                     to_token: str, amount: float) -> dict:
+        """Execute swap (requires password)."""
+        return self._run_twak([
+            "swap", "execute",
+            "--chain", chain,
+            "--from", from_token,
+            "--to", to_token,
+            "--amount", str(amount)
+        ], needs_password=True)
+
+
+# Usage
+trader = TrustWalletTrader(password="your_secure_password")
+
+# Check balance
+balance = trader.get_balance("solana")
+print(f"SOL: {balance['SOL']}")
+
+# Get quote
+quote = trader.get_swap_quote("solana", "USDC", "SOL", 10.0)
+print(f"10 USDC -> {quote['outputAmount']} SOL")
+
+# Execute swap
+result = trader.execute_swap("solana", "USDC", "SOL", 10.0)
+print(f"Tx: {result['txHash']}")
+```
+
+### Security Model
+
+| Aspect | Trust Wallet Approach |
+|--------|----------------------|
+| **Key storage** | Encrypted locally in `~/.twak/wallet.json` |
+| **Encryption** | AES-256-GCM with PBKDF2-derived key |
+| **Password** | Required for signing, not stored on disk |
+| **API keys** | For read-only operations (prices, quotes) |
+| **Private keys** | Never leave device, never sent to API |
+
+### Password Handling Options
+
+| Method | Security | Use Case |
+|--------|----------|----------|
+| `--password` flag | Low (visible in history) | Testing only |
+| `TWAK_WALLET_PASSWORD` env | Medium | CI/CD |
+| OS keychain | High | Recommended for local |
+| Interactive prompt | High | Manual trading |
+
+### Integration with LiveTrader
+
+Replace current `LocalWallet` + Jupiter direct calls with Trust Wallet:
+
+```python
+# Before (Jupiter/LocalWallet)
+wallet = LocalWallet(private_key)  # Key format issues
+jupiter = JupiterClient()
+quote = jupiter.get_quote(...)
+tx = jupiter.build_swap_transaction(...)
+signed = wallet.sign(tx)
+result = submit_transaction(signed)
+
+# After (Trust Wallet)
+trader = TrustWalletTrader(password)
+quote = trader.get_swap_quote("solana", "USDC", "SOL", amount)
+result = trader.execute_swap("solana", "USDC", "SOL", amount)
+```
+
+### Advantages Summary
+
+1. **No key format issues** - Standard BIP39/BIP44, consistent across all chains
+2. **Built for automation** - CLI-first, JSON output, scriptable
+3. **Secure by default** - Encrypted storage, password-gated signing
+4. **Multi-chain ready** - Same wallet for Solana, Base, Ethereum
+5. **Official support** - Trust Wallet maintains the SDK with documentation
+
+### Files to Create/Modify
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `dex/trustwallet.py` | Create | TrustWalletTrader class |
+| `dex/trader.py` | Modify | Add Trust Wallet as backend option |
+| `correlation_tracker.py` | Modify | Use Trust Wallet in live mode |
+| `test_trustwallet_swap.py` | Create | Test script for Trust Wallet swaps |
+
+---
+
+## Lessons Learned: Private Key Derivation
+
+### The Problem
+
+During implementation, we encountered a **consistent issue across multiple wallet providers** (Jupiter, Phantom, Trust Wallet): exported private keys did not derive to the expected wallet address.
+
+| Wallet | Private Key Export | Derived Address | Expected Address | Match? |
+|--------|-------------------|-----------------|------------------|--------|
+| Jupiter | 88-char base58 | `B2sdS7cf...` | `FU8PNV...` | ❌ No |
+| Phantom | Similar | Different | Expected | ❌ No |
+| Trust Wallet | Per-network key | Different | Expected | ❌ No |
+
+This was **not due to**:
+- Multiple accounts (checked thoroughly)
+- Mixed up keys (verified source)
+- Different derivation paths in our code (tested multiple)
+
+### The Solution: Recovery Phrase + BIP44 Derivation
+
+The solution was to use the **wallet's recovery phrase (mnemonic)** with proper BIP44 derivation:
+
+```python
+from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
+
+# Derive Solana key from mnemonic using BIP44 path: m/44'/501'/0'/0'
+seed = Bip39SeedGenerator(mnemonic_phrase).Generate()
+bip44_ctx = Bip44.FromSeed(seed, Bip44Coins.SOLANA)
+bip44_acc = bip44_ctx.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT)
+priv_key_bytes = bip44_acc.PrivateKey().Raw().ToBytes()
+
+keypair = Keypair.from_seed(priv_key_bytes)
+# This now matches the wallet's displayed address!
+```
+
+### Why This Matters
+
+- **Private key export is unreliable** - Different wallets export keys in different formats
+- **Recovery phrase is the source of truth** - Standard BIP39/BIP44 derivation is consistent
+- **Multi-chain wallets derive different keys per network** - The same seed produces different addresses for ETH vs SOL vs BTC
+
+### Required Dependencies
+
+```bash
+pip install bip-utils solders
+```
+
+---
+
+## Network Requirements for Jupiter Swaps
+
+### Critical: Both Tokens Must Be on Solana
+
+Jupiter is a **Solana-only DEX aggregator**. For a swap to work:
+
+| Requirement | Details |
+|-------------|---------|
+| Input token | Must be SPL token on Solana |
+| Output token | Must be SPL token on Solana |
+| SOL for gas | ~0.005 SOL minimum for transaction fees |
+| USDC on Solana | Different from USDC on Ethereum! |
+
+### Common Mistake: Cross-Network Confusion
+
+```
+❌ WRONG: USDC on Ethereum → SOL on Solana (Jupiter cannot do this)
+✅ RIGHT: USDC on Solana → SOL on Solana (Jupiter handles this)
+```
+
+If you transfer USDC from Coinbase to your Solana wallet address via Ethereum network, it goes to a different blockchain entirely. The funds will not appear in your Solana wallet.
+
+### How to Get Tokens on Solana
+
+1. **Direct from exchange** - Withdraw SOL or USDC (SPL) directly to Solana address
+2. **Bridge from Ethereum** - Use Portal/Wormhole bridge (has fees)
+3. **Swap on Solana** - Once you have any Solana asset, swap to others via Jupiter
+
+---
+
+## Future Enhancement: Cross-Chain Swaps
+
+Trust Wallet supports **cross-chain swaps** that could enable trading tokens across networks:
+
+### Capabilities (Not Yet Implemented)
+
+- Swap ETH on Ethereum → SOL on Solana
+- Swap USDC on Base → BONK on Solana
+- Automatic bridging behind the scenes
+
+### Implementation Notes
+
+```bash
+# Trust Wallet cross-chain swap (future)
+twak swap execute --from-chain ethereum --from SOL --to-chain solana --to USDC --amount 1
+```
+
+### When to Implement
+
+- When trading strategy requires tokens on different chains
+- When gas costs make single-chain arbitrage uneconomical
+- When new opportunities emerge on chains other than Solana
+
+---
+
+## Integration Steps: Test Script → Live Trading
+
+### Current State (Completed)
+
+The `test_trustwallet_swap.py` script demonstrates the full swap flow:
+
+1. ✅ Load wallet from recovery phrase (BIP44 derivation)
+2. ✅ Check SOL and token balances via RPC
+3. ✅ Get swap quote from Jupiter
+4. ✅ Sign transaction with local keypair
+5. ✅ Submit transaction to Solana mainnet
+6. ✅ Verify updated balances
+
+### Integration into correlation_tracker.py Live Mode
+
+**Step 1: Add wallet initialization to startup**
+
+```python
+# In correlation_tracker.py
+from dex.local_wallet import LocalWallet
+from dex.jupiterutil import JupiterClient
+
+class CorrelationTracker:
+    def __init__(self, ...):
+        # Existing init...
+        
+        # Add for live trading
+        self._wallet: Optional[LocalWallet] = None
+        self._jupiter: Optional[JupiterClient] = None
+    
+    def _init_live_trading(self, mnemonic: str):
+        """Initialize wallet for live trading."""
+        self._wallet = LocalWallet(mnemonic)
+        if not self._wallet.is_loaded():
+            raise RuntimeError("Failed to load wallet")
+        
+        self._jupiter = JupiterClient()
+        print(f"[LIVE] Wallet: {self._wallet.get_address()}")
+```
+
+**Step 2: Add execute_trade method**
+
+```python
+def execute_swap(self, from_token: str, to_token: str, amount: float) -> Optional[str]:
+    """Execute a swap on Jupiter.
+    
+    Args:
+        from_token: Token symbol to sell (e.g., 'SOL', 'USDC')
+        to_token: Token symbol to buy
+        amount: Amount in token units
+    
+    Returns:
+        Transaction hash or None on failure
+    """
+    import base64
+    import requests
+    from solders.transaction import VersionedTransaction
+    
+    # Get mint addresses
+    from_mint = get_mint_with_fallback(from_token)
+    to_mint = get_mint_with_fallback(to_token)
+    
+    if not from_mint or not to_mint:
+        print(f"[LIVE] Unknown token: {from_token} or {to_token}")
+        return None
+    
+    # Convert amount to smallest units
+    decimals = 9 if from_token == 'SOL' else 6  # SOL=9, most SPL=6
+    amount_units = int(amount * (10 ** decimals))
+    
+    # Get quote
+    quote = self._jupiter.get_quote(from_mint, to_mint, amount_units)
+    if not quote:
+        print(f"[LIVE] No quote for {from_token} → {to_token}")
+        return None
+    
+    # Get swap transaction
+    address = self._wallet.get_address()
+    swap_tx_b64 = self._jupiter.get_swap_transaction(quote, address)
+    if not swap_tx_b64:
+        print(f"[LIVE] Failed to get swap transaction")
+        return None
+    
+    # Sign transaction
+    tx_bytes = base64.b64decode(swap_tx_b64)
+    tx = VersionedTransaction.from_bytes(tx_bytes)
+    keypair = self._wallet.get_keypair()
+    signed_tx = VersionedTransaction(tx.message, [keypair])
+    signed_tx_b64 = base64.b64encode(bytes(signed_tx)).decode('utf-8')
+    
+    # Submit transaction
+    rpc_url = "https://api.mainnet-beta.solana.com"
+    resp = requests.post(rpc_url, json={
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "sendTransaction",
+        "params": [signed_tx_b64, {"encoding": "base64", "skipPreflight": False}]
+    }, timeout=30)
+    
+    result = resp.json()
+    if "error" in result:
+        print(f"[LIVE] RPC error: {result['error']}")
+        return None
+    
+    tx_hash = result.get("result", "")
+    print(f"[LIVE] Swap submitted: {tx_hash}")
+    return tx_hash
+```
+
+**Step 3: Add to trading decision flow**
+
+```python
+def _execute_recommendation(self, recommendation: Dict):
+    """Execute a trading recommendation."""
+    action = recommendation.get("action")  # "buy" or "sell"
+    symbol = recommendation.get("symbol")
+    amount_usd = recommendation.get("amount_usd", 10.0)
+    
+    if action == "buy":
+        # Swap USDC → token
+        amount_usdc = amount_usd
+        tx_hash = self.execute_swap("USDC", symbol, amount_usdc)
+    elif action == "sell":
+        # Swap token → USDC
+        # Need to calculate token amount from USD value
+        price = self._jupiter.get_price(symbol)
+        if price:
+            amount_tokens = amount_usd / price[0]
+            tx_hash = self.execute_swap(symbol, "USDC", amount_tokens)
+    
+    # Log trade
+    if tx_hash:
+        self._log_trade(symbol, action, amount_usd, tx_hash)
+```
+
+**Step 4: Add command-line option**
+
+```python
+# In argument parser
+parser.add_argument('--live', action='store_true', help='Enable live trading')
+parser.add_argument('--wallet-phrase', type=str, help='Wallet recovery phrase (or set WALLET_MNEMONIC env)')
+
+# In main()
+if args.live:
+    mnemonic = args.wallet_phrase or os.environ.get("WALLET_MNEMONIC")
+    if not mnemonic:
+        print("ERROR: --wallet-phrase or WALLET_MNEMONIC required for live trading")
+        sys.exit(1)
+    tracker._init_live_trading(mnemonic)
+```
+
+---
+
+## Live Trading Scenario Coverage
+
+### Scenarios Covered ✅
+
+| Scenario | Status | Notes |
+|----------|--------|-------|
+| Load wallet from recovery phrase | ✅ Complete | BIP44 derivation working |
+| Check SOL balance | ✅ Complete | Direct RPC call |
+| Check SPL token balance | ✅ Complete | getTokenAccountsByOwner RPC |
+| Get swap quote | ✅ Complete | Jupiter quote API |
+| Sign transaction locally | ✅ Complete | solders VersionedTransaction |
+| Submit transaction | ✅ Complete | sendTransaction RPC |
+| Verify transaction result | ✅ Complete | Balance re-check |
+
+### Scenarios Not Yet Implemented ⚠️
+
+| Scenario | Priority | Notes |
+|----------|----------|-------|
+| Transaction confirmation monitoring | High | Wait for finality before proceeding |
+| Failed transaction retry | High | Handle RPC errors, insufficient funds |
+| Slippage protection | High | Reject if price moved too much |
+| Gas estimation | Medium | Ensure enough SOL for fees |
+| Position size limits | Medium | Max trade size based on liquidity |
+| Trade history logging | Medium | Record all trades with tx hashes |
+| Error alerting | Medium | Notify on failed trades |
+| Rate limiting | Low | Avoid RPC throttling |
+| Multi-token portfolio tracking | Low | Track all held tokens |
+
+### Security Considerations
+
+| Item | Status | Recommendation |
+|------|--------|----------------|
+| Mnemonic storage | ⚠️ Env var | Consider encrypted file or secrets manager |
+| RPC endpoint | ⚠️ Public | Consider private RPC (Helius, QuickNode) |
+| Max trade size | ⚠️ None | Implement hard limits |
+| Wallet isolation | ⚠️ None | Use dedicated trading wallet |
+
+---
+
 ## Open Questions
 
 ### Strategy & Scope

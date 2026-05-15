@@ -41,41 +41,163 @@ class LocalWallet:
             print(f"[WALLET] Key length: {key_len} characters")
             
             # Try direct base58 string method first (most common: Phantom export)
+            # Note: solders can panic on invalid keys, so we catch BaseException
             try:
                 self._keypair = Keypair.from_base58_string(private_key)
                 self._public_key = str(self._keypair.pubkey())
                 addr = self._public_key
                 print(f"[WALLET] Loaded wallet: {addr[:8]}...{addr[-4:]}")
                 return
-            except Exception as e:
-                print(f"[WALLET] Base58 string method failed: {e}")
-                # Try decoding and using from_bytes directly
-                try:
-                    import base58
-                    decoded = base58.b58decode(private_key)
-                    print(f"[WALLET] Decoded to {len(decoded)} bytes")
+            except BaseException as e:
+                # Catch both Exception and PanicException from pyo3
+                print(f"[WALLET] Base58 string method failed: {type(e).__name__}")
+            
+            # Try decoding and using from_bytes directly
+            try:
+                import base58
+                decoded = base58.b58decode(private_key)
+                print(f"[WALLET] Decoded to {len(decoded)} bytes")
+                
+                # Debug: analyze the key bytes
+                if len(decoded) == 64:
+                    # Standard format: first 32 = secret seed, last 32 = public key
+                    pubkey_bytes = decoded[32:]
+                    pubkey_b58 = base58.b58encode(pubkey_bytes).decode('utf-8')
+                    print(f"[WALLET] Public key from bytes[32:64]: {pubkey_b58}")
                     
-                    if len(decoded) == 64:
-                        print(f"[WALLET] Trying from_bytes (64-byte keypair)...")
+                    # Try deriving from just the seed (first 32 bytes)
+                    seed_bytes = decoded[:32]
+                    seed_b58 = base58.b58encode(seed_bytes).decode('utf-8')
+                    print(f"[WALLET] Seed from bytes[0:32]: {seed_b58[:16]}...")
+                    
+                    # Try the reverse (in case Jupiter uses public+secret order)
+                    rev_pubkey = decoded[:32]
+                    rev_pubkey_b58 = base58.b58encode(rev_pubkey).decode('utf-8')
+                    print(f"[WALLET] If reversed, public would be: {rev_pubkey_b58}")
+                    
+                    # Try deriving public key from ed25519 directly
+                    try:
+                        from nacl.signing import SigningKey
+                        # Use first 32 bytes as ed25519 seed
+                        sk = SigningKey(decoded[:32])
+                        vk = sk.verify_key
+                        derived_pubkey = base58.b58encode(bytes(vk)).decode('utf-8')
+                        print(f"[WALLET] ed25519 derived from first32: {derived_pubkey}")
+                        
+                        # Use last 32 bytes as ed25519 seed
+                        sk2 = SigningKey(decoded[32:])
+                        vk2 = sk2.verify_key
+                        derived_pubkey2 = base58.b58encode(bytes(vk2)).decode('utf-8')
+                        print(f"[WALLET] ed25519 derived from last32: {derived_pubkey2}")
+                    except ImportError:
+                        print(f"[WALLET] (nacl not installed - skipping ed25519 check)")
+                    except Exception as e:
+                        print(f"[WALLET] ed25519 derivation error: {e}")
+                
+                if len(decoded) == 64:
+                    # Try standard order first (secret + public)
+                    print(f"[WALLET] Trying from_bytes (64-byte keypair)...")
+                    try:
                         self._keypair = Keypair.from_bytes(decoded)
                         self._public_key = str(self._keypair.pubkey())
                         addr = self._public_key
                         print(f"[WALLET] Loaded wallet: {addr[:8]}...{addr[-4:]}")
                         return
-                    elif len(decoded) == 32:
-                        print(f"[WALLET] Trying from_seed (32-byte secret)...")
-                        self._keypair = Keypair.from_seed(decoded)
+                    except BaseException:
+                        pass
+                    
+                    # Try reversed order (some wallets export public + secret)
+                    print(f"[WALLET] Trying reversed byte order (public + secret)...")
+                    try:
+                        reversed_bytes = decoded[32:] + decoded[:32]
+                        self._keypair = Keypair.from_bytes(reversed_bytes)
                         self._public_key = str(self._keypair.pubkey())
                         addr = self._public_key
                         print(f"[WALLET] Loaded wallet: {addr[:8]}...{addr[-4:]}")
                         return
-                except Exception as e2:
-                    if "signature error" in str(e2):
-                        print(f"[WALLET] Invalid keypair - bytes are not a valid ed25519 key")
-                        print(f"[WALLET] Please verify you exported the PRIVATE KEY from Phantom")
-                        print(f"[WALLET] (Settings → Security & Privacy → Export Private Key)")
-                    else:
-                        print(f"[WALLET] Fallback decode failed: {e2}")
+                    except BaseException:
+                        pass
+                    
+                    # Try just the first 32 bytes as seed
+                    print(f"[WALLET] Trying first 32 bytes as seed...")
+                    try:
+                        self._keypair = Keypair.from_seed(decoded[:32])
+                        self._public_key = str(self._keypair.pubkey())
+                        addr = self._public_key
+                        print(f"[WALLET] Loaded wallet: {addr[:8]}...{addr[-4:]}")
+                        return
+                    except BaseException:
+                        pass
+                    
+                    # Try last 32 bytes as seed
+                    print(f"[WALLET] Trying last 32 bytes as seed...")
+                    try:
+                        self._keypair = Keypair.from_seed(decoded[32:])
+                        self._public_key = str(self._keypair.pubkey())
+                        addr = self._public_key
+                        print(f"[WALLET] Loaded wallet: {addr[:8]}...{addr[-4:]}")
+                        return
+                    except BaseException as e:
+                        print(f"[WALLET] All 64-byte methods failed: {type(e).__name__}")
+                elif len(decoded) == 32:
+                    print(f"[WALLET] Trying from_seed (32-byte secret)...")
+                    self._keypair = Keypair.from_seed(decoded)
+                    self._public_key = str(self._keypair.pubkey())
+                    addr = self._public_key
+                    print(f"[WALLET] Loaded wallet: {addr[:8]}...{addr[-4:]}")
+                    return
+                else:
+                    print(f"[WALLET] Unexpected decoded length: {len(decoded)} bytes")
+                    print(f"[WALLET] Expected 64 (full keypair) or 32 (seed only)")
+            except Exception as e2:
+                err_str = str(e2).lower()
+                if "signature" in err_str or "invalid" in err_str:
+                    print(f"[WALLET] Invalid keypair - bytes are not a valid ed25519 key")
+                    print(f"[WALLET] This might be a PUBLIC key, not a PRIVATE key")
+                    print(f"[WALLET] Jupiter: Settings → Security → Show Secret Key")
+                else:
+                    print(f"[WALLET] Fallback decode failed: {e2}")
+            
+            # Try mnemonic phrase (12 or 24 words)
+            words = private_key.split()
+            if len(words) in (12, 24):
+                print(f"[WALLET] Detected {len(words)}-word mnemonic phrase")
+                
+                # Try BIP44 derivation first (Trust Wallet, Phantom use this)
+                # Path: m/44'/501'/0'/0'
+                try:
+                    from bip_utils import Bip39SeedGenerator, Bip44, Bip44Coins, Bip44Changes
+                    
+                    # Generate seed from mnemonic
+                    seed = Bip39SeedGenerator(private_key).Generate()
+                    
+                    # Derive using BIP44 path for Solana: m/44'/501'/0'/0'
+                    bip44_ctx = Bip44.FromSeed(seed, Bip44Coins.SOLANA)
+                    bip44_acc = bip44_ctx.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT)
+                    
+                    # Get the private key bytes
+                    priv_key_bytes = bip44_acc.PrivateKey().Raw().ToBytes()
+                    
+                    self._keypair = Keypair.from_seed(priv_key_bytes)
+                    self._public_key = str(self._keypair.pubkey())
+                    addr = self._public_key
+                    print(f"[WALLET] Loaded wallet from mnemonic (BIP44): {addr[:8]}...{addr[-4:]}")
+                    return
+                except ImportError:
+                    print(f"[WALLET] BIP44 derivation requires: pip install mnemonic bip-utils")
+                    # Fall back to solders method
+                except Exception as e:
+                    print(f"[WALLET] BIP44 derivation failed: {e}")
+                
+                # Fallback: Try solders default derivation
+                try:
+                    self._keypair = Keypair.from_seed_phrase_and_passphrase(private_key, "")
+                    self._public_key = str(self._keypair.pubkey())
+                    addr = self._public_key
+                    print(f"[WALLET] Loaded wallet from mnemonic (solders): {addr[:8]}...{addr[-4:]}")
+                    return
+                except Exception as e:
+                    print(f"[WALLET] Mnemonic method failed: {e}")
             
             # Try JSON array format (Solana CLI)
             if private_key.startswith('['):

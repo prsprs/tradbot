@@ -1,0 +1,76 @@
+{
+  "generated_at": "2026-05-13T01:56:47.739065+00:00",
+  "data_range_start": "2026-05-11T01:56:47.739100+00:00",
+  "data_range_end": "2026-05-13T01:56:47.739111+00:00",
+  "coins_analyzed": [
+    "BTC",
+    "SOL"
+  ],
+  "pairs_tested": 1,
+  "significant_pairs": [
+    {
+      "leader": "BTC",
+      "follower": "SOL",
+      "optimal_lag_seconds": 60,
+      "correlation": 0.6,
+      "confidence": 0.3,
+      "granger_significant": "False",
+      "recommendation": "Test pair for low_volatility scenario",
+      "test_results": [
+        {
+          "test_name": "Data Validation",
+          "passed": true,
+          "metrics": {
+            "leader_samples": 5000,
+            "follower_samples": 5000,
+            "minimum_required": 500
+          },
+          "reason": "Sufficient samples",
+          "reason_code": null
+        },
+        {
+          "test_name": "Directional Analysis (UP vs DOWN)",
+          "passed": true,
+          "metrics": {
+            "up_samples": 200,
+            "up_correlation": 0.6,
+            "up_optimal_lag_seconds": 60,
+            "up_granger_pvalue": 0.5,
+            "up_significant": "False",
+            "down_samples": 200,
+            "down_correlation": 0.6,
+            "down_optimal_lag_seconds": 60,
+            "down_granger_pvalue": 0.5,
+            "down_significant": "False",
+            "asymmetry_score": 0.0,
+            "asymmetry_level": "low",
+            "stronger_direction": "symmetric"
+          },
+          "reason": "Test scenario: low_volatility",
+          "reason_code": null
+        }
+      ],
+      "caveats": [],
+      "stability": 0.85,
+      "stable_relationship": true,
+      "data_range_end": "2026-05-13T01:56:47.739121+00:00",
+      "directional_analysis": {
+        "up_samples": 200,
+        "up_correlation": 0.6,
+        "up_optimal_lag_seconds": 60,
+        "up_granger_pvalue": 0.5,
+        "up_significant": "False",
+        "down_samples": 200,
+        "down_correlation": 0.6,
+        "down_optimal_lag_seconds": 60,
+        "down_granger_pvalue": 0.5,
+        "down_significant": "False",
+        "asymmetry_score": 0.0,
+        "asymmetry_level": "low",
+        "stronger_direction": "symmetric",
+        "directional_recommendation": "Test: low_volatility"
+      }
+    }
+  ],
+  "no_significant_relationship": []
+}

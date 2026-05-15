@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from coingeckoutil import get_multiple_prices, get_coingecko_price
+from preflight import PreflightValidator, PreflightResult, run_preflight
 
 # Supported exchanges for price fetching
 SUPPORTED_EXCHANGES = ['coingecko', 'jupiter', 'coinbase']
@@ -160,6 +161,12 @@ class TesterConfig:
     win_rate_window: int = 10  # Number of recent trades to evaluate
     auto_refresh: bool = False  # Auto re-run analyzer on breach
     report_path: str = './correlation_data/discovery_report.json'  # Path to discovery report
+    # Preflight-based directional filtering (from profitability analysis)
+    directional_filter: bool = False  # Enable UP/DOWN directional filtering
+    up_viable: bool = True  # Whether UP direction passed profitability check
+    down_viable: bool = True  # Whether DOWN direction passed profitability check
+    max_trades: Optional[int] = None  # Stop after this many trades (for testing)
+    live_trader: Optional[Any] = None  # LiveTrader instance for real swaps (None = paper mode)
 
 
 @dataclass
@@ -521,6 +528,723 @@ class PaperTradeLogger:
     def get_summary(self) -> Dict[str, Any]:
         """Get current summary statistics."""
         return self._calculate_summary()
+
+
+# ============================================================================
+# Live Trader (USDC Mode)
+# ============================================================================
+
+@dataclass
+class LiveTrade:
+    """A completed live trade with Jupiter swap."""
+    id: str
+    timestamp: str
+    type: str = "live"
+    pair: str = ""
+    action: str = ""  # BUY or SELL
+    follower: str = ""
+    input_token: str = ""  # USDC for BUY, follower for SELL
+    output_token: str = ""  # follower for BUY, USDC for SELL
+    input_amount: float = 0.0
+    output_amount: float = 0.0
+    price_usd: float = 0.0
+    slippage_bps: int = 100
+    trigger: Dict[str, Any] = field(default_factory=dict)
+    timing: Dict[str, Any] = field(default_factory=dict)
+    transaction: Dict[str, Any] = field(default_factory=dict)  # signature, status, etc.
+    outcome: Optional[Dict[str, Any]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class LiveTrader:
+    """
+    Live trading with Jupiter swaps.
+    
+    USDC Mode (default):
+        BUY signal: Swap USDC → Follower token
+        SELL signal: Swap Follower token → USDC
+    
+    Swap Mode (--swap-mode):
+        BUY signal: Swap Leader → Follower (expect follower to rise)
+        SELL signal: Swap Follower → Leader (expect follower to fall)
+    """
+    
+    def __init__(
+        self,
+        pair_config: PairConfig,
+        position_size_usd: float = 100.0,
+        slippage_bps: int = 100,
+        output_path: str = './live_trades/',
+        directional_filter: bool = False,
+        up_viable: bool = True,
+        down_viable: bool = True,
+        swap_mode: bool = False,
+        max_trades: Optional[int] = None,
+    ):
+        self.pair_config = pair_config
+        self.position_size_usd = position_size_usd
+        self.slippage_bps = slippage_bps
+        self.output_path = Path(output_path)
+        self.output_path.mkdir(parents=True, exist_ok=True)
+        
+        self.directional_filter = directional_filter
+        self.up_viable = up_viable
+        self.down_viable = down_viable
+        self.swap_mode = swap_mode
+        self.max_trades = max_trades
+        
+        self.wallet = None
+        self.jupiter_client = None
+        self.trades: List[LiveTrade] = []
+        self.trade_counter = 0
+        
+        # Track positions
+        self.follower_balance: float = 0.0
+        self.usdc_balance: float = 0.0
+        self.leader_balance: float = 0.0
+        
+    def initialize(self) -> bool:
+        """Initialize wallet and Jupiter client. Returns True on success."""
+        try:
+            from dex.local_wallet import get_wallet_interactive
+            from dex.jupiterutil import JupiterClient, USDC_MINT
+            from dex.token_cache import get_mint_with_fallback
+            
+            # Load wallet
+            print("\n" + "=" * 60)
+            print("LIVE TRADING - WALLET SETUP")
+            print("=" * 60)
+            self.wallet = get_wallet_interactive()
+            
+            if not self.wallet.is_loaded():
+                print("[LIVE] Failed to load wallet")
+                return False
+            
+            print(f"[LIVE] Wallet loaded: {self.wallet.get_address()}")
+            
+            # Initialize Jupiter client
+            self.jupiter_client = JupiterClient(slippage_bps=self.slippage_bps)
+            
+            # Verify follower token is tradeable
+            follower_mint = get_mint_with_fallback(self.pair_config.follower)
+            if not follower_mint:
+                print(f"[LIVE] Unknown token: {self.pair_config.follower}")
+                return False
+            
+            print(f"[LIVE] Follower token: {self.pair_config.follower} ({follower_mint[:8]}...)")
+            
+            # TODO: Check wallet balances
+            # self._refresh_balances()
+            
+            return True
+            
+        except ImportError as e:
+            print(f"[LIVE] Missing dependencies: {e}")
+            print("[LIVE] Install with: pip install -r requirements_dex.txt")
+            return False
+        except Exception as e:
+            print(f"[LIVE] Initialization error: {e}")
+            return False
+    
+    def _generate_trade_id(self) -> str:
+        """Generate a unique trade ID."""
+        self.trade_counter += 1
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        return f"lt_{timestamp}_{self.trade_counter:03d}"
+    
+    def can_execute_signal(self, direction: str) -> Tuple[bool, str]:
+        """Check if a signal can be executed based on directional filtering.
+        
+        Args:
+            direction: 'rise' or 'fall'
+        
+        Returns:
+            (can_execute, reason)
+        """
+        if not self.directional_filter:
+            return True, "directional filter disabled"
+        
+        if direction == 'rise' and not self.up_viable:
+            return False, "UP direction not viable per preflight"
+        elif direction == 'fall' and not self.down_viable:
+            return False, "DOWN direction not viable per preflight"
+        
+        return True, "direction viable"
+    
+    def execute_buy(
+        self,
+        trigger_info: Dict[str, Any],
+        timing_info: Dict[str, Any],
+    ) -> Optional[LiveTrade]:
+        """Execute a BUY: USDC → Follower token.
+        
+        Returns:
+            LiveTrade on success, None on failure.
+        """
+        if not self.jupiter_client or not self.wallet:
+            logger.error("[LIVE] Not initialized")
+            return None
+        
+        try:
+            from dex.jupiterutil import USDC_MINT
+            from dex.token_cache import get_mint_with_fallback
+            
+            follower_mint = get_mint_with_fallback(self.pair_config.follower)
+            if not follower_mint:
+                logger.error(f"[LIVE] Unknown token: {self.pair_config.follower}")
+                return None
+            
+            # Convert USD to USDC amount (6 decimals)
+            usdc_amount = int(self.position_size_usd * 1_000_000)
+            
+            # Get quote
+            logger.info(f"[LIVE] Getting quote: ${self.position_size_usd} USDC → {self.pair_config.follower}")
+            quote = self.jupiter_client.get_quote(
+                input_mint=USDC_MINT,
+                output_mint=follower_mint,
+                amount=usdc_amount,
+            )
+            
+            if not quote:
+                logger.error("[LIVE] Failed to get quote")
+                return None
+            
+            # Log quote details
+            out_amount = int(quote.get("outAmount", 0))
+            price_impact = float(quote.get("priceImpactPct", 0))
+            logger.info(f"[LIVE] Quote: {out_amount} {self.pair_config.follower}, impact: {price_impact:.2f}%")
+            
+            # Get swap transaction
+            swap_tx = self.jupiter_client.get_swap_transaction(
+                quote=quote,
+                user_public_key=self.wallet.get_address(),
+            )
+            
+            if not swap_tx:
+                logger.error("[LIVE] Failed to get swap transaction")
+                return None
+            
+            # Sign and send transaction
+            import base64
+            tx_bytes = base64.b64decode(swap_tx)
+            signed_tx = self.wallet.sign_transaction(tx_bytes)
+            
+            if not signed_tx:
+                logger.error("[LIVE] Failed to sign transaction")
+                return None
+            
+            # Send transaction
+            signature = self._send_transaction(signed_tx)
+            
+            if not signature:
+                logger.error("[LIVE] Failed to send transaction")
+                return None
+            
+            # Calculate output amount with decimals
+            from dex.token_cache import get_well_known_decimals, get_token_info
+            decimals = get_well_known_decimals(self.pair_config.follower)
+            if decimals is None:
+                token_info = get_token_info(self.pair_config.follower)
+                decimals = token_info.get("decimals", 9) if token_info else 9
+            
+            output_amount = out_amount / (10 ** decimals)
+            price_usd = self.position_size_usd / output_amount if output_amount > 0 else 0
+            
+            # Create trade record
+            trade = LiveTrade(
+                id=self._generate_trade_id(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                type="live",
+                pair=f"{self.pair_config.leader}:{self.pair_config.follower}",
+                action="BUY",
+                follower=self.pair_config.follower,
+                input_token="USDC",
+                output_token=self.pair_config.follower,
+                input_amount=self.position_size_usd,
+                output_amount=output_amount,
+                price_usd=price_usd,
+                slippage_bps=self.slippage_bps,
+                trigger=trigger_info,
+                timing=timing_info,
+                transaction={
+                    "signature": signature,
+                    "status": "confirmed",
+                    "price_impact_pct": price_impact,
+                },
+            )
+            
+            self.trades.append(trade)
+            self._save_trades()
+            
+            logger.info(f"[LIVE] ✓ BUY executed: {output_amount:.6f} {self.pair_config.follower} @ ${price_usd:.4f}")
+            logger.info(f"[LIVE] TX: {signature}")
+            
+            return trade
+            
+        except Exception as e:
+            logger.error(f"[LIVE] BUY failed: {e}")
+            return None
+    
+    def execute_sell(
+        self,
+        amount: float,
+        trigger_info: Dict[str, Any],
+        timing_info: Dict[str, Any],
+    ) -> Optional[LiveTrade]:
+        """Execute a SELL: Follower token → USDC.
+        
+        Args:
+            amount: Amount of follower token to sell.
+            trigger_info: Trigger data for trade record.
+            timing_info: Timing data for trade record.
+        
+        Returns:
+            LiveTrade on success, None on failure.
+        """
+        if not self.jupiter_client or not self.wallet:
+            logger.error("[LIVE] Not initialized")
+            return None
+        
+        try:
+            from dex.jupiterutil import USDC_MINT
+            from dex.token_cache import get_mint_with_fallback, get_well_known_decimals, get_token_info
+            
+            follower_mint = get_mint_with_fallback(self.pair_config.follower)
+            if not follower_mint:
+                logger.error(f"[LIVE] Unknown token: {self.pair_config.follower}")
+                return None
+            
+            # Get token decimals
+            decimals = get_well_known_decimals(self.pair_config.follower)
+            if decimals is None:
+                token_info = get_token_info(self.pair_config.follower)
+                decimals = token_info.get("decimals", 9) if token_info else 9
+            
+            # Convert to smallest units
+            token_amount = int(amount * (10 ** decimals))
+            
+            # Get quote
+            logger.info(f"[LIVE] Getting quote: {amount} {self.pair_config.follower} → USDC")
+            quote = self.jupiter_client.get_quote(
+                input_mint=follower_mint,
+                output_mint=USDC_MINT,
+                amount=token_amount,
+            )
+            
+            if not quote:
+                logger.error("[LIVE] Failed to get quote")
+                return None
+            
+            # Log quote details
+            out_amount = int(quote.get("outAmount", 0))
+            usdc_out = out_amount / 1_000_000  # USDC has 6 decimals
+            price_impact = float(quote.get("priceImpactPct", 0))
+            logger.info(f"[LIVE] Quote: ${usdc_out:.2f} USDC, impact: {price_impact:.2f}%")
+            
+            # Get swap transaction
+            swap_tx = self.jupiter_client.get_swap_transaction(
+                quote=quote,
+                user_public_key=self.wallet.get_address(),
+            )
+            
+            if not swap_tx:
+                logger.error("[LIVE] Failed to get swap transaction")
+                return None
+            
+            # Sign and send transaction
+            import base64
+            tx_bytes = base64.b64decode(swap_tx)
+            signed_tx = self.wallet.sign_transaction(tx_bytes)
+            
+            if not signed_tx:
+                logger.error("[LIVE] Failed to sign transaction")
+                return None
+            
+            # Send transaction
+            signature = self._send_transaction(signed_tx)
+            
+            if not signature:
+                logger.error("[LIVE] Failed to send transaction")
+                return None
+            
+            price_usd = usdc_out / amount if amount > 0 else 0
+            
+            # Create trade record
+            trade = LiveTrade(
+                id=self._generate_trade_id(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                type="live",
+                pair=f"{self.pair_config.leader}:{self.pair_config.follower}",
+                action="SELL",
+                follower=self.pair_config.follower,
+                input_token=self.pair_config.follower,
+                output_token="USDC",
+                input_amount=amount,
+                output_amount=usdc_out,
+                price_usd=price_usd,
+                slippage_bps=self.slippage_bps,
+                trigger=trigger_info,
+                timing=timing_info,
+                transaction={
+                    "signature": signature,
+                    "status": "confirmed",
+                    "price_impact_pct": price_impact,
+                },
+            )
+            
+            self.trades.append(trade)
+            self._save_trades()
+            
+            logger.info(f"[LIVE] ✓ SELL executed: {amount:.6f} {self.pair_config.follower} → ${usdc_out:.2f}")
+            logger.info(f"[LIVE] TX: {signature}")
+            
+            return trade
+            
+        except Exception as e:
+            logger.error(f"[LIVE] SELL failed: {e}")
+            return None
+    
+    # ==================== SWAP MODE METHODS ====================
+    
+    def swap_leader_to_follower(
+        self,
+        usd_equivalent: float,
+        trigger_info: Dict[str, Any],
+        timing_info: Dict[str, Any],
+    ) -> Optional[LiveTrade]:
+        """Swap Mode BUY: Leader → Follower (expect follower to rise).
+        
+        Args:
+            usd_equivalent: USD value to swap (determines leader token amount).
+            trigger_info: Trigger data for trade record.
+            timing_info: Timing data for trade record.
+        
+        Returns:
+            LiveTrade on success, None on failure.
+        """
+        if not self.jupiter_client or not self.wallet:
+            logger.error("[LIVE] Not initialized")
+            return None
+        
+        try:
+            from dex.token_cache import get_mint_with_fallback, get_well_known_decimals, get_token_info
+            
+            leader_mint = get_mint_with_fallback(self.pair_config.leader)
+            follower_mint = get_mint_with_fallback(self.pair_config.follower)
+            
+            if not leader_mint or not follower_mint:
+                logger.error(f"[LIVE] Unknown tokens: {self.pair_config.leader} or {self.pair_config.follower}")
+                return None
+            
+            # Get leader price to calculate amount
+            leader_price = self.jupiter_client.get_price(self.pair_config.leader)
+            if not leader_price:
+                logger.error(f"[LIVE] Could not get price for {self.pair_config.leader}")
+                return None
+            
+            leader_usd_price = leader_price[0]
+            leader_amount = usd_equivalent / leader_usd_price
+            
+            # Get leader decimals
+            leader_decimals = get_well_known_decimals(self.pair_config.leader)
+            if leader_decimals is None:
+                token_info = get_token_info(self.pair_config.leader)
+                leader_decimals = token_info.get("decimals", 9) if token_info else 9
+            
+            # Convert to smallest units
+            leader_amount_raw = int(leader_amount * (10 ** leader_decimals))
+            
+            logger.info(f"[SWAP] Getting quote: {leader_amount:.6f} {self.pair_config.leader} → {self.pair_config.follower}")
+            quote = self.jupiter_client.get_quote(
+                input_mint=leader_mint,
+                output_mint=follower_mint,
+                amount=leader_amount_raw,
+            )
+            
+            if not quote:
+                logger.error("[SWAP] Failed to get quote")
+                return None
+            
+            # Get follower decimals
+            follower_decimals = get_well_known_decimals(self.pair_config.follower)
+            if follower_decimals is None:
+                token_info = get_token_info(self.pair_config.follower)
+                follower_decimals = token_info.get("decimals", 9) if token_info else 9
+            
+            out_amount = int(quote.get("outAmount", 0))
+            follower_amount = out_amount / (10 ** follower_decimals)
+            price_impact = float(quote.get("priceImpactPct", 0))
+            
+            logger.info(f"[SWAP] Quote: {follower_amount:.6f} {self.pair_config.follower}, impact: {price_impact:.2f}%")
+            
+            # Get swap transaction
+            swap_tx = self.jupiter_client.get_swap_transaction(
+                quote=quote,
+                user_public_key=self.wallet.get_address(),
+            )
+            
+            if not swap_tx:
+                logger.error("[SWAP] Failed to get swap transaction")
+                return None
+            
+            # Sign and send
+            import base64
+            tx_bytes = base64.b64decode(swap_tx)
+            signed_tx = self.wallet.sign_transaction(tx_bytes)
+            
+            if not signed_tx:
+                logger.error("[SWAP] Failed to sign transaction")
+                return None
+            
+            signature = self._send_transaction(signed_tx)
+            
+            if not signature:
+                logger.error("[SWAP] Failed to send transaction")
+                return None
+            
+            # Create trade record
+            trade = LiveTrade(
+                id=self._generate_trade_id(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                type="live_swap",
+                pair=f"{self.pair_config.leader}:{self.pair_config.follower}",
+                action="SWAP_BUY",
+                follower=self.pair_config.follower,
+                input_token=self.pair_config.leader,
+                output_token=self.pair_config.follower,
+                input_amount=leader_amount,
+                output_amount=follower_amount,
+                price_usd=usd_equivalent,  # USD equivalent of swap
+                slippage_bps=self.slippage_bps,
+                trigger=trigger_info,
+                timing=timing_info,
+                transaction={
+                    "signature": signature,
+                    "status": "confirmed",
+                    "price_impact_pct": price_impact,
+                    "mode": "swap",
+                },
+            )
+            
+            self.trades.append(trade)
+            self._save_trades()
+            
+            logger.info(f"[SWAP] ✓ {self.pair_config.leader} → {self.pair_config.follower}: {leader_amount:.6f} → {follower_amount:.6f}")
+            logger.info(f"[SWAP] TX: {signature}")
+            
+            return trade
+            
+        except Exception as e:
+            logger.error(f"[SWAP] Leader→Follower failed: {e}")
+            return None
+    
+    def swap_follower_to_leader(
+        self,
+        follower_amount: float,
+        trigger_info: Dict[str, Any],
+        timing_info: Dict[str, Any],
+    ) -> Optional[LiveTrade]:
+        """Swap Mode SELL: Follower → Leader (expect follower to fall).
+        
+        Args:
+            follower_amount: Amount of follower token to swap.
+            trigger_info: Trigger data for trade record.
+            timing_info: Timing data for trade record.
+        
+        Returns:
+            LiveTrade on success, None on failure.
+        """
+        if not self.jupiter_client or not self.wallet:
+            logger.error("[LIVE] Not initialized")
+            return None
+        
+        try:
+            from dex.token_cache import get_mint_with_fallback, get_well_known_decimals, get_token_info
+            
+            leader_mint = get_mint_with_fallback(self.pair_config.leader)
+            follower_mint = get_mint_with_fallback(self.pair_config.follower)
+            
+            if not leader_mint or not follower_mint:
+                logger.error(f"[LIVE] Unknown tokens: {self.pair_config.leader} or {self.pair_config.follower}")
+                return None
+            
+            # Get follower decimals
+            follower_decimals = get_well_known_decimals(self.pair_config.follower)
+            if follower_decimals is None:
+                token_info = get_token_info(self.pair_config.follower)
+                follower_decimals = token_info.get("decimals", 9) if token_info else 9
+            
+            # Convert to smallest units
+            follower_amount_raw = int(follower_amount * (10 ** follower_decimals))
+            
+            logger.info(f"[SWAP] Getting quote: {follower_amount:.6f} {self.pair_config.follower} → {self.pair_config.leader}")
+            quote = self.jupiter_client.get_quote(
+                input_mint=follower_mint,
+                output_mint=leader_mint,
+                amount=follower_amount_raw,
+            )
+            
+            if not quote:
+                logger.error("[SWAP] Failed to get quote")
+                return None
+            
+            # Get leader decimals
+            leader_decimals = get_well_known_decimals(self.pair_config.leader)
+            if leader_decimals is None:
+                token_info = get_token_info(self.pair_config.leader)
+                leader_decimals = token_info.get("decimals", 9) if token_info else 9
+            
+            out_amount = int(quote.get("outAmount", 0))
+            leader_amount = out_amount / (10 ** leader_decimals)
+            price_impact = float(quote.get("priceImpactPct", 0))
+            
+            logger.info(f"[SWAP] Quote: {leader_amount:.6f} {self.pair_config.leader}, impact: {price_impact:.2f}%")
+            
+            # Get swap transaction
+            swap_tx = self.jupiter_client.get_swap_transaction(
+                quote=quote,
+                user_public_key=self.wallet.get_address(),
+            )
+            
+            if not swap_tx:
+                logger.error("[SWAP] Failed to get swap transaction")
+                return None
+            
+            # Sign and send
+            import base64
+            tx_bytes = base64.b64decode(swap_tx)
+            signed_tx = self.wallet.sign_transaction(tx_bytes)
+            
+            if not signed_tx:
+                logger.error("[SWAP] Failed to sign transaction")
+                return None
+            
+            signature = self._send_transaction(signed_tx)
+            
+            if not signature:
+                logger.error("[SWAP] Failed to send transaction")
+                return None
+            
+            # Get follower price for USD equivalent
+            follower_price = self.jupiter_client.get_price(self.pair_config.follower)
+            usd_equivalent = follower_amount * follower_price[0] if follower_price else 0
+            
+            # Create trade record
+            trade = LiveTrade(
+                id=self._generate_trade_id(),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                type="live_swap",
+                pair=f"{self.pair_config.leader}:{self.pair_config.follower}",
+                action="SWAP_SELL",
+                follower=self.pair_config.follower,
+                input_token=self.pair_config.follower,
+                output_token=self.pair_config.leader,
+                input_amount=follower_amount,
+                output_amount=leader_amount,
+                price_usd=usd_equivalent,  # USD equivalent of swap
+                slippage_bps=self.slippage_bps,
+                trigger=trigger_info,
+                timing=timing_info,
+                transaction={
+                    "signature": signature,
+                    "status": "confirmed",
+                    "price_impact_pct": price_impact,
+                    "mode": "swap",
+                },
+            )
+            
+            self.trades.append(trade)
+            self._save_trades()
+            
+            logger.info(f"[SWAP] ✓ {self.pair_config.follower} → {self.pair_config.leader}: {follower_amount:.6f} → {leader_amount:.6f}")
+            logger.info(f"[SWAP] TX: {signature}")
+            
+            return trade
+            
+        except Exception as e:
+            logger.error(f"[SWAP] Follower→Leader failed: {e}")
+            return None
+    
+    def _send_transaction(self, signed_tx: bytes) -> Optional[str]:
+        """Send a signed transaction to the network.
+        
+        Returns:
+            Transaction signature on success, None on failure.
+        """
+        try:
+            import base64
+            import httpx
+            
+            tx_base64 = base64.b64encode(signed_tx).decode()
+            
+            # Use Solana mainnet RPC
+            rpc_url = "https://api.mainnet-beta.solana.com"
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendTransaction",
+                "params": [
+                    tx_base64,
+                    {
+                        "encoding": "base64",
+                        "skipPreflight": False,
+                        "preflightCommitment": "confirmed",
+                        "maxRetries": 3,
+                    }
+                ]
+            }
+            
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(rpc_url, json=payload)
+                result = response.json()
+                
+                if "error" in result:
+                    logger.error(f"[LIVE] RPC error: {result['error']}")
+                    return None
+                
+                signature = result.get("result")
+                return signature
+                
+        except Exception as e:
+            logger.error(f"[LIVE] Send transaction error: {e}")
+            return None
+    
+    def _save_trades(self):
+        """Save trades to JSON file."""
+        output_file = self.output_path / f"{self.pair_config.leader}_{self.pair_config.follower}_live.json"
+        
+        data = {
+            "pair": f"{self.pair_config.leader}:{self.pair_config.follower}",
+            "wallet": self.wallet.get_address() if self.wallet else None,
+            "trades": [t.to_dict() for t in self.trades],
+            "summary": self._calculate_summary(),
+        }
+        
+        with open(output_file, 'w') as f:
+            json.dump(data, f, indent=2)
+    
+    def _calculate_summary(self) -> Dict[str, Any]:
+        """Calculate summary statistics."""
+        if not self.trades:
+            return {"total_trades": 0}
+        
+        buys = [t for t in self.trades if t.action == "BUY"]
+        sells = [t for t in self.trades if t.action == "SELL"]
+        
+        total_bought_usd = sum(t.input_amount for t in buys)
+        total_sold_usd = sum(t.output_amount for t in sells)
+        
+        return {
+            "total_trades": len(self.trades),
+            "buys": len(buys),
+            "sells": len(sells),
+            "total_bought_usd": round(total_bought_usd, 2),
+            "total_sold_usd": round(total_sold_usd, 2),
+            "net_pnl_usd": round(total_sold_usd - total_bought_usd, 2),
+        }
 
 
 # ============================================================================
@@ -1052,6 +1776,21 @@ class LeadingIndicatorTester:
                 
                 # Check directionality filter FIRST (before size check)
                 # This ensures "wrong direction" is reported instead of misleading "move too small"
+                
+                # NEW: Preflight-based directional filtering (UP/DOWN viability from profitability analysis)
+                if self.config.directional_filter:
+                    if direction == 'rise' and not self.config.up_viable:
+                        if self.config.verbose:
+                            logger.debug(f"Skipping UP signal: UP direction not viable per preflight")
+                        leader_t0 = leader_t1
+                        continue
+                    elif direction == 'fall' and not self.config.down_viable:
+                        if self.config.verbose:
+                            logger.debug(f"Skipping DOWN signal: DOWN direction not viable per preflight")
+                        leader_t0 = leader_t1
+                        continue
+                
+                # LEGACY: Discovery report stronger_direction filter
                 if self.config.honor_directionality and self.pair_config.stronger_direction:
                     stronger = self.pair_config.stronger_direction
                     # Map direction to stronger_direction format: 'rise' -> 'up', 'fall' -> 'down'
@@ -1105,19 +1844,65 @@ class LeadingIndicatorTester:
                     logger.info(f"Waiting {format_duration(wait_time)} before {action} {self.pair_config.follower}...")
                     time.sleep(wait_time)
                 
-                # Execute paper trade
-                trade = self._execute_paper_trade(signal)
-                self.logger.log_trade(trade)
+                # Execute trade (live or paper)
+                if self.config.live_trader:
+                    # LIVE MODE: Execute real Jupiter swap
+                    trigger_info = {
+                        'leader': self.pair_config.leader,
+                        'direction': direction,
+                        'change_pct': change_pct,
+                        'leader_price': leader_t1.price,
+                    }
+                    timing_info = {
+                        'signal_time': signal.leader_t1.timestamp.isoformat(),
+                        'execution_time': datetime.now(timezone.utc).isoformat(),
+                        'wait_seconds': wait_time,
+                    }
+                    
+                    if action == 'BUY':
+                        live_trade = self.config.live_trader.execute_buy(trigger_info, timing_info)
+                    else:
+                        live_trade = self.config.live_trader.execute_sell(trigger_info, timing_info)
+                    
+                    if live_trade:
+                        self.trade_counter += 1
+                        print(f"\n{'='*40}")
+                        print(f"LIVE TRADE EXECUTED")
+                        print(f"{'='*40}")
+                        print(f"Action: {live_trade.action} {live_trade.follower}")
+                        print(f"Price: ${live_trade.price_usd:.4f}")
+                        print(f"Size: ${live_trade.position_size_usd:.2f} ({live_trade.amount:.6f} {live_trade.follower})")
+                        print(f"Trigger: {self.pair_config.leader} {direction} {abs(change_pct):.2f}%")
+                        print(f"Tx: {live_trade.signature[:16]}...")
+                        print(f"{'='*40}\n")
+                    else:
+                        print(f"\n[LIVE] Trade execution FAILED - see logs above")
+                        # Don't count failed trades toward max_trades
+                        leader_t0 = leader_t1
+                        continue
+                else:
+                    # PAPER MODE: Simulate trade
+                    trade = self._execute_paper_trade(signal)
+                    self.logger.log_trade(trade)
+                    
+                    print(f"\n{'='*40}")
+                    print(f"PAPER TRADE EXECUTED")
+                    print(f"{'='*40}")
+                    print(f"Action: {trade.action} {trade.follower}")
+                    print(f"Price: ${trade.follower_price_at_execution:.4f}")
+                    print(f"Size: ${trade.position_size_usd:.2f} ({trade.quantity:.6f} {trade.follower})")
+                    print(f"Trigger: {self.pair_config.leader} {direction} {abs(change_pct):.2f}%")
+                    print(f"Outcome check in: {format_duration(self.pair_config.optimal_lag_seconds - wait_time)}")
+                    print(f"{'='*40}\n")
                 
-                print(f"\n{'='*40}")
-                print(f"PAPER TRADE EXECUTED")
-                print(f"{'='*40}")
-                print(f"Action: {trade.action} {trade.follower}")
-                print(f"Price: ${trade.follower_price_at_execution:.4f}")
-                print(f"Size: ${trade.position_size_usd:.2f} ({trade.quantity:.6f} {trade.follower})")
-                print(f"Trigger: {self.pair_config.leader} {direction} {abs(change_pct):.2f}%")
-                print(f"Outcome check in: {format_duration(self.pair_config.optimal_lag_seconds - wait_time)}")
-                print(f"{'='*40}\n")
+                # Check max trades limit
+                if self.config.max_trades and self.trade_counter >= self.config.max_trades:
+                    logger.info(f"Max trades limit reached ({self.config.max_trades})")
+                    print(f"\n{'='*40}")
+                    print(f"MAX TRADES LIMIT REACHED ({self.config.max_trades})")
+                    print(f"{'='*40}")
+                    self.running = False
+                    break
                 
                 # Post-trade pause: wait for remaining lag time before checking prices again
                 # This avoids wasteful API calls since outcome won't materialize until lag passes
@@ -1677,6 +2462,8 @@ Examples:
                         help='Path for paper trade log (default: ./paper_trades/)')
     parser.add_argument('--duration', type=str, default=None,
                         help='How long to run (e.g., 24h, 7d). Default: indefinite')
+    parser.add_argument('--max-trades', type=int, default=None,
+                        help='Stop after this many trades (for testing). Default: unlimited')
     
     # Exchange selection
     parser.add_argument('--leader-exchange', type=str, default='coingecko',
@@ -1707,6 +2494,19 @@ Examples:
     parser.add_argument('--auto-refresh', type=str, default='no',
                         choices=['yes', 'no'],
                         help='Auto re-run analyzer when win rate drops (default: no, will stop instead)')
+    
+    # Trading mode (new for live mode support)
+    parser.add_argument('--trading-mode', type=str, default='paper',
+                        choices=['paper', 'live'],
+                        help='Trading mode: paper (simulated) or live (real swaps) (default: paper)')
+    parser.add_argument('--directional-filter', action='store_true',
+                        help='Enable UP/DOWN directional filtering for live trading viability')
+    parser.add_argument('--preflight-recent', type=str, default='48hr',
+                        help='Data window for preflight analysis in live mode (default: 48hr)')
+    parser.add_argument('--swap-mode', action='store_true',
+                        help='Swap directly between tokens instead of USDC (live mode only)')
+    parser.add_argument('--slippage-bps', type=int, default=100,
+                        help='Slippage tolerance in basis points (default: 100 = 1%%)')
     
     args = parser.parse_args()
     
@@ -1819,6 +2619,159 @@ Examples:
         print(f"  python correlation_tracker.py --analyze --data-dir ./correlation_data")
         sys.exit(1)
     
+    # ==================== LIVE MODE PREFLIGHT ====================
+    if args.trading_mode == 'live':
+        print("\n" + "=" * 70)
+        print("                    LIVE MODE - PRE-FLIGHT CHECK")
+        print("=" * 70)
+        
+        # Run preflight validation
+        preflight_result = run_preflight(
+            leader=leader,
+            follower=follower,
+            directional_filter=args.directional_filter,
+            recent=args.preflight_recent,
+            position_size_usd=args.position_size,
+            verbose=True
+        )
+        
+        if not preflight_result.passed:
+            print("\n" + "=" * 70)
+            print("                    ✗ PRE-FLIGHT FAILED")
+            print("=" * 70)
+            print("\nLive trading BLOCKED. The pair did not pass viability checks.")
+            print("\nOptions:")
+            print("  1. Use --trading-mode paper to test without real funds")
+            print("  2. Try a different trading pair")
+            print("  3. Wait for market conditions to improve")
+            print("=" * 70 + "\n")
+            sys.exit(1)
+        
+        # Auto-configure intervals from preflight
+        if preflight_result.recommended_interval_seconds:
+            recommended_interval = preflight_result.recommended_interval_seconds
+            # Sample interval = lag time (Option B: compare to previous sample at lag interval)
+            sample_interval = preflight_result.sample_interval_seconds or recommended_interval
+            trade_frequency = recommended_interval * 2
+            
+            # Override discovery report lag with preflight's recommended interval
+            # The preflight analysis determines the minimum profitable interval
+            pair_config.optimal_lag_seconds = recommended_interval
+            
+            print(f"\nAuto-configured from preflight:")
+            print(f"  Lag time: {recommended_interval}s ({recommended_interval // 60}m)")
+            print(f"  Sample interval: {sample_interval}s")
+            print(f"  Trade cooldown: {trade_frequency}s")
+        else:
+            # Fallback to discovery report lag
+            lag = pair_config.optimal_lag_seconds
+            # Sample interval = lag time (Option B: compare to previous sample at lag interval)
+            sample_interval = lag
+            trade_frequency = lag * 2
+        
+        # Store directional viability for runtime filtering
+        up_viable = preflight_result.up_viable
+        down_viable = preflight_result.down_viable
+        
+        if args.directional_filter:
+            print(f"\nDirectional filtering ENABLED:")
+            print(f"  UP signals: {'✓ Allowed' if up_viable else '✗ Blocked'}")
+            print(f"  DOWN signals: {'✓ Allowed' if down_viable else '✗ Blocked'}")
+        
+        # Dry-run mode: show what would happen and exit
+        if args.dry_run:
+            mode_str = "SWAP MODE" if args.swap_mode else "USDC MODE"
+            print("\n" + "=" * 70)
+            print(f"                    DRY RUN ({mode_str}) - NO TRADES EXECUTED")
+            print("=" * 70)
+            print("\nPreflight passed. In live mode, the system would:")
+            print(f"  • Monitor {leader} price every {sample_interval}s")
+            execution_wait = int(pair_config.optimal_lag_seconds * args.execution_pct / 100)
+            print(f"  • Lag time: {pair_config.optimal_lag_seconds}s ({pair_config.optimal_lag_seconds // 60}m)")
+            print(f"  • Execute at {args.execution_pct}%: wait {execution_wait}s ({execution_wait // 60}m) before trade")
+            print(f"  • Correlation: {pair_config.correlation:.3f} ({'positive' if pair_config.correlation > 0 else 'negative'})")
+            if args.swap_mode:
+                print(f"  • Execute direct swaps: {leader} ↔ {follower}")
+            else:
+                print(f"  • Execute swaps on {follower} via Jupiter (USDC)")
+            print(f"  • Position size: ${args.position_size:.2f}")
+            print(f"  • Trade cooldown: {trade_frequency}s")
+            print(f"  • Slippage tolerance: {args.slippage_bps/100:.1f}%")
+            if args.directional_filter:
+                directions = []
+                if up_viable:
+                    directions.append("BUY on leader rise")
+                if down_viable:
+                    directions.append("SELL on leader fall")
+                print(f"  • Allowed actions: {', '.join(directions)}")
+            print("\nRemove --dry-run to execute live trades.")
+            print("=" * 70 + "\n")
+            sys.exit(0)
+        
+        # Swap mode notice
+        mode_str = "SWAP MODE" if args.swap_mode else "USDC MODE"
+        print(f"\n⚠️  LIVE TRADING MODE ({mode_str}) - Real swaps will be executed!")
+        print("=" * 70 + "\n")
+        
+        if args.swap_mode:
+            print(f"[SWAP] Direct token swaps: {leader} ↔ {follower}")
+            print(f"[SWAP] BUY signal: {leader} → {follower}")
+            print(f"[SWAP] SELL signal: {follower} → {leader}\n")
+        
+        # Initialize LiveTrader
+        live_trader = LiveTrader(
+            pair_config=pair_config,
+            position_size_usd=args.position_size,
+            slippage_bps=args.slippage_bps,
+            output_path='./live_trades/',
+            directional_filter=args.directional_filter,
+            up_viable=up_viable,
+            down_viable=down_viable,
+            swap_mode=args.swap_mode,
+            max_trades=args.max_trades,
+        )
+        
+        if not live_trader.initialize():
+            print("\n[LIVE] Failed to initialize live trading")
+            print("[LIVE] Check wallet and dependencies")
+            sys.exit(1)
+        
+        # Create config for monitoring loop with live_trader attached
+        config = TesterConfig(
+            pair_config=pair_config,
+            sample_interval=sample_interval,
+            execution_pct=args.execution_pct,
+            trade_frequency=trade_frequency,
+            min_move_pct=args.min_move_pct,
+            position_size_usd=args.position_size,
+            output_path='./live_trades/',
+            duration_seconds=duration_seconds,
+            verbose=args.verbose,
+            dry_run=False,
+            max_data_age_hours=args.max_data_age,
+            leader_exchange=args.leader_exchange,
+            follower_exchange=args.follower_exchange,
+            honor_directionality=args.honor_directionality == 'yes',
+            age_check_interval_hours=args.age_check_interval,
+            min_win_rate=args.min_win_rate,
+            win_rate_window=args.win_rate_window,
+            auto_refresh=args.auto_refresh == 'yes',
+            report_path=args.report,
+            directional_filter=args.directional_filter,
+            up_viable=up_viable,
+            down_viable=down_viable,
+            max_trades=args.max_trades,
+            live_trader=live_trader,  # Enables real Jupiter swaps
+        )
+        
+        print("[LIVE] Starting monitoring loop...")
+        print("[LIVE] Signals will trigger real Jupiter swaps\n")
+        
+        tester = LeadingIndicatorTester(config)
+        tester.run()
+        sys.exit(0)
+    
+    # ==================== PAPER MODE ====================
     # Calculate intervals if auto-interval enabled
     lag = pair_config.optimal_lag_seconds
     
@@ -1856,7 +2809,8 @@ Examples:
         min_win_rate=args.min_win_rate,
         win_rate_window=args.win_rate_window,
         auto_refresh=args.auto_refresh == 'yes',
-        report_path=args.report
+        report_path=args.report,
+        max_trades=args.max_trades,
     )
     
     # Run tester
