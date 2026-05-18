@@ -1832,24 +1832,235 @@ if args.live:
 
 | Scenario | Priority | Notes |
 |----------|----------|-------|
-| Transaction confirmation monitoring | High | Wait for finality before proceeding |
+| ~~Transaction confirmation monitoring~~ | ✅ Done | Polls `getTransaction` with 30s timeout |
 | Failed transaction retry | High | Handle RPC errors, insufficient funds |
-| Slippage protection | High | Reject if price moved too much |
+| ~~Slippage protection~~ | ✅ Done | Tracks actual vs quoted, see Slippage Tracking |
 | Gas estimation | Medium | Ensure enough SOL for fees |
 | Position size limits | Medium | Max trade size based on liquidity |
-| Trade history logging | Medium | Record all trades with tx hashes |
+| ~~Trade history logging~~ | ✅ Done | See Trade History Logging section |
 | Error alerting | Medium | Notify on failed trades |
 | Rate limiting | Low | Avoid RPC throttling |
 | Multi-token portfolio tracking | Low | Track all held tokens |
+
+---
+
+## Trade History Logging
+
+### Implementation Status: ✅ Complete
+
+Trade history logging is implemented in `leading_indicator_tester.py` via the `LiveTrader` class.
+
+### Trade Record Structure
+
+Each trade is stored with full cost basis information:
+
+```python
+@dataclass
+class LiveTrade:
+    id: str                    # Unique ID: lt_YYYYMMDD_HHMMSS_NNN
+    timestamp: str             # ISO 8601 UTC timestamp
+    type: str = "live"         # "live" or "paper"
+    pair: str = ""             # "BTC:BONK" format
+    action: str = ""           # "BUY" or "SELL"
+    follower: str = ""         # Token traded (e.g., "BONK")
+    
+    # Cost basis fields
+    input_token: str = ""      # What we spent (USDC for BUY, token for SELL)
+    output_token: str = ""     # What we received (token for BUY, USDC for SELL)
+    input_amount: float = 0.0  # Amount spent
+    output_amount: float = 0.0 # Amount received
+    price_usd: float = 0.0     # Price per token at execution
+    
+    slippage_bps: int = 100    # Slippage tolerance used
+    trigger: Dict = {}         # Why we traded (leader price change)
+    timing: Dict = {}          # When (signal time, execution time, lag)
+    transaction: Dict = {}     # Blockchain data (signature, status, price_impact)
+    outcome: Optional[Dict]    # Post-trade analysis (filled later)
+```
+
+### Storage Format
+
+Trades are saved to JSON files in `./live_trades/`:
+
+```
+live_trades/
+├── BTC_BONK_live.json
+├── ETH_PEPE_live.json
+└── SOL_WIF_live.json
+```
+
+Each file contains:
+
+```json
+{
+  "pair": "BTC:BONK",
+  "wallet": "FU8PNVhh...g22t",
+  "trades": [ /* array of LiveTrade records */ ],
+  "summary": {
+    "total_trades": 10,
+    "buys": 6,
+    "sells": 4,
+    "total_bought_usd": 600.00,
+    "total_sold_usd": 450.00,
+    "total_tokens_bought": 1500000.0,
+    "total_tokens_sold": 1000000.0,
+    "avg_buy_price_usd": 0.0004,
+    "avg_sell_price_usd": 0.00045,
+    "realized_pnl_usd": 50.00,
+    "tokens_held": 500000.0,
+    "unrealized_cost_basis_usd": 200.00,
+    "net_cash_flow_usd": -150.00
+  }
+}
+```
+
+### Cost Basis Calculation
+
+The summary uses **average cost basis** method:
+
+1. **avg_buy_price** = total_bought_usd / total_tokens_bought
+2. **avg_sell_price** = total_sold_usd / total_tokens_sold
+3. **realized_pnl** = min(tokens_bought, tokens_sold) × (avg_sell - avg_buy)
+4. **tokens_held** = tokens_bought - tokens_sold
+5. **unrealized_cost_basis** = tokens_held × avg_buy_price
+
+### Persistence Across Restarts
+
+The `LiveTrader` class loads existing trades on initialization:
+
+```python
+def _load_existing_trades(self):
+    """Load existing trades from file if present."""
+    output_file = self.output_path / f"{leader}_{follower}_live.json"
+    
+    if output_file.exists():
+        with open(output_file, 'r') as f:
+            data = json.load(f)
+        # Reconstruct LiveTrade objects...
+```
+
+This ensures:
+- Trade history persists across bot restarts
+- Trade counter continues from last ID
+- Summary stats accumulate correctly
+
+### Transaction Verification
+
+Each trade record includes blockchain verification data:
+
+```python
+transaction={
+    "signature": "5Kz7...",      # Solana tx signature
+    "status": "confirmed",       # Transaction status
+    "price_impact_pct": 0.05,   # Actual price impact
+}
+```
+
+The signature can be used to:
+- Verify trade on Solscan: `https://solscan.io/tx/{signature}`
+- Audit trade history
+- Reconcile with wallet balance
+
+### Slippage Tracking
+
+#### Implementation Status: ✅ Complete
+
+After each trade, the system polls for transaction confirmation and calculates actual slippage by comparing quoted vs actual output amounts.
+
+#### How It Works
+
+1. **Submit transaction** → Get signature
+2. **Poll `getTransaction`** → Wait for confirmation (up to 30s)
+3. **Parse token balance changes** → Extract actual output amount
+4. **Calculate slippage**:
+   ```
+   slippage_bps = (quoted_output - actual_output) / quoted_output × 10000
+   ```
+
+#### Trade Record Fields
+
+```python
+@dataclass
+class LiveTrade:
+    # ... existing fields ...
+    output_amount: float = 0.0           # Quoted output (from Jupiter)
+    output_amount_actual: Optional[float] = None  # Actual output (post-confirmation)
+    slippage_bps: int = 100              # Tolerance setting
+    slippage_actual_bps: Optional[int] = None     # Actual slippage measured
+```
+
+#### Summary Statistics
+
+```json
+{
+  "slippage_tracked_trades": 15,
+  "avg_slippage_bps": 12.5,
+  "max_slippage_bps": 45,
+  "min_slippage_bps": -8,
+  "trades_exceeded_tolerance": 0,
+  "tx_confirmed": 15,
+  "tx_failed": 0,
+  "tx_unconfirmed": 0
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `avg_slippage_bps` | Average slippage across all trades (12.5 = 0.125%) |
+| `max_slippage_bps` | Worst case slippage |
+| `min_slippage_bps` | Best case (negative = got more than quoted) |
+| `trades_exceeded_tolerance` | Trades where actual > tolerance setting |
+
+#### Console Output
+
+```
+[LIVE] Waiting for confirmation...
+[LIVE] Slippage: 0.15% (quoted: 1500.000000, actual: 1497.750000)
+```
+
+Or for positive slippage (got more than expected):
+```
+[LIVE] Positive slippage: 0.08% (got more than quoted)
+```
 
 ### Security Considerations
 
 | Item | Status | Recommendation |
 |------|--------|----------------|
 | Mnemonic storage | ⚠️ Env var | Consider encrypted file or secrets manager |
-| RPC endpoint | ⚠️ Public | Consider private RPC (Helius, QuickNode) |
-| Max trade size | ⚠️ None | Implement hard limits |
-| Wallet isolation | ⚠️ None | Use dedicated trading wallet |
+| RPC endpoint | ⚠️ Public | See Private RPC section below |
+| Max trade size | ✅ Done | `--max-trade-usd` argument |
+| Wallet isolation | ✅ Reminder | Warning displayed at startup |
+
+### Private RPC (Future Enhancement)
+
+The current implementation uses the public Solana RPC endpoint (`https://api.mainnet-beta.solana.com`), which has limitations:
+
+| Issue | Impact | Solution |
+|-------|--------|----------|
+| Rate limiting | May throttle during high activity | Private RPC |
+| MEV/sandwich attacks | Front-running risk on swaps | Private RPC with MEV protection |
+| Reliability | Public endpoint can be congested | Dedicated endpoint |
+
+**Recommended providers for production:**
+
+| Provider | Features | Notes |
+|----------|----------|-------|
+| [Helius](https://helius.dev) | Fast, MEV protection available | Popular for Solana DeFi |
+| [QuickNode](https://quicknode.com) | Multi-chain, reliable | Good documentation |
+| [Triton](https://triton.one) | High performance | Used by major protocols |
+
+**Implementation (when needed):**
+
+```python
+# In LiveTrader or via environment variable
+RPC_URL = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+
+# For MEV protection, some providers offer private transaction submission
+# that bypasses the public mempool
+```
+
+This is not implemented in MVP but documented for future scaling.
 
 ---
 
@@ -1857,66 +2068,62 @@ if args.live:
 
 ### Strategy & Scope
 
-1. **Which chains to support first?**
-   - Base makes sense given Coinbase integration
-   - Solana has most meme coin activity
-   - Multi-chain adds significant complexity
+1. ~~**Which chains to support first?**~~ ✅ **Resolved: Solana**
+   - Solana chosen for MVP (meme coin ecosystem, low fees)
+   - Jupiter aggregator integrated
 
-2. **What types of trades?**
-   - Simple swaps only?
-   - Limit orders via DEX protocols?
-   - Liquidity provision?
+2. ~~**What types of trades?**~~ ✅ **Resolved: Simple swaps**
+   - Simple market swaps implemented
+   - Limit orders and LP deferred
 
-3. **Trade size limits?**
-   - Minimum trade size (to justify gas)?
-   - Maximum trade size (slippage/liquidity concerns)?
+3. ~~**Trade size limits?**~~ ✅ **Resolved: --max-trade-usd**
+   - `--max-trade-usd` argument enforces maximum
+   - No minimum (Solana fees negligible)
 
-4. **How does this interact with existing CEX trading?**
-   - Separate mode?
-   - Automatic fallback (CEX if available, DEX otherwise)?
-   - User chooses per-trade?
+4. ~~**How does this interact with existing CEX trading?**~~ ✅ **Resolved: Separate mode**
+   - `--trading-mode live` flag for DEX
+   - Paper mode remains default
 
 ### Security
 
-5. **How to store private keys?**
-   - Environment variable (current pattern)?
-   - Encrypted file?
-   - Cloud secrets manager (AWS Secrets, GCP Secret Manager)?
-   - Hardware wallet for signing?
+5. **How to store private keys?** ⚠️ **Acceptable for MVP**
+   - Using mnemonic via environment variable
+   - Acceptable for small test amounts
+   - Consider secrets manager for production
 
-6. **What happens if private key is compromised?**
-   - Incident response plan?
-   - Fund limits per wallet?
+6. **What happens if private key is compromised?** ⚠️ **Deferred**
+   - Document incident response when scaling
+   - Use `--max-trade-usd` to limit exposure
 
-7. **Should we use a separate wallet for bot trading?**
-   - Isolate bot funds from personal funds?
-   - Multiple wallets for different strategies?
+7. ~~**Should we use a separate wallet for bot trading?**~~ ✅ **Resolved: Recommendation**
+   - Warning displayed at live mode startup
+   - User responsibility to follow recommendation
 
 ### Operational
 
-8. **How to handle gas price spikes?**
-   - Pause trading during high gas?
-   - Dynamic slippage adjustment?
+8. ~~**How to handle gas price spikes?**~~ ✅ **N/A for Solana**
+   - Solana fees are fixed (~0.000005 SOL)
+   - Not a concern for current implementation
 
-9. **How to handle failed transactions?**
-   - Automatic retry?
-   - Notify user?
-   - Stuck transaction recovery?
+9. **How to handle failed transactions?** ⚠️ **MVP: No retry**
+   - Transaction status tracked (confirmed/failed/unconfirmed)
+   - Retry logic deferred to future enhancement
 
-10. **How to track DEX trades in history?**
-    - Same format as CEX trades?
-    - Include gas costs in P&L?
-    - Transaction hash logging?
+10. ~~**How to track DEX trades in history?**~~ ✅ **Resolved: Full logging**
+    - `LiveTrade` records with tx signature
+    - Cost basis and slippage tracking
+    - JSON files in `./live_trades/`
 
 ### Economic
 
-11. **What is acceptable cost per trade?**
-    - Gas as % of trade size?
-    - Minimum trade size to be economical?
+11. ~~**What is acceptable cost per trade?**~~ ✅ **N/A for Solana**
+    - Solana fees ~$0.001 per trade
+    - No minimum trade size needed
 
-12. **How to account for MEV/sandwich attacks?**
-    - Use private RPCs?
-    - Accept as cost of doing business?
+12. **How to account for MEV/sandwich attacks?** ⚠️ **MVP: Accept risk**
+    - Using public RPC (vulnerable)
+    - Private RPC documented for future (see Private RPC section)
+    - Slippage tracking helps detect issues
 
 ---
 

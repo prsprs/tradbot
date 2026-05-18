@@ -546,9 +546,11 @@ class LiveTrade:
     input_token: str = ""  # USDC for BUY, follower for SELL
     output_token: str = ""  # follower for BUY, USDC for SELL
     input_amount: float = 0.0
-    output_amount: float = 0.0
+    output_amount: float = 0.0  # Quoted output (what Jupiter said we'd get)
+    output_amount_actual: Optional[float] = None  # Actual output (post-confirmation)
     price_usd: float = 0.0
-    slippage_bps: int = 100
+    slippage_bps: int = 100  # Tolerance setting
+    slippage_actual_bps: Optional[int] = None  # Actual slippage in basis points
     trigger: Dict[str, Any] = field(default_factory=dict)
     timing: Dict[str, Any] = field(default_factory=dict)
     transaction: Dict[str, Any] = field(default_factory=dict)  # signature, status, etc.
@@ -582,6 +584,7 @@ class LiveTrader:
         down_viable: bool = True,
         swap_mode: bool = False,
         max_trades: Optional[int] = None,
+        max_trade_usd: Optional[float] = None,
     ):
         self.pair_config = pair_config
         self.position_size_usd = position_size_usd
@@ -594,6 +597,7 @@ class LiveTrader:
         self.down_viable = down_viable
         self.swap_mode = swap_mode
         self.max_trades = max_trades
+        self.max_trade_usd = max_trade_usd
         
         self.wallet = None
         self.jupiter_client = None
@@ -604,6 +608,57 @@ class LiveTrader:
         self.follower_balance: float = 0.0
         self.usdc_balance: float = 0.0
         self.leader_balance: float = 0.0
+        
+        # Load existing trades from file (persist across restarts)
+        self._load_existing_trades()
+    
+    def _load_existing_trades(self):
+        """Load existing trades from file if present."""
+        output_file = self.output_path / f"{self.pair_config.leader}_{self.pair_config.follower}_live.json"
+        
+        if output_file.exists():
+            try:
+                with open(output_file, 'r') as f:
+                    data = json.load(f)
+                
+                trade_dicts = data.get('trades', [])
+                for td in trade_dicts:
+                    trade = LiveTrade(
+                        id=td.get('id', ''),
+                        timestamp=td.get('timestamp', ''),
+                        type=td.get('type', 'live'),
+                        pair=td.get('pair', ''),
+                        action=td.get('action', ''),
+                        follower=td.get('follower', ''),
+                        input_token=td.get('input_token', ''),
+                        output_token=td.get('output_token', ''),
+                        input_amount=td.get('input_amount', 0.0),
+                        output_amount=td.get('output_amount', 0.0),
+                        output_amount_actual=td.get('output_amount_actual'),
+                        price_usd=td.get('price_usd', 0.0),
+                        slippage_bps=td.get('slippage_bps', 100),
+                        slippage_actual_bps=td.get('slippage_actual_bps'),
+                        trigger=td.get('trigger', {}),
+                        timing=td.get('timing', {}),
+                        transaction=td.get('transaction', {}),
+                        outcome=td.get('outcome'),
+                    )
+                    self.trades.append(trade)
+                
+                # Update trade counter from highest existing ID
+                if self.trades:
+                    max_counter = 0
+                    for t in self.trades:
+                        try:
+                            counter = int(t.id.split('_')[-1])
+                            max_counter = max(max_counter, counter)
+                        except (ValueError, IndexError):
+                            pass
+                    self.trade_counter = max_counter
+                
+                logger.info(f"[LIVE] Loaded {len(self.trades)} existing trades from {output_file.name}")
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"[LIVE] Could not load existing trades: {e}")
         
     def initialize(self) -> bool:
         """Initialize wallet and Jupiter client. Returns True on success."""
@@ -685,6 +740,11 @@ class LiveTrader:
         """
         if not self.jupiter_client or not self.wallet:
             logger.error("[LIVE] Not initialized")
+            return None
+        
+        # Check max trade size limit
+        if self.max_trade_usd and self.position_size_usd > self.max_trade_usd:
+            logger.error(f"[LIVE] Trade size ${self.position_size_usd} exceeds max ${self.max_trade_usd}")
             return None
         
         try:
@@ -770,10 +830,26 @@ class LiveTrader:
                 timing=timing_info,
                 transaction={
                     "signature": signature,
-                    "status": "confirmed",
+                    "status": "pending",
                     "price_impact_pct": price_impact,
+                    "quoted_output": output_amount,
                 },
             )
+            
+            # Confirm transaction and get actual output for slippage calculation
+            logger.info(f"[LIVE] Waiting for confirmation...")
+            confirmation = self._confirm_transaction(signature)
+            
+            if confirmation and confirmation.get("status") == "confirmed":
+                trade.transaction["status"] = "confirmed"
+                self._update_trade_with_actual_output(trade, confirmation, follower_mint)
+            elif confirmation and confirmation.get("status") == "failed":
+                trade.transaction["status"] = "failed"
+                trade.transaction["error"] = confirmation.get("error")
+                logger.error(f"[LIVE] Transaction failed: {confirmation.get('error')}")
+            else:
+                trade.transaction["status"] = "unconfirmed"
+                logger.warning("[LIVE] Could not confirm transaction - slippage unknown")
             
             self.trades.append(trade)
             self._save_trades()
@@ -843,6 +919,11 @@ class LiveTrader:
             price_impact = float(quote.get("priceImpactPct", 0))
             logger.info(f"[LIVE] Quote: ${usdc_out:.2f} USDC, impact: {price_impact:.2f}%")
             
+            # Check max trade size limit (based on USD value of sell)
+            if self.max_trade_usd and usdc_out > self.max_trade_usd:
+                logger.error(f"[LIVE] Trade value ${usdc_out:.2f} exceeds max ${self.max_trade_usd}")
+                return None
+            
             # Get swap transaction
             swap_tx = self.jupiter_client.get_swap_transaction(
                 quote=quote,
@@ -889,10 +970,26 @@ class LiveTrader:
                 timing=timing_info,
                 transaction={
                     "signature": signature,
-                    "status": "confirmed",
+                    "status": "pending",
                     "price_impact_pct": price_impact,
+                    "quoted_output": usdc_out,
                 },
             )
+            
+            # Confirm transaction and get actual output for slippage calculation
+            logger.info(f"[LIVE] Waiting for confirmation...")
+            confirmation = self._confirm_transaction(signature)
+            
+            if confirmation and confirmation.get("status") == "confirmed":
+                trade.transaction["status"] = "confirmed"
+                self._update_trade_with_actual_output(trade, confirmation, USDC_MINT)
+            elif confirmation and confirmation.get("status") == "failed":
+                trade.transaction["status"] = "failed"
+                trade.transaction["error"] = confirmation.get("error")
+                logger.error(f"[LIVE] Transaction failed: {confirmation.get('error')}")
+            else:
+                trade.transaction["status"] = "unconfirmed"
+                logger.warning("[LIVE] Could not confirm transaction - slippage unknown")
             
             self.trades.append(trade)
             self._save_trades()
@@ -1212,6 +1309,134 @@ class LiveTrader:
             logger.error(f"[LIVE] Send transaction error: {e}")
             return None
     
+    def _confirm_transaction(self, signature: str, timeout_seconds: int = 30) -> Optional[Dict]:
+        """Wait for transaction confirmation and return parsed result.
+        
+        Returns:
+            Dict with confirmation status and token balance changes, or None on timeout/error.
+        """
+        import time
+        import httpx
+        
+        rpc_url = "https://api.mainnet-beta.solana.com"
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout_seconds:
+            try:
+                # Check transaction status
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTransaction",
+                    "params": [
+                        signature,
+                        {
+                            "encoding": "jsonParsed",
+                            "commitment": "confirmed",
+                            "maxSupportedTransactionVersion": 0,
+                        }
+                    ]
+                }
+                
+                with httpx.Client(timeout=10.0) as client:
+                    response = client.post(rpc_url, json=payload)
+                    result = response.json()
+                
+                if "error" in result:
+                    logger.warning(f"[LIVE] Confirmation check error: {result['error']}")
+                    time.sleep(2)
+                    continue
+                
+                tx_data = result.get("result")
+                if tx_data is None:
+                    # Transaction not yet confirmed
+                    time.sleep(1)
+                    continue
+                
+                # Transaction confirmed - parse token balance changes
+                meta = tx_data.get("meta", {})
+                if meta.get("err"):
+                    return {"status": "failed", "error": str(meta["err"])}
+                
+                # Extract pre/post token balances
+                pre_balances = meta.get("preTokenBalances", [])
+                post_balances = meta.get("postTokenBalances", [])
+                
+                # Calculate balance changes by mint
+                balance_changes = {}
+                for post in post_balances:
+                    mint = post.get("mint", "")
+                    owner = post.get("owner", "")
+                    post_amount = float(post.get("uiTokenAmount", {}).get("uiAmount", 0) or 0)
+                    
+                    # Find matching pre-balance
+                    pre_amount = 0.0
+                    for pre in pre_balances:
+                        if pre.get("mint") == mint and pre.get("owner") == owner:
+                            pre_amount = float(pre.get("uiTokenAmount", {}).get("uiAmount", 0) or 0)
+                            break
+                    
+                    change = post_amount - pre_amount
+                    if abs(change) > 0.000001:  # Ignore dust
+                        balance_changes[mint] = {
+                            "pre": pre_amount,
+                            "post": post_amount,
+                            "change": change,
+                        }
+                
+                # Also check SOL balance change
+                pre_sol = meta.get("preBalances", [0])[0] / 1e9 if meta.get("preBalances") else 0
+                post_sol = meta.get("postBalances", [0])[0] / 1e9 if meta.get("postBalances") else 0
+                sol_change = post_sol - pre_sol
+                
+                return {
+                    "status": "confirmed",
+                    "slot": tx_data.get("slot"),
+                    "token_changes": balance_changes,
+                    "sol_change": sol_change,
+                    "fee_sol": meta.get("fee", 0) / 1e9,
+                }
+                
+            except Exception as e:
+                logger.warning(f"[LIVE] Confirmation polling error: {e}")
+                time.sleep(2)
+        
+        logger.warning(f"[LIVE] Transaction confirmation timeout after {timeout_seconds}s")
+        return None
+    
+    def _update_trade_with_actual_output(
+        self, 
+        trade: LiveTrade, 
+        confirmation: Dict,
+        output_mint: str,
+    ):
+        """Update trade with actual output amount and calculate slippage."""
+        token_changes = confirmation.get("token_changes", {})
+        
+        # Find the output token change
+        if output_mint in token_changes:
+            actual_change = token_changes[output_mint].get("change", 0)
+            trade.output_amount_actual = abs(actual_change)
+            
+            # Calculate actual slippage in basis points
+            if trade.output_amount > 0:
+                slippage_pct = (trade.output_amount - trade.output_amount_actual) / trade.output_amount * 100
+                trade.slippage_actual_bps = int(slippage_pct * 100)
+                
+                # Log slippage
+                if trade.slippage_actual_bps > 0:
+                    logger.info(f"[LIVE] Slippage: {trade.slippage_actual_bps/100:.2f}% "
+                               f"(quoted: {trade.output_amount:.6f}, actual: {trade.output_amount_actual:.6f})")
+                elif trade.slippage_actual_bps < 0:
+                    logger.info(f"[LIVE] Positive slippage: {-trade.slippage_actual_bps/100:.2f}% (got more than quoted)")
+            
+            # Update transaction dict
+            trade.transaction["actual_output"] = trade.output_amount_actual
+            trade.transaction["slippage_actual_bps"] = trade.slippage_actual_bps
+            trade.transaction["fee_sol"] = confirmation.get("fee_sol", 0)
+        else:
+            logger.warning(f"[LIVE] Could not find output token {output_mint[:8]}... in balance changes")
+    
     def _save_trades(self):
         """Save trades to JSON file."""
         output_file = self.output_path / f"{self.pair_config.leader}_{self.pair_config.follower}_live.json"
@@ -1227,23 +1452,77 @@ class LiveTrader:
             json.dump(data, f, indent=2)
     
     def _calculate_summary(self) -> Dict[str, Any]:
-        """Calculate summary statistics."""
+        """Calculate summary statistics including cost basis for PnL."""
         if not self.trades:
             return {"total_trades": 0}
         
         buys = [t for t in self.trades if t.action == "BUY"]
         sells = [t for t in self.trades if t.action == "SELL"]
         
-        total_bought_usd = sum(t.input_amount for t in buys)
-        total_sold_usd = sum(t.output_amount for t in sells)
+        # Cost basis tracking
+        total_bought_usd = sum(t.input_amount for t in buys)  # USDC spent
+        total_sold_usd = sum(t.output_amount for t in sells)  # USDC received
+        total_tokens_bought = sum(t.output_amount for t in buys)  # Tokens acquired
+        total_tokens_sold = sum(t.input_amount for t in sells)  # Tokens disposed
+        
+        # Average cost basis (USDC per token)
+        avg_buy_price = total_bought_usd / total_tokens_bought if total_tokens_bought > 0 else 0
+        avg_sell_price = total_sold_usd / total_tokens_sold if total_tokens_sold > 0 else 0
+        
+        # Realized PnL (only on matched buy/sell pairs using avg cost)
+        tokens_matched = min(total_tokens_bought, total_tokens_sold)
+        realized_pnl = tokens_matched * (avg_sell_price - avg_buy_price) if tokens_matched > 0 else 0
+        
+        # Unrealized position
+        tokens_held = total_tokens_bought - total_tokens_sold
+        unrealized_cost_basis = tokens_held * avg_buy_price if tokens_held > 0 else 0
+        
+        # Slippage statistics
+        trades_with_slippage = [t for t in self.trades if t.slippage_actual_bps is not None]
+        if trades_with_slippage:
+            slippage_values = [t.slippage_actual_bps for t in trades_with_slippage]
+            avg_slippage_bps = sum(slippage_values) / len(slippage_values)
+            max_slippage_bps = max(slippage_values)
+            min_slippage_bps = min(slippage_values)  # Negative = got more than quoted
+            trades_exceeded_tolerance = sum(1 for t in trades_with_slippage 
+                                            if t.slippage_actual_bps > t.slippage_bps)
+        else:
+            avg_slippage_bps = None
+            max_slippage_bps = None
+            min_slippage_bps = None
+            trades_exceeded_tolerance = 0
+        
+        # Transaction status counts
+        confirmed = sum(1 for t in self.trades if t.transaction.get("status") == "confirmed")
+        failed = sum(1 for t in self.trades if t.transaction.get("status") == "failed")
+        unconfirmed = sum(1 for t in self.trades if t.transaction.get("status") == "unconfirmed")
         
         return {
             "total_trades": len(self.trades),
             "buys": len(buys),
             "sells": len(sells),
+            # Cost basis fields
             "total_bought_usd": round(total_bought_usd, 2),
             "total_sold_usd": round(total_sold_usd, 2),
-            "net_pnl_usd": round(total_sold_usd - total_bought_usd, 2),
+            "total_tokens_bought": round(total_tokens_bought, 6),
+            "total_tokens_sold": round(total_tokens_sold, 6),
+            "avg_buy_price_usd": round(avg_buy_price, 6),
+            "avg_sell_price_usd": round(avg_sell_price, 6),
+            # PnL fields
+            "realized_pnl_usd": round(realized_pnl, 2),
+            "tokens_held": round(tokens_held, 6),
+            "unrealized_cost_basis_usd": round(unrealized_cost_basis, 2),
+            "net_cash_flow_usd": round(total_sold_usd - total_bought_usd, 2),
+            # Slippage fields
+            "slippage_tracked_trades": len(trades_with_slippage),
+            "avg_slippage_bps": round(avg_slippage_bps, 1) if avg_slippage_bps is not None else None,
+            "max_slippage_bps": max_slippage_bps,
+            "min_slippage_bps": min_slippage_bps,
+            "trades_exceeded_tolerance": trades_exceeded_tolerance,
+            # Transaction status
+            "tx_confirmed": confirmed,
+            "tx_failed": failed,
+            "tx_unconfirmed": unconfirmed,
         }
 
 
@@ -2507,6 +2786,8 @@ Examples:
                         help='Swap directly between tokens instead of USDC (live mode only)')
     parser.add_argument('--slippage-bps', type=int, default=100,
                         help='Slippage tolerance in basis points (default: 100 = 1%%)')
+    parser.add_argument('--max-trade-usd', type=float, default=None,
+                        help='Maximum trade size in USD (live mode safety limit)')
     
     args = parser.parse_args()
     
@@ -2729,6 +3010,7 @@ Examples:
             down_viable=down_viable,
             swap_mode=args.swap_mode,
             max_trades=args.max_trades,
+            max_trade_usd=args.max_trade_usd,
         )
         
         if not live_trader.initialize():
@@ -2765,7 +3047,15 @@ Examples:
         )
         
         print("[LIVE] Starting monitoring loop...")
-        print("[LIVE] Signals will trigger real Jupiter swaps\n")
+        print("[LIVE] Signals will trigger real Jupiter swaps")
+        if args.max_trade_usd:
+            print(f"[LIVE] Max trade size: ${args.max_trade_usd:.2f}")
+        print("")
+        print("=" * 60)
+        print("⚠️  RECOMMENDATION: Use a dedicated wallet for bot trading")
+        print("    Isolate trading funds from personal holdings")
+        print("=" * 60)
+        print("")
         
         tester = LeadingIndicatorTester(config)
         tester.run()
