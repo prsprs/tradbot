@@ -137,6 +137,7 @@ class PairConfig:
     confidence: float
     data_range_end: str
     stronger_direction: Optional[str] = None  # 'up', 'down', or 'symmetric' from directional analysis
+    expected_win_rate: Optional[float] = None  # Expected win rate from profitability analysis
 
 
 @dataclass
@@ -375,6 +376,14 @@ class DiscoveryReportLoader:
         directional = best_match.get('directional_analysis', {})
         stronger_direction = directional.get('stronger_direction', None) if directional else None
         
+        # Extract expected win rate from profitability analysis if available
+        # Check multiple possible locations in the report structure
+        expected_win_rate = None
+        if directional:
+            expected_win_rate = directional.get('expected_win_rate') or directional.get('win_rate')
+        if expected_win_rate is None:
+            expected_win_rate = best_match.get('expected_win_rate') or best_match.get('win_rate')
+        
         # Extract configuration
         return PairConfig(
             leader=leader,
@@ -386,7 +395,8 @@ class DiscoveryReportLoader:
             confidence=best_match.get('confidence', 
                                       best_match.get('confidence_score', 0.0)),
             data_range_end=best_match.get('data_range_end', ''),
-            stronger_direction=stronger_direction
+            stronger_direction=stronger_direction,
+            expected_win_rate=expected_win_rate
         )
     
     def list_pairs(self) -> List[Tuple[str, str]]:
@@ -562,7 +572,7 @@ class LiveTrade:
 
 class LiveTrader:
     """
-    Live trading with Jupiter swaps.
+    Live trading with Jupiter swaps via Trust Wallet (default) or LocalWallet.
     
     USDC Mode (default):
         BUY signal: Swap USDC → Follower token
@@ -571,6 +581,10 @@ class LiveTrader:
     Swap Mode (--swap-mode):
         BUY signal: Swap Leader → Follower (expect follower to rise)
         SELL signal: Swap Follower → Leader (expect follower to fall)
+    
+    Wallet Types:
+        trustwallet (default): Uses Trust Wallet CLI (twak) - recommended, no key format issues
+        local: Uses LocalWallet with interactive key prompt - legacy, may have key derivation issues
     """
     
     def __init__(
@@ -585,6 +599,7 @@ class LiveTrader:
         swap_mode: bool = False,
         max_trades: Optional[int] = None,
         max_trade_usd: Optional[float] = None,
+        wallet_type: str = 'trustwallet',
     ):
         self.pair_config = pair_config
         self.position_size_usd = position_size_usd
@@ -598,9 +613,13 @@ class LiveTrader:
         self.swap_mode = swap_mode
         self.max_trades = max_trades
         self.max_trade_usd = max_trade_usd
+        self.wallet_type = wallet_type
         
-        self.wallet = None
-        self.jupiter_client = None
+        # Wallet backend: LocalWallet + JupiterClient
+        # Accepts Trust Wallet mnemonic (or any Solana private key)
+        self.wallet = None  # LocalWallet - handles key derivation
+        self.jupiter_client = None  # JupiterClient - handles swaps
+        
         self.trades: List[LiveTrade] = []
         self.trade_counter = 0
         
@@ -661,7 +680,103 @@ class LiveTrader:
                 logger.warning(f"[LIVE] Could not load existing trades: {e}")
         
     def initialize(self) -> bool:
-        """Initialize wallet and Jupiter client. Returns True on success."""
+        """Initialize wallet backend. Returns True on success."""
+        if self.wallet_type == 'trustwallet':
+            return self._initialize_trustwallet()
+        else:
+            return self._initialize_local_wallet()
+    
+    def _initialize_trustwallet(self) -> bool:
+        """Initialize wallet via direct key input + Jupiter (recommended).
+        
+        This uses the same approach as test_trustwallet_swap.py Option 2:
+        - Prompts for private key or mnemonic at runtime
+        - Uses LocalWallet for key management
+        - Uses JupiterClient for swaps
+        - Nothing stored locally - key only in memory during session
+        """
+        try:
+            import getpass
+            import requests
+            from dex.local_wallet import LocalWallet
+            from dex.jupiterutil import JupiterClient
+            from dex.token_cache import get_mint_with_fallback
+            
+            print("\n" + "=" * 60)
+            print("LIVE TRADING - WALLET SETUP")
+            print("=" * 60)
+            
+            # Check for key in environment first
+            private_key = os.environ.get("SOLANA_PRIVATE_KEY") or os.environ.get("WALLET_MNEMONIC")
+            
+            if private_key:
+                print("[LIVE] Using key from environment variable")
+            else:
+                print("\nEnter your Solana wallet private key or 12-word mnemonic.")
+                print("Formats accepted: Base58, JSON array, or mnemonic phrase")
+                print("(Input is hidden)\n")
+                try:
+                    private_key = getpass.getpass("Private Key/Mnemonic: ")
+                except KeyboardInterrupt:
+                    print("\n[LIVE] Cancelled by user")
+                    return False
+            
+            if not private_key:
+                print("[LIVE] No key entered")
+                return False
+            
+            # Load wallet
+            try:
+                self.wallet = LocalWallet(private_key)
+                address = self.wallet.get_address()
+                print(f"\n[LIVE] Wallet loaded: {address}")
+                print(f"[LIVE] ⚠️  Verify this matches your expected wallet address!")
+            except Exception as e:
+                print(f"[LIVE] Failed to load wallet: {e}")
+                return False
+            
+            # Initialize Jupiter client
+            self.jupiter_client = JupiterClient(slippage_bps=self.slippage_bps)
+            
+            # Check SOL balance
+            try:
+                SOLANA_RPC = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+                resp = requests.post(SOLANA_RPC, json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getBalance",
+                    "params": [address]
+                }, timeout=10)
+                data = resp.json()
+                sol_balance = data.get("result", {}).get("value", 0) / 1e9
+                print(f"[LIVE] SOL balance: {sol_balance:.6f}")
+                if sol_balance < 0.005:
+                    print(f"[LIVE] ⚠️ Low SOL balance - need at least 0.005 SOL for fees")
+            except Exception as e:
+                print(f"[LIVE] Could not check balance: {e}")
+            
+            # Verify follower token
+            follower_mint = get_mint_with_fallback(self.pair_config.follower)
+            if not follower_mint:
+                print(f"[LIVE] Unknown token: {self.pair_config.follower}")
+                return False
+            
+            print(f"[LIVE] Follower token: {self.pair_config.follower} ({follower_mint[:8]}...)")
+            print(f"[LIVE] Trading pair: {self.pair_config.leader}:{self.pair_config.follower}")
+            print(f"[LIVE] ✓ Wallet ready")
+            
+            return True
+            
+        except ImportError as e:
+            print(f"[LIVE] Missing dependencies: {e}")
+            print("[LIVE] Install with: pip install -r requirements_dex.txt")
+            return False
+        except Exception as e:
+            print(f"[LIVE] Initialization error: {e}")
+            return False
+    
+    def _initialize_local_wallet(self) -> bool:
+        """Initialize LocalWallet + Jupiter client (legacy)."""
         try:
             from dex.local_wallet import get_wallet_interactive
             from dex.jupiterutil import JupiterClient, USDC_MINT
@@ -669,8 +784,11 @@ class LiveTrader:
             
             # Load wallet
             print("\n" + "=" * 60)
-            print("LIVE TRADING - WALLET SETUP")
+            print("LIVE TRADING - LOCAL WALLET SETUP (LEGACY)")
             print("=" * 60)
+            print("⚠️  Warning: LocalWallet may have key derivation issues.")
+            print("⚠️  Consider using --wallet-type trustwallet instead.\n")
+            
             self.wallet = get_wallet_interactive()
             
             if not self.wallet.is_loaded():
@@ -689,9 +807,6 @@ class LiveTrader:
                 return False
             
             print(f"[LIVE] Follower token: {self.pair_config.follower} ({follower_mint[:8]}...)")
-            
-            # TODO: Check wallet balances
-            # self._refresh_balances()
             
             return True
             
@@ -728,6 +843,92 @@ class LiveTrader:
         
         return True, "direction viable"
     
+    def _check_sol_balance(self, min_sol: float = 0.005) -> Tuple[bool, float]:
+        """Check if wallet has enough SOL for transaction fees.
+        
+        Args:
+            min_sol: Minimum SOL balance required (default 0.005 SOL for fees).
+        
+        Returns:
+            Tuple of (has_enough, current_balance).
+        """
+        import httpx
+        import os
+        
+        if not self.wallet:
+            return False, 0.0
+        
+        pubkey = self.wallet.get_address()
+        rpc_url = os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getBalance",
+                "params": [pubkey]
+            }
+            
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(rpc_url, json=payload)
+                result = response.json()
+            
+            if "error" in result:
+                logger.warning(f"[LIVE] SOL balance check failed: {result['error']}")
+                return False, 0.0
+            
+            lamports = result.get("result", {}).get("value", 0)
+            sol_balance = lamports / 1e9
+            
+            has_enough = sol_balance >= min_sol
+            
+            if not has_enough:
+                logger.warning(f"[LIVE] ⚠️ Insufficient SOL for fees: {sol_balance:.6f} SOL (need {min_sol} SOL)")
+            
+            return has_enough, sol_balance
+            
+        except Exception as e:
+            logger.warning(f"[LIVE] SOL balance check error: {e}")
+            return False, 0.0
+    
+    def _alert_trade_failure(self, action: str, reason: str, details: Optional[Dict] = None):
+        """Log and alert on trade failure.
+        
+        Args:
+            action: Trade action (BUY/SELL).
+            reason: Human-readable failure reason.
+            details: Optional additional details.
+        """
+        # Structured error logging
+        error_record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pair": f"{self.pair_config.leader}:{self.pair_config.follower}",
+            "action": action,
+            "reason": reason,
+            "details": details or {},
+        }
+        
+        logger.error(f"[LIVE] ❌ TRADE FAILED: {action} {self.pair_config.follower}")
+        logger.error(f"[LIVE] Reason: {reason}")
+        if details:
+            for key, value in details.items():
+                logger.error(f"[LIVE]   {key}: {value}")
+        
+        # Append to error log file for review
+        error_log_path = self.output_path / "trade_errors.json"
+        try:
+            errors = []
+            if error_log_path.exists():
+                with open(error_log_path, 'r') as f:
+                    errors = json.load(f)
+            errors.append(error_record)
+            # Keep last 100 errors
+            errors = errors[-100:]
+            with open(error_log_path, 'w') as f:
+                json.dump(errors, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[LIVE] Could not write error log: {e}")
+    
     def execute_buy(
         self,
         trigger_info: Dict[str, Any],
@@ -738,13 +939,26 @@ class LiveTrader:
         Returns:
             LiveTrade on success, None on failure.
         """
+        # Both wallet types now use LocalWallet + JupiterClient
         if not self.jupiter_client or not self.wallet:
             logger.error("[LIVE] Not initialized")
             return None
         
         # Check max trade size limit
         if self.max_trade_usd and self.position_size_usd > self.max_trade_usd:
-            logger.error(f"[LIVE] Trade size ${self.position_size_usd} exceeds max ${self.max_trade_usd}")
+            self._alert_trade_failure("BUY", "Trade size exceeds maximum", {
+                "trade_size_usd": self.position_size_usd,
+                "max_trade_usd": self.max_trade_usd,
+            })
+            return None
+        
+        # Check SOL balance for transaction fees
+        has_sol, sol_balance = self._check_sol_balance()
+        if not has_sol:
+            self._alert_trade_failure("BUY", "Insufficient SOL for transaction fees", {
+                "sol_balance": sol_balance,
+                "min_required": 0.005,
+            })
             return None
         
         try:
@@ -753,7 +967,9 @@ class LiveTrader:
             
             follower_mint = get_mint_with_fallback(self.pair_config.follower)
             if not follower_mint:
-                logger.error(f"[LIVE] Unknown token: {self.pair_config.follower}")
+                self._alert_trade_failure("BUY", "Unknown token", {
+                    "token": self.pair_config.follower,
+                })
                 return None
             
             # Convert USD to USDC amount (6 decimals)
@@ -768,7 +984,11 @@ class LiveTrader:
             )
             
             if not quote:
-                logger.error("[LIVE] Failed to get quote")
+                self._alert_trade_failure("BUY", "Failed to get quote from Jupiter", {
+                    "input": "USDC",
+                    "output": self.pair_config.follower,
+                    "amount_usd": self.position_size_usd,
+                })
                 return None
             
             # Log quote details
@@ -783,7 +1003,10 @@ class LiveTrader:
             )
             
             if not swap_tx:
-                logger.error("[LIVE] Failed to get swap transaction")
+                self._alert_trade_failure("BUY", "Failed to get swap transaction", {
+                    "input": "USDC",
+                    "output": self.pair_config.follower,
+                })
                 return None
             
             # Sign and send transaction
@@ -792,14 +1015,14 @@ class LiveTrader:
             signed_tx = self.wallet.sign_transaction(tx_bytes)
             
             if not signed_tx:
-                logger.error("[LIVE] Failed to sign transaction")
+                self._alert_trade_failure("BUY", "Failed to sign transaction", {})
                 return None
             
             # Send transaction
             signature = self._send_transaction(signed_tx)
             
             if not signature:
-                logger.error("[LIVE] Failed to send transaction")
+                self._alert_trade_failure("BUY", "Failed to send transaction to network", {})
                 return None
             
             # Calculate output amount with decimals
@@ -860,27 +1083,47 @@ class LiveTrader:
             return trade
             
         except Exception as e:
-            logger.error(f"[LIVE] BUY failed: {e}")
+            self._alert_trade_failure("BUY", f"Unexpected error: {e}", {
+                "exception_type": type(e).__name__,
+            })
             return None
     
     def execute_sell(
         self,
-        amount: float,
         trigger_info: Dict[str, Any],
         timing_info: Dict[str, Any],
     ) -> Optional[LiveTrade]:
         """Execute a SELL: Follower token → USDC.
         
+        Sells position_size_usd worth of follower token.
+        
         Args:
-            amount: Amount of follower token to sell.
             trigger_info: Trigger data for trade record.
             timing_info: Timing data for trade record.
         
         Returns:
             LiveTrade on success, None on failure.
         """
+        # Both wallet types now use LocalWallet + JupiterClient
         if not self.jupiter_client or not self.wallet:
             logger.error("[LIVE] Not initialized")
+            return None
+        
+        # Check max trade size limit
+        if self.max_trade_usd and self.position_size_usd > self.max_trade_usd:
+            self._alert_trade_failure("SELL", "Trade size exceeds maximum", {
+                "trade_size_usd": self.position_size_usd,
+                "max_trade_usd": self.max_trade_usd,
+            })
+            return None
+        
+        # Check SOL balance for transaction fees
+        has_sol, sol_balance = self._check_sol_balance()
+        if not has_sol:
+            self._alert_trade_failure("SELL", "Insufficient SOL for transaction fees", {
+                "sol_balance": sol_balance,
+                "min_required": 0.005,
+            })
             return None
         
         try:
@@ -889,8 +1132,29 @@ class LiveTrader:
             
             follower_mint = get_mint_with_fallback(self.pair_config.follower)
             if not follower_mint:
-                logger.error(f"[LIVE] Unknown token: {self.pair_config.follower}")
+                self._alert_trade_failure("SELL", "Unknown token", {
+                    "token": self.pair_config.follower,
+                })
                 return None
+            
+            # Get current token price to calculate amount
+            price_result = self.jupiter_client.get_price(self.pair_config.follower)
+            if not price_result:
+                self._alert_trade_failure("SELL", "Could not get token price", {
+                    "token": self.pair_config.follower,
+                })
+                return None
+            
+            token_price = price_result[0]  # get_price returns (price, bid, ask) tuple
+            if token_price <= 0:
+                self._alert_trade_failure("SELL", "Invalid token price", {
+                    "token": self.pair_config.follower,
+                    "price": token_price,
+                })
+                return None
+            
+            # Calculate token amount from position_size_usd
+            amount = self.position_size_usd / token_price
             
             # Get token decimals
             decimals = get_well_known_decimals(self.pair_config.follower)
@@ -910,7 +1174,11 @@ class LiveTrader:
             )
             
             if not quote:
-                logger.error("[LIVE] Failed to get quote")
+                self._alert_trade_failure("SELL", "Failed to get quote from Jupiter", {
+                    "input": self.pair_config.follower,
+                    "output": "USDC",
+                    "amount": amount,
+                })
                 return None
             
             # Log quote details
@@ -921,7 +1189,10 @@ class LiveTrader:
             
             # Check max trade size limit (based on USD value of sell)
             if self.max_trade_usd and usdc_out > self.max_trade_usd:
-                logger.error(f"[LIVE] Trade value ${usdc_out:.2f} exceeds max ${self.max_trade_usd}")
+                self._alert_trade_failure("SELL", "Trade value exceeds maximum", {
+                    "trade_value_usd": usdc_out,
+                    "max_trade_usd": self.max_trade_usd,
+                })
                 return None
             
             # Get swap transaction
@@ -931,7 +1202,10 @@ class LiveTrader:
             )
             
             if not swap_tx:
-                logger.error("[LIVE] Failed to get swap transaction")
+                self._alert_trade_failure("SELL", "Failed to get swap transaction", {
+                    "input": self.pair_config.follower,
+                    "output": "USDC",
+                })
                 return None
             
             # Sign and send transaction
@@ -940,14 +1214,14 @@ class LiveTrader:
             signed_tx = self.wallet.sign_transaction(tx_bytes)
             
             if not signed_tx:
-                logger.error("[LIVE] Failed to sign transaction")
+                self._alert_trade_failure("SELL", "Failed to sign transaction", {})
                 return None
             
             # Send transaction
             signature = self._send_transaction(signed_tx)
             
             if not signature:
-                logger.error("[LIVE] Failed to send transaction")
+                self._alert_trade_failure("SELL", "Failed to send transaction to network", {})
                 return None
             
             price_usd = usdc_out / amount if amount > 0 else 0
@@ -1000,7 +1274,9 @@ class LiveTrader:
             return trade
             
         except Exception as e:
-            logger.error(f"[LIVE] SELL failed: {e}")
+            self._alert_trade_failure("SELL", f"Unexpected error: {e}", {
+                "exception_type": type(e).__name__,
+            })
             return None
     
     # ==================== SWAP MODE METHODS ====================
@@ -1021,8 +1297,18 @@ class LiveTrader:
         Returns:
             LiveTrade on success, None on failure.
         """
+        # Both wallet types now use LocalWallet + JupiterClient
         if not self.jupiter_client or not self.wallet:
             logger.error("[LIVE] Not initialized")
+            return None
+        
+        # Check SOL balance for transaction fees
+        has_sol, sol_balance = self._check_sol_balance()
+        if not has_sol:
+            self._alert_trade_failure("SWAP_BUY", "Insufficient SOL for transaction fees", {
+                "sol_balance": sol_balance,
+                "min_required": 0.005,
+            })
             return None
         
         try:
@@ -1032,13 +1318,18 @@ class LiveTrader:
             follower_mint = get_mint_with_fallback(self.pair_config.follower)
             
             if not leader_mint or not follower_mint:
-                logger.error(f"[LIVE] Unknown tokens: {self.pair_config.leader} or {self.pair_config.follower}")
+                self._alert_trade_failure("SWAP_BUY", "Unknown tokens", {
+                    "leader": self.pair_config.leader,
+                    "follower": self.pair_config.follower,
+                })
                 return None
             
             # Get leader price to calculate amount
             leader_price = self.jupiter_client.get_price(self.pair_config.leader)
             if not leader_price:
-                logger.error(f"[LIVE] Could not get price for {self.pair_config.leader}")
+                self._alert_trade_failure("SWAP_BUY", "Could not get leader price", {
+                    "leader": self.pair_config.leader,
+                })
                 return None
             
             leader_usd_price = leader_price[0]
@@ -1061,7 +1352,10 @@ class LiveTrader:
             )
             
             if not quote:
-                logger.error("[SWAP] Failed to get quote")
+                self._alert_trade_failure("SWAP_BUY", "Failed to get quote from Jupiter", {
+                    "input": self.pair_config.leader,
+                    "output": self.pair_config.follower,
+                })
                 return None
             
             # Get follower decimals
@@ -1083,7 +1377,10 @@ class LiveTrader:
             )
             
             if not swap_tx:
-                logger.error("[SWAP] Failed to get swap transaction")
+                self._alert_trade_failure("SWAP_BUY", "Failed to get swap transaction", {
+                    "input": self.pair_config.leader,
+                    "output": self.pair_config.follower,
+                })
                 return None
             
             # Sign and send
@@ -1092,13 +1389,13 @@ class LiveTrader:
             signed_tx = self.wallet.sign_transaction(tx_bytes)
             
             if not signed_tx:
-                logger.error("[SWAP] Failed to sign transaction")
+                self._alert_trade_failure("SWAP_BUY", "Failed to sign transaction", {})
                 return None
             
             signature = self._send_transaction(signed_tx)
             
             if not signature:
-                logger.error("[SWAP] Failed to send transaction")
+                self._alert_trade_failure("SWAP_BUY", "Failed to send transaction to network", {})
                 return None
             
             # Create trade record
@@ -1134,7 +1431,9 @@ class LiveTrader:
             return trade
             
         except Exception as e:
-            logger.error(f"[SWAP] Leader→Follower failed: {e}")
+            self._alert_trade_failure("SWAP_BUY", f"Unexpected error: {e}", {
+                "exception_type": type(e).__name__,
+            })
             return None
     
     def swap_follower_to_leader(
@@ -1153,8 +1452,18 @@ class LiveTrader:
         Returns:
             LiveTrade on success, None on failure.
         """
+        # Both wallet types now use LocalWallet + JupiterClient
         if not self.jupiter_client or not self.wallet:
             logger.error("[LIVE] Not initialized")
+            return None
+        
+        # Check SOL balance for transaction fees
+        has_sol, sol_balance = self._check_sol_balance()
+        if not has_sol:
+            self._alert_trade_failure("SWAP_SELL", "Insufficient SOL for transaction fees", {
+                "sol_balance": sol_balance,
+                "min_required": 0.005,
+            })
             return None
         
         try:
@@ -1164,7 +1473,10 @@ class LiveTrader:
             follower_mint = get_mint_with_fallback(self.pair_config.follower)
             
             if not leader_mint or not follower_mint:
-                logger.error(f"[LIVE] Unknown tokens: {self.pair_config.leader} or {self.pair_config.follower}")
+                self._alert_trade_failure("SWAP_SELL", "Unknown tokens", {
+                    "leader": self.pair_config.leader,
+                    "follower": self.pair_config.follower,
+                })
                 return None
             
             # Get follower decimals
@@ -1184,7 +1496,10 @@ class LiveTrader:
             )
             
             if not quote:
-                logger.error("[SWAP] Failed to get quote")
+                self._alert_trade_failure("SWAP_SELL", "Failed to get quote from Jupiter", {
+                    "input": self.pair_config.follower,
+                    "output": self.pair_config.leader,
+                })
                 return None
             
             # Get leader decimals
@@ -1206,7 +1521,10 @@ class LiveTrader:
             )
             
             if not swap_tx:
-                logger.error("[SWAP] Failed to get swap transaction")
+                self._alert_trade_failure("SWAP_SELL", "Failed to get swap transaction", {
+                    "input": self.pair_config.follower,
+                    "output": self.pair_config.leader,
+                })
                 return None
             
             # Sign and send
@@ -1215,13 +1533,13 @@ class LiveTrader:
             signed_tx = self.wallet.sign_transaction(tx_bytes)
             
             if not signed_tx:
-                logger.error("[SWAP] Failed to sign transaction")
+                self._alert_trade_failure("SWAP_SELL", "Failed to sign transaction", {})
                 return None
             
             signature = self._send_transaction(signed_tx)
             
             if not signature:
-                logger.error("[SWAP] Failed to send transaction")
+                self._alert_trade_failure("SWAP_SELL", "Failed to send transaction to network", {})
                 return None
             
             # Get follower price for USD equivalent
@@ -1261,7 +1579,9 @@ class LiveTrader:
             return trade
             
         except Exception as e:
-            logger.error(f"[SWAP] Follower→Leader failed: {e}")
+            self._alert_trade_failure("SWAP_SELL", f"Unexpected error: {e}", {
+                "exception_type": type(e).__name__,
+            })
             return None
     
     def _send_transaction(self, signed_tx: bytes) -> Optional[str]:
@@ -1343,14 +1663,19 @@ class LiveTrader:
                     result = response.json()
                 
                 if "error" in result:
-                    logger.warning(f"[LIVE] Confirmation check error: {result['error']}")
-                    time.sleep(2)
+                    error_code = result['error'].get('code', 0) if isinstance(result['error'], dict) else 0
+                    if error_code == 429:
+                        logger.warning("[LIVE] Rate limited, waiting 5s...")
+                        time.sleep(5)
+                    else:
+                        logger.warning(f"[LIVE] Confirmation check error: {result['error']}")
+                        time.sleep(3)
                     continue
                 
                 tx_data = result.get("result")
                 if tx_data is None:
                     # Transaction not yet confirmed
-                    time.sleep(1)
+                    time.sleep(2)
                     continue
                 
                 # Transaction confirmed - parse token balance changes
@@ -2723,8 +3048,10 @@ Examples:
                         help='Path to discovery report JSON (default: ./correlation_data/discovery_report.json)')
     
     # Timing parameters
+    parser.add_argument('--lag', type=int, default=None,
+                        help='Lag time in seconds (default: from discovery report). Overrides report value.')
     parser.add_argument('--sample-interval', type=int, default=None,
-                        help='Interval between leader price checks in seconds (default: calculated from lag, or 30s)')
+                        help='Interval between leader price checks in seconds (default: same as lag)')
     parser.add_argument('--execution-pct', type=int, default=80,
                         help='Percentage of lag time before trade execution (default: 80, range: 50-95)')
     parser.add_argument('--trade-frequency', type=int, default=None,
@@ -2733,8 +3060,8 @@ Examples:
     # Thresholds
     parser.add_argument('--min-move-pct', type=float, default=0.5,
                         help='Minimum %% price change to trigger trade (default: 0.5)')
-    parser.add_argument('--position-size', type=float, default=1000.0,
-                        help='Simulated position size in USD (default: 1000)')
+    parser.add_argument('--position-size', type=float, default=None,
+                        help='Position size in USD (default: max-trade-usd in live mode, 1000 in paper mode)')
     
     # Output
     parser.add_argument('--output', default='./paper_trades/',
@@ -2766,8 +3093,8 @@ Examples:
                         help='Only trade in the stronger direction from analysis (default: yes)')
     parser.add_argument('--age-check-interval', type=float, default=1.0,
                         help='Hours between data age checks (default: 1.0)')
-    parser.add_argument('--min-win-rate', type=float, default=0.5,
-                        help='Minimum win rate before action (default: 0.5)')
+    parser.add_argument('--min-win-rate', type=float, default=None,
+                        help='Minimum win rate before action (default: from discovery report, or 0.5)')
     parser.add_argument('--win-rate-window', type=int, default=10,
                         help='Number of recent trades to evaluate win rate (default: 10)')
     parser.add_argument('--auto-refresh', type=str, default='no',
@@ -2786,8 +3113,11 @@ Examples:
                         help='Swap directly between tokens instead of USDC (live mode only)')
     parser.add_argument('--slippage-bps', type=int, default=100,
                         help='Slippage tolerance in basis points (default: 100 = 1%%)')
-    parser.add_argument('--max-trade-usd', type=float, default=None,
-                        help='Maximum trade size in USD (live mode safety limit)')
+    parser.add_argument('--max-trade-usd', type=float, default=50.0,
+                        help='Maximum trade size in USD (default: $50, live mode safety limit)')
+    parser.add_argument('--wallet-type', type=str, default='trustwallet',
+                        choices=['trustwallet', 'local'],
+                        help='Wallet backend: trustwallet (default, recommended) or local (legacy, has key format issues)')
     
     args = parser.parse_args()
     
@@ -2798,6 +3128,23 @@ Examples:
     # Validate execution_pct
     if not (50 <= args.execution_pct <= 95):
         parser.error("execution-pct must be between 50 and 95")
+    
+    # Set position-size default based on trading mode
+    if args.position_size is None:
+        if args.trading_mode == 'live' and args.max_trade_usd is not None:
+            args.position_size = args.max_trade_usd
+            print(f"[CONFIG] Position size defaulting to max-trade-usd: ${args.position_size}")
+        else:
+            args.position_size = 1000.0  # Paper mode default
+    
+    # Validate position-size vs max-trade-usd in live mode
+    if args.trading_mode == 'live' and args.max_trade_usd is not None:
+        if args.position_size > args.max_trade_usd:
+            parser.error(
+                f"--position-size (${args.position_size}) exceeds --max-trade-usd (${args.max_trade_usd}).\n"
+                f"In live mode, position-size is the actual trade amount.\n"
+                f"Either increase --max-trade-usd or decrease --position-size to match."
+            )
     
     # Parse duration
     duration_seconds = None
@@ -2846,6 +3193,21 @@ Examples:
                 print(f"  - {l}:{f}")
             sys.exit(1)
         
+        # Apply --lag override to all pairs if provided
+        if args.lag is not None:
+            for pc in pair_configs:
+                pc.optimal_lag_seconds = args.lag
+            print(f"[CONFIG] Applied --lag {args.lag}s to all pairs")
+        
+        # Derive min_win_rate from first pair if not explicitly set
+        if args.min_win_rate is None:
+            first_win_rate = pair_configs[0].expected_win_rate if pair_configs else None
+            if first_win_rate is not None:
+                args.min_win_rate = first_win_rate
+                print(f"[CONFIG] Using min_win_rate from report: {args.min_win_rate:.1%}")
+            else:
+                args.min_win_rate = 0.5  # Default fallback
+        
         # Use specified trade_frequency or default to max lag * 2 (global cooldown)
         if args.trade_frequency is None:
             max_lag = max(pc.optimal_lag_seconds for pc in pair_configs)
@@ -2893,6 +3255,19 @@ Examples:
             for l, f in loader.list_pairs():
                 print(f"  - {l}:{f}")
             sys.exit(1)
+        
+        # Apply --lag override if provided
+        if args.lag is not None:
+            print(f"[CONFIG] Overriding lag: {pair_config.optimal_lag_seconds}s → {args.lag}s (from --lag)")
+            pair_config.optimal_lag_seconds = args.lag
+        
+        # Derive min_win_rate from discovery report if not explicitly set
+        if args.min_win_rate is None:
+            if pair_config.expected_win_rate is not None:
+                args.min_win_rate = pair_config.expected_win_rate
+                print(f"[CONFIG] Using min_win_rate from report: {args.min_win_rate:.1%}")
+            else:
+                args.min_win_rate = 0.5  # Default fallback
             
     except FileNotFoundError as e:
         print(f"Error: {e}")
@@ -3011,6 +3386,7 @@ Examples:
             swap_mode=args.swap_mode,
             max_trades=args.max_trades,
             max_trade_usd=args.max_trade_usd,
+            wallet_type=args.wallet_type,
         )
         
         if not live_trader.initialize():

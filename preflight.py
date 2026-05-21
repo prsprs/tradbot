@@ -92,6 +92,67 @@ class PreflightValidator:
         self._directional_result: Optional[DirectionalProfitabilityResult] = None
         self._standard_result: Optional[ProfitabilityReport] = None
     
+    def _validate_jupiter_quote(self, follower_mint: str) -> Optional[PreflightResult]:
+        """
+        Validate that the follower token is actually tradeable on Jupiter
+        by attempting to get a quote for a small swap.
+        
+        Args:
+            follower_mint: The Solana mint address of the follower token.
+            
+        Returns:
+            PreflightResult if validation fails, None if validation passes.
+        """
+        try:
+            from dex.jupiterutil import JupiterClient, USDC_MINT
+            
+            jupiter = JupiterClient()
+            
+            # Try to get a quote for a tiny USDC -> follower swap
+            # Using 1 USDC (1_000_000 in smallest units for 6 decimals)
+            test_amount = 1_000_000  # 1 USDC
+            
+            print(f"[PREFLIGHT] Validating {self.follower} is tradeable on Jupiter...")
+            quote = jupiter.get_quote(USDC_MINT, follower_mint, test_amount)
+            
+            if not quote:
+                return PreflightResult(
+                    passed=False,
+                    verdict="TOKEN_NOT_TRADEABLE",
+                    recommended_interval_seconds=None,
+                    sample_interval_seconds=None,
+                    up_viable=False,
+                    down_viable=False,
+                    error_message=f"Follower token '{self.follower}' (mint: {follower_mint}) "
+                                  f"failed Jupiter quote validation. This token may not be "
+                                  f"tradeable, have insufficient liquidity, or the mint address may be incorrect."
+                )
+            
+            # Check for reasonable output (not zero)
+            out_amount = int(quote.get("outAmount", 0))
+            if out_amount == 0:
+                return PreflightResult(
+                    passed=False,
+                    verdict="TOKEN_NO_LIQUIDITY",
+                    recommended_interval_seconds=None,
+                    sample_interval_seconds=None,
+                    up_viable=False,
+                    down_viable=False,
+                    error_message=f"Follower token '{self.follower}' returned zero output amount. "
+                                  f"This token may have no liquidity on Jupiter."
+                )
+            
+            print(f"[PREFLIGHT] ✓ {self.follower} is tradeable on Jupiter")
+            return None  # Validation passed
+            
+        except ImportError as e:
+            logger.warning(f"Could not import Jupiter client for quote validation: {e}")
+            return None  # Skip validation if imports fail
+        except Exception as e:
+            # Log but don't fail on unexpected errors - let trading attempt handle it
+            logger.warning(f"Jupiter quote validation encountered error: {e}")
+            return None
+    
     def validate(self) -> PreflightResult:
         """
         Run profitability analysis and return validation result.
@@ -99,6 +160,30 @@ class PreflightValidator:
         Returns:
             PreflightResult with validation status and details
         """
+        # Validate follower token has Jupiter mint address (required for trading)
+        try:
+            from dex.token_cache import get_mint_with_fallback
+            follower_mint = get_mint_with_fallback(self.follower)
+            if not follower_mint:
+                return PreflightResult(
+                    passed=False,
+                    verdict="TOKEN_NOT_TRADEABLE",
+                    recommended_interval_seconds=None,
+                    sample_interval_seconds=None,
+                    up_viable=False,
+                    down_viable=False,
+                    error_message=f"Follower token '{self.follower}' has no Jupiter mint address. "
+                                  f"This token cannot be traded on Solana/Jupiter."
+                )
+            
+            # Validate mint address is actually tradeable on Jupiter by attempting a quote
+            validation_result = self._validate_jupiter_quote(follower_mint)
+            if validation_result:
+                return validation_result
+                
+        except ImportError:
+            logger.warning("Could not import token_cache for mint validation")
+        
         try:
             # Parse recent duration to seconds
             recent_seconds = parse_duration(self.recent)

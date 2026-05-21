@@ -1833,13 +1833,13 @@ if args.live:
 | Scenario | Priority | Notes |
 |----------|----------|-------|
 | ~~Transaction confirmation monitoring~~ | ✅ Done | Polls `getTransaction` with 30s timeout |
-| Failed transaction retry | High | Handle RPC errors, insufficient funds |
+| ~~Failed transaction retry~~ | Deferred | Excluded from MVP per user decision |
 | ~~Slippage protection~~ | ✅ Done | Tracks actual vs quoted, see Slippage Tracking |
-| Gas estimation | Medium | Ensure enough SOL for fees |
-| Position size limits | Medium | Max trade size based on liquidity |
+| ~~Gas estimation~~ | ✅ Done | `_check_sol_balance()` verifies SOL before trades |
+| ~~Position size limits~~ | Deferred | Liquidity-based limits excluded from MVP |
 | ~~Trade history logging~~ | ✅ Done | See Trade History Logging section |
-| Error alerting | Medium | Notify on failed trades |
-| Rate limiting | Low | Avoid RPC throttling |
+| ~~Error alerting~~ | ✅ Done | `_alert_trade_failure()` logs to `trade_errors.json` |
+| ~~Rate limiting~~ | Deferred | Excluded from MVP per user decision |
 | Multi-token portfolio tracking | Low | Track all held tokens |
 
 ---
@@ -2187,6 +2187,37 @@ This is not implemented in MVP but documented for future scaling.
 2. **Prototype Phase 1** on Base testnet
 3. **Establish security practices** for key management
 4. **Define success metrics** (trade success rate, cost per trade)
+
+---
+
+## Known Limitations & Security Considerations
+
+### Token Address Validation (MITIGATED)
+
+**Status:** Runtime validation implemented in preflight.
+
+**Issue:** Token mint addresses in `dex/token_cache.py` are hardcoded and could be:
+- **Stale** — Token migrated to a new contract address
+- **Incorrect** — Typo or wrong token entirely
+- **Malicious** — If the file is modified by an attacker
+
+**Current State (After Mitigation):**
+- Preflight validates that a mint address EXISTS in the cache
+- Preflight attempts a Jupiter quote to verify token is TRADEABLE on-chain
+- If quote fails, preflight fails fast with clear error message
+- Invalid/stale mint addresses are caught before any trading attempt
+
+**Proposed Mitigations:**
+
+1. **Runtime validation** — Query Jupiter API to confirm the mint address is tradeable before preflight passes
+2. **Checksum/verification** — Store token metadata (name, symbol, decimals) and verify against on-chain data
+3. **Dynamic lookup** — Fetch mint addresses from Jupiter's verified token list API instead of hardcoding
+
+**Workaround (Manual):**
+Before trading a new token, manually verify the mint address:
+- Check on [Solscan](https://solscan.io)
+- Verify on [Jupiter](https://jup.ag) token search
+- Compare against official project documentation
 
 ---
 

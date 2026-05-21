@@ -6,8 +6,16 @@ Keys are stored encrypted locally, never exposed to the trading bot.
 Setup:
     1. npm install -g @trustwallet/cli
     2. twak init --api-key YOUR_KEY --api-secret YOUR_SECRET
-    3. twak wallet create (creates encrypted HD wallet)
-    4. Fund wallet with SOL + tokens
+    3. Either:
+       - twak wallet create              # Create new HD wallet
+       - twak wallet import              # Import existing wallet via mnemonic
+    4. Fund wallet with SOL + tokens (if new)
+
+Import Existing Wallet:
+    twak wallet import --mnemonic "your twelve word recovery phrase"
+    
+    This encrypts the wallet locally with a password you provide.
+    The original wallet (e.g., Trust Wallet mobile app) remains unchanged.
 
 Usage:
     trader = TrustWalletTrader()
@@ -351,7 +359,8 @@ def check_twak_installation() -> tuple[bool, str]:
     if not os.path.exists(wallet_path):
         return False, (
             "Trust Wallet CLI is configured but no wallet exists.\n"
-            "Create wallet with: twak wallet create"
+            "Create new:  twak wallet create\n"
+            "Or import:   twak wallet import --mnemonic \"your recovery phrase\""
         )
     
     return True, "Trust Wallet CLI is ready"
