@@ -47,19 +47,20 @@ logger = logging.getLogger(__name__)
 # Time Duration Parsing
 # ============================================================================
 
-def parse_duration(value: str) -> int:
+def parse_duration(value: str, default_unit: str = 'sec') -> int:
     """
     Parse a duration string into seconds.
     
     Supported formats:
-        - Plain number: interpreted as seconds (e.g., "30" -> 30)
-        - Number + 'sec': seconds (e.g., "30sec" -> 30)
-        - Number + 'min': minutes (e.g., "5min" -> 300)
-        - Number + 'hr': hours (e.g., "1hr" -> 3600)
-        - Number + 'day'/'days': days (e.g., "14days" -> 1209600)
+        - Plain number: interpreted using default_unit (e.g., "30" -> 30 sec or 30 hr)
+        - Number + 's'/'sec'/'secs': seconds (e.g., "30s", "30sec" -> 30)
+        - Number + 'm'/'min'/'mins': minutes (e.g., "5m", "5min" -> 300)
+        - Number + 'h'/'hr'/'hrs'/'hour'/'hours': hours (e.g., "1h", "1hr", "1hour" -> 3600)
+        - Number + 'd'/'day'/'days': days (e.g., "5d", "14days" -> 432000, 1209600)
     
     Args:
         value: Duration string to parse
+        default_unit: Unit to use when no suffix provided ('sec' or 'hr')
         
     Returns:
         Duration in seconds
@@ -75,25 +76,28 @@ def parse_duration(value: str) -> int:
     if not value:
         raise ValueError("Empty duration string")
     
-    # Try plain number first (default to seconds)
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    
     # Parse with unit suffix
     import re
-    match = re.match(r'^(\d+(?:\.\d+)?)\s*(sec|min|hr|days?)s?$', value)
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|hour|hours|d|day|days)?$', value)
     
     if not match:
-        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30, 30sec, 5min, 1hr, 14days")
+        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30s, 5min, 1hr, 72h, 5d, 14days")
     
     amount = float(match.group(1))
     unit = match.group(2)
     
-    # Normalize 'day' to 'days'
-    if unit == 'day':
-        unit = 'days'
+    # If no unit specified, use default
+    if not unit:
+        unit = default_unit
+    
+    # Normalize units
+    unit_map = {
+        's': 'sec', 'sec': 'sec', 'secs': 'sec',
+        'm': 'min', 'min': 'min', 'mins': 'min',
+        'h': 'hr', 'hr': 'hr', 'hrs': 'hr', 'hour': 'hr', 'hours': 'hr',
+        'd': 'days', 'day': 'days', 'days': 'days',
+    }
+    unit = unit_map.get(unit, unit)
     
     multipliers = {
         'sec': 1,
@@ -2009,12 +2013,12 @@ class ProfitabilityAnalyzer:
             print("\nNo viable pairs found.")
             return
         
-        print("\n" + "=" * 90)
-        print("                         PROFITABILITY ANALYSIS SUMMARY")
-        print("=" * 90)
-        print("┌─────────────────────────┬─────────────┬──────────────┬───────────────┬─────────────────────┐")
-        print("│ Pair                    │ Break-even  │ Best Interval│ Correlation   │ Verdict             │")
-        print("├─────────────────────────┼─────────────┼──────────────┼───────────────┼─────────────────────┤")
+        print("\n" + "=" * 105)
+        print("                              PROFITABILITY ANALYSIS SUMMARY")
+        print("=" * 105)
+        print("┌─────────────────────────┬─────────────┬──────────────┬─────────────┬───────────────┬─────────────────────┐")
+        print("│ Pair                    │ Break-even  │ Best Interval│ Median Move │ Correlation   │ Verdict             │")
+        print("├─────────────────────────┼─────────────┼──────────────┼─────────────┼───────────────┼─────────────────────┤")
         
         # Sort by verdict (VIABLE first, then POSSIBLY, then others)
         def verdict_sort_key(r):
@@ -2035,6 +2039,14 @@ class ProfitabilityAnalyzer:
             interval = r.recommended_interval_label or "N/A"
             corr = f"{r.correlation_at_recommended:.3f}" if r.correlation_at_recommended else "N/A"
             
+            # Get median move from recommended interval
+            median_move = "N/A"
+            if r.recommended_interval_seconds and r.interval_analyses:
+                for ia in r.interval_analyses:
+                    if ia.interval_seconds == r.recommended_interval_seconds:
+                        median_move = f"{ia.median_move_pct:.2f}%"
+                        break
+            
             # Truncate verdict if needed
             verdict = r.verdict[:19] if len(r.verdict) > 19 else r.verdict
             
@@ -2046,9 +2058,9 @@ class ProfitabilityAnalyzer:
             elif "NOT VIABLE" in r.verdict:
                 verdict = "✗ " + verdict[:17]
             
-            print(f"│ {pair:<23} │ {be:>11} │ {interval:>12} │ {corr:>13} │ {verdict:<19} │")
+            print(f"│ {pair:<23} │ {be:>11} │ {interval:>12} │ {median_move:>11} │ {corr:>13} │ {verdict:<19} │")
         
-        print("└─────────────────────────┴─────────────┴──────────────┴───────────────┴─────────────────────┘")
+        print("└─────────────────────────┴─────────────┴──────────────┴─────────────┴───────────────┴─────────────────────┘")
         
         # Count by verdict
         viable_count = sum(1 for r in reports if r.verdict == "VIABLE")
@@ -2061,7 +2073,7 @@ class ProfitabilityAnalyzer:
         print(f"  ? POSSIBLY VIABLE: {possibly_count}")
         print(f"  ⚠ VOLATILITY OK, CORRELATION WEAK: {weak_corr_count}")
         print(f"  ✗ NOT VIABLE: {not_viable_count}")
-        print("=" * 90 + "\n")
+        print("=" * 105 + "\n")
 
     def print_report(self, report: ProfitabilityReport):
         """Print a formatted profitability report to console."""
@@ -2486,6 +2498,12 @@ def main():
                 # Batch mode: discover significant pairs first, then filter
                 logger.info("Discovering significant pairs for profitability analysis...")
                 discovery_report = analyzer.discover_pairs()
+                
+                # Save the discovery report so leading_indicator_tester can use it
+                if discovery_report and config.output_report:
+                    with open(config.output_report, 'w') as f:
+                        json.dump(asdict(discovery_report), f, indent=2, default=str)
+                    logger.info(f"Discovery report updated: {config.output_report}")
                 
                 if not discovery_report or not discovery_report.significant_pairs:
                     print("No significant pairs found in data. Cannot run profitability analysis.")

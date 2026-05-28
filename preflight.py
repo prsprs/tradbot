@@ -185,8 +185,8 @@ class PreflightValidator:
             logger.warning("Could not import token_cache for mint validation")
         
         try:
-            # Parse recent duration to seconds
-            recent_seconds = parse_duration(self.recent)
+            # Parse recent duration to seconds (default to hours for preflight)
+            recent_seconds = parse_duration(self.recent, default_unit='hr')
         except ValueError as e:
             return PreflightResult(
                 passed=False,

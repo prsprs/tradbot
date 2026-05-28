@@ -52,16 +52,20 @@ logger = logging.getLogger(__name__)
 # Time Duration Parsing (shared with correlation_tracker.py)
 # ============================================================================
 
-def parse_duration(value: str) -> int:
+def parse_duration(value: str, default_unit: str = 'sec') -> int:
     """
     Parse a duration string into seconds.
     
     Supported formats:
-        - Plain number: interpreted as seconds (e.g., "30" -> 30)
-        - Number + 's'/'sec': seconds (e.g., "30s" -> 30)
-        - Number + 'm'/'min': minutes (e.g., "5m" -> 300)
-        - Number + 'h'/'hr': hours (e.g., "1h" -> 3600)
-        - Number + 'd'/'day'/'days': days (e.g., "7d" -> 604800)
+        - Plain number: interpreted using default_unit (e.g., "30" -> 30 sec or 30 hr)
+        - Number + 's'/'sec'/'secs': seconds (e.g., "30s", "30sec" -> 30)
+        - Number + 'm'/'min'/'mins': minutes (e.g., "5m", "5min" -> 300)
+        - Number + 'h'/'hr'/'hrs'/'hour'/'hours': hours (e.g., "1h", "1hr", "1hour" -> 3600)
+        - Number + 'd'/'day'/'days': days (e.g., "5d", "14days" -> 432000, 1209600)
+    
+    Args:
+        value: Duration string to parse
+        default_unit: Unit to use when no suffix provided ('sec' or 'hr')
     """
     if value is None:
         return None
@@ -71,27 +75,34 @@ def parse_duration(value: str) -> int:
     if not value:
         raise ValueError("Empty duration string")
     
-    # Try plain number first (default to seconds)
-    try:
-        return int(value)
-    except ValueError:
-        pass
-    
     # Parse with unit suffix
     import re
-    match = re.match(r'^(\d+(?:\.\d+)?)\s*(s|sec|m|min|h|hr|d|days?)s?$', value)
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|hour|hours|d|day|days)?$', value)
     
     if not match:
-        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30, 30s, 5m, 1h, 7d")
+        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30s, 5min, 1hr, 72h, 5d, 14days")
     
     amount = float(match.group(1))
     unit = match.group(2)
     
+    # If no unit specified, use default
+    if not unit:
+        unit = default_unit
+    
+    # Normalize units
+    unit_map = {
+        's': 'sec', 'sec': 'sec', 'secs': 'sec',
+        'm': 'min', 'min': 'min', 'mins': 'min',
+        'h': 'hr', 'hr': 'hr', 'hrs': 'hr', 'hour': 'hr', 'hours': 'hr',
+        'd': 'days', 'day': 'days', 'days': 'days',
+    }
+    unit = unit_map.get(unit, unit)
+    
     multipliers = {
-        's': 1, 'sec': 1,
-        'm': 60, 'min': 60,
-        'h': 3600, 'hr': 3600,
-        'd': 86400, 'day': 86400, 'days': 86400,
+        'sec': 1,
+        'min': 60,
+        'hr': 3600,
+        'days': 86400,
     }
     
     return int(amount * multipliers[unit])
@@ -557,6 +568,8 @@ class LiveTrade:
     output_token: str = ""  # follower for BUY, USDC for SELL
     input_amount: float = 0.0
     output_amount: float = 0.0  # Quoted output (what Jupiter said we'd get)
+    amount: float = 0.0  # Token amount (follower tokens traded)
+    position_size_usd: float = 0.0  # USD value of the trade
     output_amount_actual: Optional[float] = None  # Actual output (post-confirmation)
     price_usd: float = 0.0
     slippage_bps: int = 100  # Tolerance setting
@@ -568,6 +581,84 @@ class LiveTrade:
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+# Jupiter/Solana error code translations
+JUPITER_ERROR_CODES = {
+    6000: "EmptyRoute - No valid route found",
+    6001: "SlippageToleranceExceeded - Price moved beyond slippage tolerance",
+    6002: "InvalidCalculation - Internal calculation error",
+    6003: "MissingPlatformFeeAccount - Platform fee account not provided",
+    6004: "InvalidSlippage - Invalid slippage value",
+    6005: "NotEnoughPercent - Insufficient percentage for split",
+    6006: "InvalidInputIndex - Invalid input index",
+    6007: "InvalidOutputIndex - Invalid output index", 
+    6008: "NotEnoughAccountKeys - Missing account keys",
+    6009: "NonZeroMinimumOutAmountNotSupported - Zero minimum not supported",
+    6010: "InvalidRoutePlan - Route plan is invalid",
+    6011: "InvalidReferralAccount - Referral account invalid",
+    6012: "LedgerTokenAccountDoesNotMatch - Token account mismatch",
+    6013: "InvalidTokenLedger - Token ledger invalid",
+    6014: "IncorrectTokenProgramID - Wrong token program",
+    6015: "TokenProgramNotProvided - Token program missing",
+    6016: "SwapNotSupported - This swap is not supported",
+    6017: "ExactOutAmountNotMatched - Exact output amount not achieved",
+    6018: "SourceAndDestinationMintCannotBeTheSame - Same mint for input/output",
+    6019: "InvalidTokenMint - Invalid token mint",
+    6020: "MintDecimalsMismatch - Token decimal mismatch",
+    6021: "InvalidSourceTokenAccount - Source token account invalid",
+    6022: "InvalidDestinationTokenAccount - Destination token account invalid",
+    6023: "InvalidFeeTokenAccount - Fee token account invalid",
+    6024: "InsufficientFunds - Not enough tokens in wallet to complete swap",
+}
+
+SOLANA_TOKEN_ERRORS = {
+    1: "InsufficientFunds - Not enough tokens for this operation",
+    2: "InvalidMint - Token mint is invalid",
+    3: "MintMismatch - Token mint doesn't match expected",
+    4: "OwnerMismatch - Account owner doesn't match",
+    5: "FixedSupply - Cannot mint more tokens",
+    10: "AccountNotAssociatedTokenAccount - Not an associated token account",
+}
+
+def translate_rpc_error(error: dict) -> str:
+    """Translate RPC error into human-readable message."""
+    if not isinstance(error, dict):
+        return str(error)
+    
+    message = error.get('message', '')
+    data = error.get('data', {})
+    
+    # Look for custom program error
+    err = data.get('err', {}) if isinstance(data, dict) else {}
+    if isinstance(err, dict) and 'InstructionError' in err:
+        instruction_error = err['InstructionError']
+        if isinstance(instruction_error, list) and len(instruction_error) >= 2:
+            error_detail = instruction_error[1]
+            if isinstance(error_detail, dict) and 'Custom' in error_detail:
+                error_code = error_detail['Custom']
+                
+                # Check Jupiter errors first
+                if error_code in JUPITER_ERROR_CODES:
+                    return f"Jupiter Error {error_code}: {JUPITER_ERROR_CODES[error_code]}"
+                
+                # Check Solana token errors
+                if error_code in SOLANA_TOKEN_ERRORS:
+                    return f"Token Error {error_code}: {SOLANA_TOKEN_ERRORS[error_code]}"
+                
+                # Unknown custom error
+                return f"Program Error {error_code} (0x{error_code:x}): Unknown - check token balance"
+    
+    # Check logs for hints
+    logs = data.get('logs', []) if isinstance(data, dict) else []
+    if logs:
+        for log in logs:
+            if 'insufficient' in log.lower():
+                return "InsufficientFunds - Not enough tokens in wallet"
+            if 'slippage' in log.lower():
+                return "SlippageExceeded - Price moved beyond tolerance"
+    
+    return message or str(error)
 
 
 class LiveTrader:
@@ -1019,10 +1110,10 @@ class LiveTrader:
                 return None
             
             # Send transaction
-            signature = self._send_transaction(signed_tx)
+            signature, tx_error = self._send_transaction(signed_tx)
             
             if not signature:
-                self._alert_trade_failure("BUY", "Failed to send transaction to network", {})
+                self._alert_trade_failure("BUY", tx_error or "Failed to send transaction", {})
                 return None
             
             # Calculate output amount with decimals
@@ -1047,6 +1138,8 @@ class LiveTrader:
                 output_token=self.pair_config.follower,
                 input_amount=self.position_size_usd,
                 output_amount=output_amount,
+                amount=output_amount,  # Token amount bought
+                position_size_usd=self.position_size_usd,  # USD value spent
                 price_usd=price_usd,
                 slippage_bps=self.slippage_bps,
                 trigger=trigger_info,
@@ -1218,10 +1311,10 @@ class LiveTrader:
                 return None
             
             # Send transaction
-            signature = self._send_transaction(signed_tx)
+            signature, tx_error = self._send_transaction(signed_tx)
             
             if not signature:
-                self._alert_trade_failure("SELL", "Failed to send transaction to network", {})
+                self._alert_trade_failure("SELL", tx_error or "Failed to send transaction", {})
                 return None
             
             price_usd = usdc_out / amount if amount > 0 else 0
@@ -1238,6 +1331,8 @@ class LiveTrader:
                 output_token="USDC",
                 input_amount=amount,
                 output_amount=usdc_out,
+                amount=amount,  # Token amount sold
+                position_size_usd=usdc_out,  # USD value received
                 price_usd=price_usd,
                 slippage_bps=self.slippage_bps,
                 trigger=trigger_info,
@@ -1392,10 +1487,10 @@ class LiveTrader:
                 self._alert_trade_failure("SWAP_BUY", "Failed to sign transaction", {})
                 return None
             
-            signature = self._send_transaction(signed_tx)
+            signature, tx_error = self._send_transaction(signed_tx)
             
             if not signature:
-                self._alert_trade_failure("SWAP_BUY", "Failed to send transaction to network", {})
+                self._alert_trade_failure("SWAP_BUY", tx_error or "Failed to send transaction", {})
                 return None
             
             # Create trade record
@@ -1536,10 +1631,10 @@ class LiveTrader:
                 self._alert_trade_failure("SWAP_SELL", "Failed to sign transaction", {})
                 return None
             
-            signature = self._send_transaction(signed_tx)
+            signature, tx_error = self._send_transaction(signed_tx)
             
             if not signature:
-                self._alert_trade_failure("SWAP_SELL", "Failed to send transaction to network", {})
+                self._alert_trade_failure("SWAP_SELL", tx_error or "Failed to send transaction", {})
                 return None
             
             # Get follower price for USD equivalent
@@ -1584,11 +1679,12 @@ class LiveTrader:
             })
             return None
     
-    def _send_transaction(self, signed_tx: bytes) -> Optional[str]:
+    def _send_transaction(self, signed_tx: bytes) -> Tuple[Optional[str], Optional[str]]:
         """Send a signed transaction to the network.
         
         Returns:
-            Transaction signature on success, None on failure.
+            Tuple of (signature, error_message). On success, error_message is None.
+            On failure, signature is None and error_message contains the translated error.
         """
         try:
             import base64
@@ -1619,15 +1715,17 @@ class LiveTrader:
                 result = response.json()
                 
                 if "error" in result:
-                    logger.error(f"[LIVE] RPC error: {result['error']}")
-                    return None
+                    translated = translate_rpc_error(result['error'])
+                    logger.error(f"[LIVE] Transaction failed: {translated}")
+                    return None, translated
                 
                 signature = result.get("result")
-                return signature
+                return signature, None
                 
         except Exception as e:
-            logger.error(f"[LIVE] Send transaction error: {e}")
-            return None
+            error_msg = f"Send error: {e}"
+            logger.error(f"[LIVE] {error_msg}")
+            return None, error_msg
     
     def _confirm_transaction(self, signature: str, timeout_seconds: int = 30) -> Optional[Dict]:
         """Wait for transaction confirmation and return parsed result.
@@ -2477,7 +2575,7 @@ class LeadingIndicatorTester:
                         print(f"Price: ${live_trade.price_usd:.4f}")
                         print(f"Size: ${live_trade.position_size_usd:.2f} ({live_trade.amount:.6f} {live_trade.follower})")
                         print(f"Trigger: {self.pair_config.leader} {direction} {abs(change_pct):.2f}%")
-                        print(f"Tx: {live_trade.signature[:16]}...")
+                        print(f"Tx: {live_trade.transaction.get('signature', 'N/A')[:16]}...")
                         print(f"{'='*40}\n")
                     else:
                         print(f"\n[LIVE] Trade execution FAILED - see logs above")
@@ -3086,8 +3184,8 @@ Examples:
                         help='Detailed logging of each decision')
     parser.add_argument('--auto-interval', action='store_true',
                         help='Calculate optimal sample interval from lag')
-    parser.add_argument('--max-data-age', type=int, default=24,
-                        help='Maximum age of discovery report data in hours (default: 24)')
+    parser.add_argument('--max-data-age', type=str, default='24h',
+                        help='Maximum age of discovery report data (default: 24h). Supports: 24h, 48hr, 2d')
     parser.add_argument('--honor-directionality', type=str, default='yes',
                         choices=['yes', 'no'],
                         help='Only trade in the stronger direction from analysis (default: yes)')
@@ -3153,6 +3251,13 @@ Examples:
             duration_seconds = parse_duration(args.duration)
         except ValueError as e:
             parser.error(str(e))
+    
+    # Parse max_data_age (default to hours for this param)
+    try:
+        max_data_age_seconds = parse_duration(args.max_data_age, default_unit='hr')
+        max_data_age_hours = max_data_age_seconds // 3600
+    except ValueError as e:
+        parser.error(f"Invalid --max-data-age: {e}")
     
     # Handle multi-pair mode
     if args.pairs:
@@ -3227,7 +3332,7 @@ Examples:
             duration_seconds=duration_seconds,
             verbose=args.verbose,
             dry_run=args.dry_run,
-            max_data_age_hours=args.max_data_age,
+            max_data_age_hours=max_data_age_hours,
             leader_exchange=args.leader_exchange,
             follower_exchange=args.follower_exchange,
             honor_directionality=args.honor_directionality == 'yes',
@@ -3406,7 +3511,7 @@ Examples:
             duration_seconds=duration_seconds,
             verbose=args.verbose,
             dry_run=False,
-            max_data_age_hours=args.max_data_age,
+            max_data_age_hours=max_data_age_hours,
             leader_exchange=args.leader_exchange,
             follower_exchange=args.follower_exchange,
             honor_directionality=args.honor_directionality == 'yes',
@@ -3467,7 +3572,7 @@ Examples:
         duration_seconds=duration_seconds,
         verbose=args.verbose,
         dry_run=args.dry_run,
-        max_data_age_hours=args.max_data_age,
+        max_data_age_hours=max_data_age_hours,
         leader_exchange=args.leader_exchange,
         follower_exchange=args.follower_exchange,
         honor_directionality=args.honor_directionality == 'yes',

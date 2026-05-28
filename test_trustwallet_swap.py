@@ -29,6 +29,49 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dex.local_wallet import LocalWallet
 from dex.jupiterutil import JupiterClient
+from leading_indicator_tester import LiveTrade
+import json
+from pathlib import Path
+from datetime import datetime, timezone
+
+# Test trade log file
+TEST_TRADES_FILE = Path('./live_trades/test_trades.json')
+
+def log_test_trade(trade_data: dict):
+    """
+    Log a test trade to separate file for tax purposes.
+    
+    Test trades are marked with type='test' to distinguish them from
+    live trading and back-testing data.
+    """
+    # Ensure directory exists
+    TEST_TRADES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Load existing trades
+    trades = []
+    if TEST_TRADES_FILE.exists():
+        try:
+            with open(TEST_TRADES_FILE, 'r') as f:
+                data = json.load(f)
+                trades = data.get('trades', [])
+        except (json.JSONDecodeError, KeyError):
+            trades = []
+    
+    # Ensure test type is set
+    trade_data['type'] = 'test'
+    trade_data['logged_at'] = datetime.now(timezone.utc).isoformat()
+    
+    # Append new trade
+    trades.append(trade_data)
+    
+    # Save
+    with open(TEST_TRADES_FILE, 'w') as f:
+        json.dump({
+            'description': 'Test swap transactions - NOT for back-testing',
+            'trades': trades
+        }, f, indent=2)
+    
+    print(f"  📝 Test trade logged to {TEST_TRADES_FILE}")
 
 
 # Test parameters
@@ -44,6 +87,77 @@ QUOTE_TOKEN = "USDC"
 QUOTE_MINT = USDC_MINT
 BASE_DECIMALS = 9
 QUOTE_DECIMALS = 6
+
+
+def validate_live_trade_dataclass(
+    action: str,
+    signature: str,
+    input_token: str,
+    output_token: str,
+    input_amount: float,
+    output_amount: float,
+    amount: float,
+    position_size_usd: float,
+    price_usd: float,
+) -> bool:
+    """
+    Validate that LiveTrade dataclass works with all expected fields.
+    
+    This catches field mismatches between test program and live trading code.
+    If this fails, the live program would also fail after executing a trade.
+    """
+    from datetime import datetime, timezone
+    import uuid
+    
+    print("\nSTEP 8: Validate LiveTrade Dataclass")
+    print("-" * 40)
+    
+    try:
+        # Create a LiveTrade object exactly as the live program does
+        trade = LiveTrade(
+            id=f"test_{uuid.uuid4().hex[:8]}",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            type="live",
+            pair=f"TEST:{BASE_TOKEN}",
+            action=action,
+            follower=QUOTE_TOKEN if action == "BUY" else BASE_TOKEN,
+            input_token=input_token,
+            output_token=output_token,
+            input_amount=input_amount,
+            output_amount=output_amount,
+            amount=amount,
+            position_size_usd=position_size_usd,
+            price_usd=price_usd,
+            slippage_bps=100,
+            trigger={"test": True},
+            timing={"test": True},
+            transaction={
+                "signature": signature,
+                "status": "confirmed",
+            },
+        )
+        
+        # Now validate we can access all fields the live program uses in its print statement
+        # This is the exact line that was failing: line 2478 in leading_indicator_tester.py
+        test_output = f"Size: ${trade.position_size_usd:.2f} ({trade.amount:.6f} {trade.follower})"
+        
+        # Additional field access validation
+        _ = trade.action
+        _ = trade.price_usd
+        _ = trade.transaction.get("signature", "")[:16]
+        
+        print(f"  ✓ LiveTrade dataclass validation PASSED")
+        print(f"  Test output: {test_output}")
+        return True
+        
+    except AttributeError as e:
+        print(f"  ❌ LiveTrade dataclass validation FAILED")
+        print(f"  Missing attribute: {e}")
+        print(f"  This would cause the live program to crash after executing a trade!")
+        return False
+    except Exception as e:
+        print(f"  ❌ LiveTrade validation error: {e}")
+        return False
 
 
 def confirm_transaction(signature: str, timeout_seconds: int = 30):
@@ -438,6 +552,39 @@ def test_with_private_key():
     except Exception as e:
         print(f"Could not fetch balances: {e}")
     
+    # Log test trade for tax purposes (only if confirmed)
+    if confirmation and confirmation.get("status") == "confirmed":
+        log_test_trade({
+            'id': f"test_buy_{tx_hash[:8]}",
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'action': 'BUY',
+            'pair': f"{BASE_TOKEN}/{QUOTE_TOKEN}",
+            'input_token': BASE_TOKEN,
+            'output_token': QUOTE_TOKEN,
+            'input_amount': base_amount_for_test,
+            'output_amount': out_amount,
+            'price_usd': base_price,
+            'transaction': {
+                'signature': tx_hash,
+                'status': 'confirmed',
+                'slot': confirmation.get('slot'),
+                'fee_sol': confirmation.get('fee_sol', 0),
+            },
+        })
+    
+    # Validate LiveTrade dataclass (catches field mismatches with live program)
+    validate_live_trade_dataclass(
+        action="BUY",
+        signature=tx_hash,
+        input_token=BASE_TOKEN,
+        output_token=QUOTE_TOKEN,
+        input_amount=base_amount_for_test,
+        output_amount=out_amount,
+        amount=out_amount,  # Tokens received
+        position_size_usd=TEST_AMOUNT_USD,
+        price_usd=base_price,
+    )
+    
     print("\n" + "=" * 60)
     print("BUY TEST COMPLETE")
     print("=" * 60)
@@ -743,9 +890,93 @@ def test_sell_with_private_key():
     except Exception as e:
         print(f"Could not fetch balances: {e}")
     
+    # Log test trade for tax purposes (only if confirmed)
+    if confirmation and confirmation.get("status") == "confirmed":
+        log_test_trade({
+            'id': f"test_sell_{tx_hash[:8]}",
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'action': 'SELL',
+            'pair': f"{BASE_TOKEN}/{QUOTE_TOKEN}",
+            'input_token': QUOTE_TOKEN,
+            'output_token': BASE_TOKEN,
+            'input_amount': quote_amount_for_test,
+            'output_amount': out_amount,
+            'price_usd': quote_price,
+            'transaction': {
+                'signature': tx_hash,
+                'status': 'confirmed',
+                'slot': confirmation.get('slot'),
+                'fee_sol': confirmation.get('fee_sol', 0),
+            },
+        })
+    
+    # Validate LiveTrade dataclass (catches field mismatches with live program)
+    validate_live_trade_dataclass(
+        action="SELL",
+        signature=tx_hash,
+        input_token=QUOTE_TOKEN,
+        output_token=BASE_TOKEN,
+        input_amount=quote_amount_for_test,
+        output_amount=out_amount,
+        amount=quote_amount_for_test,  # Tokens sold
+        position_size_usd=TEST_AMOUNT_USD,
+        price_usd=quote_price,
+    )
+    
     print("\n" + "=" * 60)
     print("SELL TEST COMPLETE")
     print("=" * 60)
+
+
+def validate_livetrade_only():
+    """
+    Dry-run validation of LiveTrade dataclass without executing any swap.
+    
+    This catches field mismatches between test program and live trading code
+    without risking any funds.
+    """
+    print("=" * 60)
+    print("     LIVETRADE DATACLASS VALIDATION (DRY RUN)")
+    print("=" * 60)
+    print("\nThis validates the LiveTrade dataclass matches what the live")
+    print("trading program expects, without executing any real swaps.\n")
+    
+    # Test BUY scenario
+    print("Testing BUY scenario...")
+    buy_ok = validate_live_trade_dataclass(
+        action="BUY",
+        signature="DRY_RUN_TEST_SIGNATURE_1234567890",
+        input_token="USDC",
+        output_token="TEST",
+        input_amount=10.0,
+        output_amount=100.0,
+        amount=100.0,  # Tokens received
+        position_size_usd=10.0,
+        price_usd=0.10,
+    )
+    
+    # Test SELL scenario
+    print("\nTesting SELL scenario...")
+    sell_ok = validate_live_trade_dataclass(
+        action="SELL",
+        signature="DRY_RUN_TEST_SIGNATURE_0987654321",
+        input_token="TEST",
+        output_token="USDC",
+        input_amount=100.0,
+        output_amount=10.0,
+        amount=100.0,  # Tokens sold
+        position_size_usd=10.0,
+        price_usd=0.10,
+    )
+    
+    print("\n" + "=" * 60)
+    if buy_ok and sell_ok:
+        print("✓ ALL VALIDATION PASSED - Safe to run live trading")
+    else:
+        print("✗ VALIDATION FAILED - DO NOT run live trading until fixed")
+    print("=" * 60 + "\n")
+    
+    return buy_ok and sell_ok
 
 
 def parse_args():
@@ -753,6 +984,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Test DEX swap integration")
     parser.add_argument('--pair', type=str, default='SOL/USDC',
                         help='Trading pair in BASE/QUOTE format (default: SOL/USDC)')
+    parser.add_argument('--validate-only', action='store_true',
+                        help='Only validate LiveTrade dataclass without executing swaps')
     return parser.parse_args()
 
 
@@ -815,6 +1048,11 @@ def main():
     # Parse command line args
     args = parse_args()
     
+    # If --validate-only, just run LiveTrade validation without any swaps
+    if args.validate_only:
+        validate_livetrade_only()
+        return
+    
     # Set up pair config
     if not setup_pair_config(args.pair):
         return
@@ -824,10 +1062,13 @@ def main():
     print("Choose test:")
     print(f"  1. BUY test ({BASE_TOKEN} → {QUOTE_TOKEN})")
     print(f"  2. SELL test ({QUOTE_TOKEN} → {BASE_TOKEN})")
-    choice = input("\nChoice (1/2): ").strip()
+    print(f"  3. Validate LiveTrade only (no swap)")
+    choice = input("\nChoice (1/2/3): ").strip()
     
     if choice == "2":
         test_sell_with_private_key()
+    elif choice == "3":
+        validate_livetrade_only()
     else:
         test_with_private_key()
 
