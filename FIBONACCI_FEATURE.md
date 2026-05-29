@@ -383,6 +383,25 @@ def detect_level_interactions(
 
 ---
 
+## CLI Reference
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--symbol` | Symbol(s) to analyze (comma-separated). If omitted, analyzes all symbols in data directory. Required when using `--csv`. | None |
+| `--window` | Analysis time window (e.g., 24h, 7d). Ignored when using `--csv`. | 7d |
+| `--data-dir` | Directory containing price data | ./correlation_data |
+| `--csv` | Load from CSV file (OHLCV format) instead of JSONL. File must be in `--data-dir`. | None |
+| `--touch-tolerance` | Tolerance % for level touch detection | 0.5 |
+| `--confirmation-periods` | Periods to confirm bounce vs breakthrough | 3 |
+| `--min-touches` | Minimum touches to report level as significant | 2 |
+| `--output-format` | Output format: `text` or `json` | text |
+| `--output-file` | Write output to file instead of stdout | None |
+| `--summary-only` | Only show summary table (multi-symbol mode) | false |
+| `--list-symbols` | List available symbols in data directory | false |
+| `--verbose` | Enable verbose logging | false |
+
+---
+
 ## Example Output (MVP)
 
 ```
@@ -421,6 +440,30 @@ Interpretation:
   • Consider these levels for entry/exit planning
 ======================================================================
 ```
+
+### Multi-Symbol Summary Output
+
+When analyzing multiple symbols (e.g., `--symbol SOL,BTC,ETH` or no `--symbol`), a summary table is displayed:
+
+```
+==========================================================================================
+                         FIBONACCI ANALYSIS SUMMARY
+==========================================================================================
+Symbol    Trend   High        Low         Range%    Touches   Effect%   Best Level  
+------------------------------------------------------------------------------------------
+SOL       UP      $185.4200   $142.1800   30.4      14        71.4      38.2%       
+BTC       UP      $68500.0000 $64200.0000 6.7       20        55.0      61.8%       
+ETH       DOWN    $3850.0000  $3200.0000  20.3      18        62.5      50.0%       
+------------------------------------------------------------------------------------------
+Total symbols analyzed: 3
+
+Top Fibonacci responders (>60% effectiveness, >5 touches):
+  • SOL: 71.4% effectiveness at 38.2%
+  • ETH: 62.5% effectiveness at 50.0%
+==========================================================================================
+```
+
+Use `--summary-only` to show only the summary table without individual reports.
 
 ---
 
