@@ -46,9 +46,162 @@ For MVP, the system will generate a report showing:
 4. Statistical significance of each level as support/resistance
 
 ### Non-Goals for MVP
-- Automated trading signals based on Fibonacci levels
+- ~~Automated trading signals based on Fibonacci levels~~ → Now Phase 2
 - Real-time Fibonacci level monitoring
 - Multi-timeframe analysis
+- Continuous Fib re-analysis during trading (future enhancement)
+
+---
+
+## Phase 2: Trading Integration (`--use-fib`)
+
+### Overview
+
+When `--use-fib` is specified in `leading_indicator_tester.py`, Fibonacci analysis will be used to filter and validate trade signals from the leading indicator system.
+
+### Trading Rules
+
+**Rule 1: Trend-Direction Filtering**
+- Trades are only executed in the direction of the Fibonacci trend
+- **Uptrend** (low before high): Only BUY signals are valid
+- **Downtrend** (high before low): Only SELL signals are valid
+
+**Rule 2: Buy Signal Validation (Uptrend Only)**
+- When the leading indicator triggers a BUY signal:
+  - Price must be near the **low point**, OR
+  - Price must be near an **effective support level** (a Fib level below current price with proven bounce history)
+
+**Rule 3: Sell Signal Validation (Downtrend Only)**
+- When the leading indicator triggers a SELL signal:
+  - Price must be near the **high point**, OR
+  - Price must be near an **effective resistance level** (a Fib level above current price with proven bounce history)
+
+**Rule 4: Range Invalidation**
+- If current price moves **outside** the high-low range used for Fib analysis:
+  - The Fib levels are no longer valid
+  - Trading must **halt** with a clear message
+  - Future enhancement: Re-run Fib analysis with new data and continue
+
+### Signal Flow
+
+```
+Leading Indicator Signal
+         │
+         ▼
+   ┌─────────────────┐
+   │ Price in Range? │──NO──► HALT: "Fib analysis invalidated"
+   └────────┬────────┘
+            │ YES
+            ▼
+   ┌─────────────────┐
+   │ Signal matches  │──NO──► SKIP: "Signal against Fib trend"
+   │ Fib trend?      │
+   └────────┬────────┘
+            │ YES
+            ▼
+   ┌─────────────────┐
+   │ Near support/   │──NO──► SKIP: "Not near effective level"
+   │ resistance?     │
+   └────────┬────────┘
+            │ YES
+            ▼
+      EXECUTE TRADE
+```
+
+### CLI Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--use-fib` | Enable Fibonacci-based trade filtering | false |
+| `--fib-window` | Time window for Fib analysis | 7d |
+| `--fib-tolerance` | % tolerance for "near level" detection | 0.5 |
+| `--fib-min-effectiveness` | Min bounce rate to consider level "effective" | 60% |
+| `--fib-min-touches` | Min touches for level to be considered | 2 |
+
+### Example Usage
+
+```bash
+# Paper trading with Fibonacci filtering
+python leading_indicator_tester.py --pair BTC:SOL --use-fib --fib-window 7d
+
+# Live trading with Fib validation
+python leading_indicator_tester.py --pair BTC:SOL --trading-mode live \
+    --use-fib --fib-tolerance 0.75 --fib-min-effectiveness 50
+```
+
+### Resolved Design Decisions
+
+1. **What defines "near" a level?**
+   - ✓ Use same tolerance as touch detection (`--fib-tolerance`, default 0.5%)
+
+2. **What constitutes an "effective" level?**
+   - ✓ Bounce rate >= `--fib-min-effectiveness` (default 60%) AND touches >= `--fib-min-touches` (default 2)
+
+3. **How should range invalidation work?**
+   - ✓ Use touch tolerance for boundary checking (consistent with level detection)
+   - Halt immediately when price crosses boundary + tolerance
+
+4. **When to run the Fib analysis?**
+   - ✓ On startup: Load from Fib Report Cache (see below)
+   - If no cached report exists, run analysis and cache result
+
+5. **Data source for Fib analysis?**
+   - ✓ **Fib Report Cache** - persistent JSON storage for analysis results
+   - Written by: `fibonacci_analyzer.py` (standalone) or `leading_indicator_tester.py --fibonacci-analysis`
+   - Read by: `leading_indicator_tester.py --use-fib`
+
+6. **Interaction with existing `--directional-filter`?**
+   - ✓ Independent filters with AND logic
+   - If filters conflict (e.g., directional=BUY only, fib=downtrend), warn and halt
+   - This is correct behavior - no valid trades possible
+
+7. **Multiple effective levels - which to use?**
+   - ✓ Use ANY level within tolerance that meets effectiveness minimum
+   - Trade is valid if price is near any qualifying level
+
+### Fib Report Cache
+
+A persistent storage mechanism for Fibonacci analysis results.
+
+**Location:** `./correlation_data/fib_reports/`
+
+**File Format:** `{SYMBOL}_fib_report.json`
+
+**Structure:**
+```json
+{
+  "symbol": "SOL",
+  "generated_at": "2026-05-29T19:00:00+00:00",
+  "analysis_window": "7d",
+  "window_start": "2026-05-22T19:00:00+00:00",
+  "window_end": "2026-05-29T19:00:00+00:00",
+  "high_price": 185.42,
+  "high_timestamp": "2026-05-27T14:30:00+00:00",
+  "low_price": 142.18,
+  "low_timestamp": "2026-05-22T03:15:00+00:00",
+  "trend_direction": "up",
+  "levels": {
+    "0.0%": {"ratio": 0.0, "price": 185.42, "touches": 1, "bounces": 0, "effectiveness": null},
+    "23.6%": {"ratio": 0.236, "price": 175.22, "touches": 4, "bounces": 3, "effectiveness": 75.0},
+    ...
+  },
+  "most_respected_level": "78.6%",
+  "overall_effectiveness": 66.7
+}
+```
+
+**Writers:**
+- `fibonacci_analyzer.py` - saves after analysis (with `--save-report` or auto-save)
+- `leading_indicator_tester.py --fibonacci-analysis` - saves after analysis
+
+**Readers:**
+- `leading_indicator_tester.py --use-fib` - loads on startup
+- If cache miss or stale, can run fresh analysis
+
+**Cache Behavior:**
+- Reports are keyed by symbol
+- New analysis overwrites previous report
+- Future: Add `--fib-max-age` to invalidate stale reports
 
 ---
 
@@ -365,21 +518,41 @@ def detect_level_interactions(
 
 ## Implementation Plan
 
-### MVP Tasks
-1. [ ] Create `fibonacci_analyzer.py` module
-2. [ ] Implement `FibonacciLevel` and `FibonacciReport` dataclasses
-3. [ ] Implement high/low detection (Option A: absolute)
-4. [ ] Implement level calculation
-5. [ ] Implement touch/bounce detection
-6. [ ] Create CLI for standalone usage
-7. [ ] Add `--fibonacci-analysis` flag to `leading_indicator_tester.py`
-8. [ ] Generate formatted report output
-9. [ ] Write unit tests
+### MVP Tasks (COMPLETED)
+1. [x] Create `fibonacci_analyzer.py` module
+2. [x] Implement `FibonacciLevel` and `FibonacciReport` dataclasses
+3. [x] Implement high/low detection (Option A: absolute)
+4. [x] Implement level calculation
+5. [x] Implement touch/bounce detection
+6. [x] Create CLI for standalone usage
+7. [x] Add `--fibonacci-analysis` flag to `leading_indicator_tester.py`
+8. [x] Generate formatted report output
+9. [x] Write unit tests
+10. [x] Add CSV OHLCV input support
+11. [x] Add multi-symbol analysis with summary table
+
+### Phase 2 Tasks: Trading Integration
+1. [ ] Implement Fib Report Cache
+   - [ ] Add `save_report()` method to FibonacciAnalyzer
+   - [ ] Add `load_report()` method to FibonacciAnalyzer
+   - [ ] Create `./correlation_data/fib_reports/` directory structure
+   - [ ] Update `fibonacci_analyzer.py` CLI to auto-save reports
+2. [ ] Update `leading_indicator_tester.py --fibonacci-analysis` to save to cache
+3. [ ] Add `--use-fib` flag to `leading_indicator_tester.py`
+4. [ ] Add Fib-related CLI arguments (`--fib-tolerance`, `--fib-min-effectiveness`, etc.)
+5. [ ] Load Fib report from cache on startup when `--use-fib` is specified
+6. [ ] Implement trend-direction filtering (Rule 1)
+7. [ ] Implement support/resistance level validation (Rules 2 & 3)
+8. [ ] Implement range invalidation check (Rule 4)
+9. [ ] Implement conflict detection with `--directional-filter`
+10. [ ] Add Fib context to trade logging
+11. [ ] Write unit tests for trade filtering logic
 
 ### Estimated Effort
-- MVP: 2-3 days
-- Phase 2 (Active Monitoring): 1-2 days
-- Phase 3 (Multi-Timeframe): 2-3 days
+- MVP: 2-3 days ✓ COMPLETED
+- Phase 2 (Trading Integration): 2-3 days
+- Phase 3 (Continuous Re-analysis): 1-2 days
+- Phase 4 (Multi-Timeframe): 2-3 days
 
 ---
 
