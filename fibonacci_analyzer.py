@@ -1,0 +1,835 @@
+#!/usr/bin/env python3
+"""
+Fibonacci Retracement Analysis Module
+
+Analyzes historical price data to identify Fibonacci retracement levels and
+evaluate their effectiveness as support/resistance indicators.
+
+Usage:
+    # Standalone analysis
+    python fibonacci_analyzer.py --symbol SOL --window 7d --granularity 5min \
+        --data-dir ./correlation_data \
+        --confirmation-periods 3 \
+        --touch-tolerance 0.5 \
+        --min-touches 2
+
+    # As a library
+    from fibonacci_analyzer import FibonacciAnalyzer, FibonacciReport
+    analyzer = FibonacciAnalyzer(data_dir='./correlation_data')
+    report = analyzer.analyze('SOL', window_seconds=7*86400)
+"""
+
+import argparse
+import json
+import logging
+import sys
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Time Duration Parsing (shared with correlation_tracker.py)
+# ============================================================================
+
+def parse_duration(value: str, default_unit: str = 'sec') -> int:
+    """
+    Parse a duration string into seconds.
+    
+    Supported formats:
+        - Plain number: interpreted using default_unit (e.g., "30" -> 30 sec or 30 hr)
+        - Number + 's'/'sec'/'secs': seconds (e.g., "30s", "30sec" -> 30)
+        - Number + 'm'/'min'/'mins': minutes (e.g., "5m", "5min" -> 300)
+        - Number + 'h'/'hr'/'hrs'/'hour'/'hours': hours (e.g., "1h", "1hr", "1hour" -> 3600)
+        - Number + 'd'/'day'/'days': days (e.g., "5d", "14days" -> 432000, 1209600)
+    
+    Args:
+        value: Duration string to parse
+        default_unit: Unit to use when no suffix provided ('sec' or 'hr')
+    """
+    if value is None:
+        return None
+    
+    value = str(value).strip().lower()
+    
+    if not value:
+        raise ValueError("Empty duration string")
+    
+    # Parse with unit suffix
+    import re
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*(s|sec|secs|m|min|mins|h|hr|hrs|hour|hours|d|day|days)?$', value)
+    
+    if not match:
+        raise ValueError(f"Invalid duration format: '{value}'. Use formats like: 30s, 5min, 1hr, 72h, 5d, 14days")
+    
+    amount = float(match.group(1))
+    unit = match.group(2)
+    
+    # If no unit specified, use default
+    if not unit:
+        unit = default_unit
+    
+    # Normalize units
+    unit_map = {
+        's': 'sec', 'sec': 'sec', 'secs': 'sec',
+        'm': 'min', 'min': 'min', 'mins': 'min',
+        'h': 'hr', 'hr': 'hr', 'hrs': 'hr', 'hour': 'hr', 'hours': 'hr',
+        'd': 'days', 'day': 'days', 'days': 'days',
+    }
+    unit = unit_map.get(unit, unit)
+    
+    multipliers = {
+        'sec': 1,
+        'min': 60,
+        'hr': 3600,
+        'days': 86400,
+    }
+    
+    return int(amount * multipliers[unit])
+
+
+def format_duration(seconds: int) -> str:
+    """Format seconds into a human-readable duration string."""
+    if seconds >= 86400:
+        days = seconds // 86400
+        remaining = seconds % 86400
+        if remaining >= 3600:
+            hours = remaining // 3600
+            return f"{days}d {hours}h"
+        return f"{days}d"
+    elif seconds >= 3600:
+        hours = seconds // 3600
+        remaining = seconds % 3600
+        if remaining >= 60:
+            mins = remaining // 60
+            return f"{hours}h {mins}m"
+        return f"{hours}h"
+    elif seconds >= 60:
+        mins = seconds // 60
+        remaining = seconds % 60
+        if remaining > 0:
+            return f"{mins}m {remaining}s"
+        return f"{mins}m"
+    else:
+        return f"{seconds}s"
+
+
+# ============================================================================
+# Data Classes
+# ============================================================================
+
+@dataclass
+class PricePoint:
+    """A single price observation."""
+    timestamp: datetime
+    price: float
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'timestamp': self.timestamp.isoformat(),
+            'price': self.price
+        }
+
+
+@dataclass
+class FibonacciLevel:
+    """Statistics for a single Fibonacci level."""
+    ratio: float           # 0.236, 0.382, etc.
+    price: float           # Calculated price at this level
+    touch_count: int = 0   # Number of times price touched this level
+    bounce_count: int = 0  # Number of times price bounced off this level
+    breakthrough_count: int = 0  # Number of times price broke through
+    avg_bounce_magnitude: float = 0.0  # Average % move after bounce
+    bounce_magnitudes: List[float] = field(default_factory=list)  # Individual bounce magnitudes
+    
+    @property
+    def effectiveness(self) -> Optional[float]:
+        """Percentage of touches that resulted in bounces."""
+        if self.touch_count == 0:
+            return None
+        return (self.bounce_count / self.touch_count) * 100
+    
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            'ratio': self.ratio,
+            'price': self.price,
+            'touch_count': self.touch_count,
+            'bounce_count': self.bounce_count,
+            'breakthrough_count': self.breakthrough_count,
+            'effectiveness_pct': self.effectiveness,
+            'avg_bounce_magnitude': self.avg_bounce_magnitude
+        }
+        return result
+
+
+@dataclass
+class FibonacciReport:
+    """Complete Fibonacci analysis report."""
+    symbol: str
+    analysis_window: str
+    window_start: datetime
+    window_end: datetime
+    high_price: float
+    high_timestamp: datetime
+    low_price: float
+    low_timestamp: datetime
+    trend_direction: str   # 'up' if low before high, 'down' if high before low
+    levels: Dict[str, FibonacciLevel]  # keyed by ratio string (e.g., "23.6%")
+    
+    # Summary statistics
+    most_respected_level: Optional[str] = None
+    overall_effectiveness: float = 0.0  # % of touches that resulted in bounces
+    total_touches: int = 0
+    total_bounces: int = 0
+    
+    # Configuration used
+    touch_tolerance_pct: float = 0.5
+    confirmation_periods: int = 3
+    min_touches: int = 2
+    data_points_analyzed: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'symbol': self.symbol,
+            'analysis_window': self.analysis_window,
+            'window_start': self.window_start.isoformat(),
+            'window_end': self.window_end.isoformat(),
+            'high_price': self.high_price,
+            'high_timestamp': self.high_timestamp.isoformat(),
+            'low_price': self.low_price,
+            'low_timestamp': self.low_timestamp.isoformat(),
+            'trend_direction': self.trend_direction,
+            'levels': {k: v.to_dict() for k, v in self.levels.items()},
+            'most_respected_level': self.most_respected_level,
+            'overall_effectiveness': self.overall_effectiveness,
+            'total_touches': self.total_touches,
+            'total_bounces': self.total_bounces,
+            'touch_tolerance_pct': self.touch_tolerance_pct,
+            'confirmation_periods': self.confirmation_periods,
+            'min_touches': self.min_touches,
+            'data_points_analyzed': self.data_points_analyzed
+        }
+
+
+# ============================================================================
+# Data Loader
+# ============================================================================
+
+class DataLoader:
+    """Loads collected price data from JSONL files."""
+
+    def __init__(self, data_dir: str):
+        self.data_dir = Path(data_dir)
+
+    def load_symbol(
+        self,
+        symbol: str,
+        recent_seconds: Optional[int] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> pd.DataFrame:
+        """
+        Load price data for a specific symbol.
+        
+        Args:
+            symbol: Token symbol (e.g., 'SOL', 'BTC')
+            recent_seconds: If provided, only load data from the last N seconds
+            start_date: If provided, only load data after this date
+            end_date: If provided, only load data before this date
+            
+        Returns:
+            DataFrame with columns: timestamp, price (sorted by timestamp)
+        """
+        all_records = []
+        
+        if not self.data_dir.exists():
+            logger.error(f"Data directory does not exist: {self.data_dir}")
+            return pd.DataFrame()
+        
+        # Find all JSONL files
+        jsonl_files = list(self.data_dir.glob('**/*.jsonl'))
+        
+        if not jsonl_files:
+            logger.warning(f"No JSONL files found in {self.data_dir}")
+            return pd.DataFrame()
+        
+        symbol_upper = symbol.upper()
+        
+        for file_path in sorted(jsonl_files):
+            with open(file_path, 'r') as f:
+                for line in f:
+                    try:
+                        record = json.loads(line.strip())
+                        if record.get('symbol', '').upper() == symbol_upper:
+                            all_records.append({
+                                'timestamp': record['timestamp'],
+                                'price': record['price']
+                            })
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        
+        if not all_records:
+            logger.warning(f"No records found for symbol {symbol}")
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(all_records)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        
+        # Apply time filters
+        now = datetime.now(timezone.utc)
+        
+        if recent_seconds:
+            cutoff = now - timedelta(seconds=recent_seconds)
+            df = df[df['timestamp'] >= cutoff]
+        elif start_date or end_date:
+            if start_date:
+                # Ensure timezone-aware comparison
+                if start_date.tzinfo is None:
+                    start_date = start_date.replace(tzinfo=timezone.utc)
+                df = df[df['timestamp'] >= start_date]
+            if end_date:
+                if end_date.tzinfo is None:
+                    end_date = end_date.replace(tzinfo=timezone.utc)
+                df = df[df['timestamp'] <= end_date]
+        
+        return df.reset_index(drop=True)
+
+    def get_available_symbols(self) -> List[str]:
+        """Get list of symbols available in the data directory."""
+        symbols = set()
+        
+        if not self.data_dir.exists():
+            return []
+        
+        jsonl_files = list(self.data_dir.glob('**/*.jsonl'))
+        
+        for file_path in jsonl_files:
+            with open(file_path, 'r') as f:
+                for line in f:
+                    try:
+                        record = json.loads(line.strip())
+                        if 'symbol' in record:
+                            symbols.add(record['symbol'].upper())
+                    except (json.JSONDecodeError, KeyError):
+                        continue
+        
+        return sorted(symbols)
+
+
+# ============================================================================
+# Fibonacci Analyzer
+# ============================================================================
+
+class FibonacciAnalyzer:
+    """
+    Analyzes price data for Fibonacci retracement levels.
+    
+    Standard Fibonacci ratios:
+        0.0%   = 0.000 (High point)
+        23.6%  = 0.236 (Shallow retracement)
+        38.2%  = 0.382 (Common retracement)
+        50.0%  = 0.500 (Midpoint - not Fibonacci, but commonly used)
+        61.8%  = 0.618 (Golden ratio retracement)
+        78.6%  = 0.786 (Deep retracement)
+        100.0% = 1.000 (Low point)
+    """
+    
+    STANDARD_RATIOS = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+    
+    def __init__(
+        self,
+        data_dir: str = './correlation_data',
+        touch_tolerance_pct: float = 0.5,
+        confirmation_periods: int = 3,
+        min_touches: int = 2
+    ):
+        """
+        Initialize the Fibonacci analyzer.
+        
+        Args:
+            data_dir: Directory containing price data JSONL files
+            touch_tolerance_pct: How close price must be to level to count as "touch" (%)
+            confirmation_periods: Number of periods price must stay above/below level
+                                  after touch to confirm bounce vs breakthrough
+            min_touches: Minimum touches to report a level as significant
+        """
+        self.data_dir = data_dir
+        self.data_loader = DataLoader(data_dir)
+        self.touch_tolerance_pct = touch_tolerance_pct
+        self.confirmation_periods = confirmation_periods
+        self.min_touches = min_touches
+    
+    def analyze(
+        self,
+        symbol: str,
+        window_seconds: Optional[int] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        prices: Optional[List[PricePoint]] = None
+    ) -> Optional[FibonacciReport]:
+        """
+        Perform Fibonacci retracement analysis on price data.
+        
+        Args:
+            symbol: Token symbol to analyze
+            window_seconds: Analysis window in seconds (e.g., 7*86400 for 7 days)
+            start_date: Start of analysis window
+            end_date: End of analysis window
+            prices: Optional pre-loaded price data (skips data loading)
+            
+        Returns:
+            FibonacciReport with analysis results, or None if insufficient data
+        """
+        # Load price data
+        if prices is None:
+            df = self.data_loader.load_symbol(
+                symbol,
+                recent_seconds=window_seconds,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if df.empty:
+                logger.error(f"No price data found for {symbol}")
+                return None
+            
+            prices = [
+                PricePoint(timestamp=row['timestamp'].to_pydatetime(), price=row['price'])
+                for _, row in df.iterrows()
+            ]
+        
+        if len(prices) < self.confirmation_periods + 1:
+            logger.error(f"Insufficient data points: {len(prices)} (need at least {self.confirmation_periods + 1})")
+            return None
+        
+        # Step 1: Find swing points (high and low)
+        high_price, high_idx, low_price, low_idx = self._find_swing_points(prices)
+        
+        if high_price is None or low_price is None:
+            logger.error("Could not identify high/low points")
+            return None
+        
+        high_timestamp = prices[high_idx].timestamp
+        low_timestamp = prices[low_idx].timestamp
+        
+        # Determine trend direction
+        trend_direction = 'up' if low_idx < high_idx else 'down'
+        
+        # Step 2: Calculate Fibonacci levels
+        levels = self._calculate_fib_levels(high_price, low_price)
+        
+        # Step 3: Detect touches and bounces
+        self._detect_level_interactions(prices, levels, trend_direction)
+        
+        # Step 4: Calculate summary statistics
+        total_touches = sum(lvl.touch_count for lvl in levels.values())
+        total_bounces = sum(lvl.bounce_count for lvl in levels.values())
+        
+        overall_effectiveness = 0.0
+        if total_touches > 0:
+            overall_effectiveness = (total_bounces / total_touches) * 100
+        
+        # Find most respected level (highest bounce rate with min touches)
+        most_respected = None
+        best_effectiveness = 0.0
+        for key, lvl in levels.items():
+            if lvl.touch_count >= self.min_touches and lvl.effectiveness is not None:
+                if lvl.effectiveness > best_effectiveness:
+                    best_effectiveness = lvl.effectiveness
+                    most_respected = key
+        
+        # Determine window string
+        if window_seconds:
+            window_str = format_duration(window_seconds)
+        elif start_date and end_date:
+            delta = end_date - start_date
+            window_str = format_duration(int(delta.total_seconds()))
+        else:
+            delta = prices[-1].timestamp - prices[0].timestamp
+            window_str = format_duration(int(delta.total_seconds()))
+        
+        return FibonacciReport(
+            symbol=symbol.upper(),
+            analysis_window=window_str,
+            window_start=prices[0].timestamp,
+            window_end=prices[-1].timestamp,
+            high_price=high_price,
+            high_timestamp=high_timestamp,
+            low_price=low_price,
+            low_timestamp=low_timestamp,
+            trend_direction=trend_direction,
+            levels=levels,
+            most_respected_level=most_respected,
+            overall_effectiveness=overall_effectiveness,
+            total_touches=total_touches,
+            total_bounces=total_bounces,
+            touch_tolerance_pct=self.touch_tolerance_pct,
+            confirmation_periods=self.confirmation_periods,
+            min_touches=self.min_touches,
+            data_points_analyzed=len(prices)
+        )
+    
+    def _find_swing_points(
+        self, 
+        prices: List[PricePoint]
+    ) -> Tuple[Optional[float], Optional[int], Optional[float], Optional[int]]:
+        """
+        Find the significant high and low within the price data.
+        
+        Option A (MVP): Absolute high and low in window.
+        
+        Returns:
+            (high_price, high_index, low_price, low_index)
+        """
+        if not prices:
+            return None, None, None, None
+        
+        high_price = prices[0].price
+        high_idx = 0
+        low_price = prices[0].price
+        low_idx = 0
+        
+        for i, pp in enumerate(prices):
+            if pp.price > high_price:
+                high_price = pp.price
+                high_idx = i
+            if pp.price < low_price:
+                low_price = pp.price
+                low_idx = i
+        
+        return high_price, high_idx, low_price, low_idx
+    
+    def _calculate_fib_levels(
+        self,
+        high: float,
+        low: float
+    ) -> Dict[str, FibonacciLevel]:
+        """
+        Calculate Fibonacci retracement levels.
+        
+        Formula: retracement_price = high - (high - low) * ratio
+        
+        Returns:
+            Dictionary of FibonacciLevel objects keyed by ratio string
+        """
+        levels = {}
+        price_range = high - low
+        
+        for ratio in self.STANDARD_RATIOS:
+            price = high - (price_range * ratio)
+            key = f"{ratio * 100:.1f}%"
+            levels[key] = FibonacciLevel(ratio=ratio, price=price)
+        
+        return levels
+    
+    def _detect_level_interactions(
+        self,
+        prices: List[PricePoint],
+        levels: Dict[str, FibonacciLevel],
+        trend_direction: str
+    ):
+        """
+        Detect touches and bounces at Fibonacci levels.
+        
+        A "touch" = price comes within tolerance of level
+        A "bounce" = after touch, price stays on same side of level for N periods
+        A "breakthrough" = after touch, price moves through level and stays for N periods
+        
+        Args:
+            prices: List of price points (sorted by time)
+            levels: Dictionary of Fibonacci levels to analyze
+            trend_direction: 'up' or 'down' - affects interpretation
+        """
+        # Skip the extreme levels (0% and 100%) as they are the high/low points themselves
+        active_levels = {k: v for k, v in levels.items() if k not in ['0.0%', '100.0%']}
+        
+        # Track state for each level
+        in_touch = {k: False for k in active_levels}
+        touch_start_idx = {k: None for k in active_levels}
+        touch_side = {k: None for k in active_levels}  # 'above' or 'below'
+        
+        for i, pp in enumerate(prices):
+            price = pp.price
+            
+            for key, level in active_levels.items():
+                level_price = level.price
+                tolerance = level_price * (self.touch_tolerance_pct / 100)
+                
+                distance = abs(price - level_price)
+                is_within_tolerance = distance <= tolerance
+                is_above = price > level_price
+                is_below = price < level_price
+                
+                if not in_touch[key]:
+                    # Check for new touch
+                    if is_within_tolerance:
+                        in_touch[key] = True
+                        touch_start_idx[key] = i
+                        # Record which side we approached from
+                        if i > 0:
+                            prev_price = prices[i - 1].price
+                            touch_side[key] = 'above' if prev_price > level_price else 'below'
+                        else:
+                            touch_side[key] = 'above' if is_above else 'below'
+                else:
+                    # We're in a touch - check if we've exited
+                    if not is_within_tolerance:
+                        # Touch ended - classify as bounce or breakthrough
+                        periods_in_touch = i - touch_start_idx[key]
+                        
+                        if periods_in_touch >= 1:
+                            level.touch_count += 1
+                            
+                            # Determine outcome based on exit direction
+                            entry_side = touch_side[key]
+                            exit_side = 'above' if is_above else 'below'
+                            
+                            if entry_side == exit_side:
+                                # Bounced back to same side
+                                level.bounce_count += 1
+                                
+                                # Calculate bounce magnitude (how far price moved away)
+                                if i + self.confirmation_periods < len(prices):
+                                    # Look at price after confirmation periods
+                                    future_price = prices[i + self.confirmation_periods].price
+                                    bounce_pct = abs((future_price - level_price) / level_price) * 100
+                                    level.bounce_magnitudes.append(bounce_pct)
+                            else:
+                                # Broke through to other side
+                                level.breakthrough_count += 1
+                        
+                        # Reset touch state
+                        in_touch[key] = False
+                        touch_start_idx[key] = None
+                        touch_side[key] = None
+        
+        # Calculate average bounce magnitudes
+        for level in active_levels.values():
+            if level.bounce_magnitudes:
+                level.avg_bounce_magnitude = sum(level.bounce_magnitudes) / len(level.bounce_magnitudes)
+
+
+# ============================================================================
+# Report Formatter
+# ============================================================================
+
+def format_report(report: FibonacciReport) -> str:
+    """Format a FibonacciReport as a human-readable string."""
+    lines = []
+    
+    lines.append("=" * 70)
+    lines.append("                    FIBONACCI RETRACEMENT ANALYSIS")
+    lines.append("=" * 70)
+    lines.append(f"Symbol: {report.symbol}")
+    lines.append(f"Analysis Window: {report.analysis_window} ({report.window_start.strftime('%Y-%m-%d')} to {report.window_end.strftime('%Y-%m-%d')})")
+    lines.append(f"Trend Direction: {report.trend_direction.upper()}TREND ({'low before high' if report.trend_direction == 'up' else 'high before low'})")
+    lines.append(f"Data Points Analyzed: {report.data_points_analyzed}")
+    lines.append("")
+    lines.append("Price Range:")
+    lines.append(f"  High: ${report.high_price:.4f} ({report.high_timestamp.strftime('%Y-%m-%d %H:%M')} UTC)")
+    lines.append(f"  Low:  ${report.low_price:.4f} ({report.low_timestamp.strftime('%Y-%m-%d %H:%M')} UTC)")
+    price_range = report.high_price - report.low_price
+    range_pct = (price_range / report.low_price) * 100 if report.low_price > 0 else 0
+    lines.append(f"  Range: ${price_range:.4f} ({range_pct:.1f}%)")
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("                         FIBONACCI LEVELS")
+    lines.append("-" * 70)
+    lines.append(f"{'Level':<10}{'Price':<14}{'Touches':<10}{'Bounces':<10}{'Break':<12}{'Effectiveness':<14}")
+    lines.append("-" * 70)
+    
+    for key in ['0.0%', '23.6%', '38.2%', '50.0%', '61.8%', '78.6%', '100.0%']:
+        level = report.levels.get(key)
+        if level:
+            if key == '0.0%':
+                eff_str = "(High)"
+            elif key == '100.0%':
+                eff_str = "(Low)"
+            elif level.effectiveness is not None:
+                eff_str = f"{level.effectiveness:.1f}%"
+            else:
+                eff_str = "-"
+            
+            touch_str = str(level.touch_count) if level.touch_count > 0 else "-"
+            bounce_str = str(level.bounce_count) if level.bounce_count > 0 else "-"
+            break_str = str(level.breakthrough_count) if level.breakthrough_count > 0 else "-"
+            
+            lines.append(f"{key:<10}${level.price:<13.4f}{touch_str:<10}{bounce_str:<10}{break_str:<12}{eff_str:<14}")
+    
+    lines.append("-" * 70)
+    lines.append("")
+    
+    # Summary
+    if report.most_respected_level:
+        level = report.levels[report.most_respected_level]
+        lines.append(f"Most Respected Level: {report.most_respected_level} (${level.price:.4f}) - {level.effectiveness:.1f}% bounce rate")
+    else:
+        lines.append("Most Respected Level: (insufficient touches to determine)")
+    
+    lines.append(f"Overall Effectiveness: {report.overall_effectiveness:.1f}% ({report.total_bounces}/{report.total_touches} touches resulted in bounces)")
+    lines.append("")
+    
+    # Interpretation
+    lines.append("Interpretation:")
+    
+    # Find strong support/resistance zones
+    significant_levels = [
+        (k, v) for k, v in report.levels.items() 
+        if v.touch_count >= report.min_touches and v.effectiveness is not None and v.effectiveness >= 60
+    ]
+    
+    if significant_levels:
+        # Sort by price
+        significant_levels.sort(key=lambda x: x[1].price, reverse=True)
+        
+        if len(significant_levels) >= 2:
+            high_lvl = significant_levels[0]
+            low_lvl = significant_levels[-1]
+            lines.append(f"  • Strong support/resistance zone: {low_lvl[0]}-{high_lvl[0]} (${low_lvl[1].price:.2f}-${high_lvl[1].price:.2f})")
+        else:
+            lvl = significant_levels[0]
+            zone_type = "resistance" if report.trend_direction == 'up' else "support"
+            lines.append(f"  • Key {zone_type} level: {lvl[0]} (${lvl[1].price:.2f})")
+    
+    # Find weak levels
+    weak_levels = [
+        (k, v) for k, v in report.levels.items()
+        if v.touch_count >= report.min_touches and v.effectiveness is not None and v.effectiveness < 50
+    ]
+    
+    for key, level in weak_levels:
+        lines.append(f"  • {key} level showed weakness (more breakthroughs than bounces)")
+    
+    if significant_levels:
+        lines.append("  • Consider these levels for entry/exit planning")
+    else:
+        lines.append("  • No levels met significance criteria (try adjusting --min-touches)")
+    
+    lines.append("=" * 70)
+    
+    return "\n".join(lines)
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Fibonacci Retracement Analysis - Analyze price data for Fib levels',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Analyze SOL for the last 7 days
+  python fibonacci_analyzer.py --symbol SOL --window 7d
+  
+  # With custom tolerance and confirmation
+  python fibonacci_analyzer.py --symbol BTC --window 24h --touch-tolerance 0.3 --confirmation-periods 5
+  
+  # Output as JSON
+  python fibonacci_analyzer.py --symbol ETH --window 3d --output-format json
+  
+  # List available symbols
+  python fibonacci_analyzer.py --list-symbols
+        """
+    )
+    
+    parser.add_argument('--symbol', type=str,
+                        help='Token symbol to analyze (e.g., SOL, BTC, ETH)')
+    parser.add_argument('--window', type=str, default='7d',
+                        help='Analysis window (e.g., 24h, 7d, 14days). Default: 7d')
+    parser.add_argument('--data-dir', type=str, default='./correlation_data',
+                        help='Directory containing price data (default: ./correlation_data)')
+    
+    # Analysis parameters
+    parser.add_argument('--touch-tolerance', type=float, default=0.5,
+                        help='Tolerance %% for level touch detection (default: 0.5)')
+    parser.add_argument('--confirmation-periods', type=int, default=3,
+                        help='Periods to confirm bounce vs breakthrough (default: 3)')
+    parser.add_argument('--min-touches', type=int, default=2,
+                        help='Minimum touches to report level as significant (default: 2)')
+    
+    # Output options
+    parser.add_argument('--output-format', type=str, default='text',
+                        choices=['text', 'json'],
+                        help='Output format (default: text)')
+    parser.add_argument('--output-file', type=str,
+                        help='Write output to file instead of stdout')
+    
+    # Utility options
+    parser.add_argument('--list-symbols', action='store_true',
+                        help='List available symbols in data directory')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable verbose logging')
+    
+    args = parser.parse_args()
+    
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Handle --list-symbols
+    if args.list_symbols:
+        loader = DataLoader(args.data_dir)
+        symbols = loader.get_available_symbols()
+        if symbols:
+            print("Available symbols:")
+            for sym in symbols:
+                print(f"  - {sym}")
+        else:
+            print(f"No data found in {args.data_dir}")
+        return
+    
+    # Require --symbol for analysis
+    if not args.symbol:
+        parser.error("--symbol is required for analysis")
+    
+    # Parse window
+    try:
+        window_seconds = parse_duration(args.window)
+    except ValueError as e:
+        parser.error(f"Invalid --window: {e}")
+    
+    # Run analysis
+    analyzer = FibonacciAnalyzer(
+        data_dir=args.data_dir,
+        touch_tolerance_pct=args.touch_tolerance,
+        confirmation_periods=args.confirmation_periods,
+        min_touches=args.min_touches
+    )
+    
+    report = analyzer.analyze(args.symbol, window_seconds=window_seconds)
+    
+    if report is None:
+        print(f"Error: Could not generate report for {args.symbol}")
+        print(f"Check that data exists in {args.data_dir}")
+        sys.exit(1)
+    
+    # Format output
+    if args.output_format == 'json':
+        output = json.dumps(report.to_dict(), indent=2, default=str)
+    else:
+        output = format_report(report)
+    
+    # Write output
+    if args.output_file:
+        with open(args.output_file, 'w') as f:
+            f.write(output)
+        print(f"Report written to {args.output_file}")
+    else:
+        print(output)
+
+
+if __name__ == '__main__':
+    main()

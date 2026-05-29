@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""
+Unit tests for Fibonacci Retracement Analyzer.
+
+Tests:
+- Swing point detection (high/low finding)
+- Fibonacci level calculation
+- Touch/bounce detection
+- Report generation
+"""
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from fibonacci_analyzer import (
+    FibonacciAnalyzer,
+    FibonacciLevel,
+    FibonacciReport,
+    PricePoint,
+    DataLoader,
+    parse_duration,
+    format_duration,
+    format_report,
+)
+
+
+class TestParseDuration(unittest.TestCase):
+    """Test duration parsing utility."""
+    
+    def test_seconds(self):
+        self.assertEqual(parse_duration('30'), 30)
+        self.assertEqual(parse_duration('30s'), 30)
+        self.assertEqual(parse_duration('30sec'), 30)
+        self.assertEqual(parse_duration('30secs'), 30)
+    
+    def test_minutes(self):
+        self.assertEqual(parse_duration('5m'), 300)
+        self.assertEqual(parse_duration('5min'), 300)
+        self.assertEqual(parse_duration('5mins'), 300)
+    
+    def test_hours(self):
+        self.assertEqual(parse_duration('1h'), 3600)
+        self.assertEqual(parse_duration('1hr'), 3600)
+        self.assertEqual(parse_duration('1hrs'), 3600)
+        self.assertEqual(parse_duration('1hour'), 3600)
+        self.assertEqual(parse_duration('1hours'), 3600)
+        self.assertEqual(parse_duration('24h'), 86400)
+    
+    def test_days(self):
+        self.assertEqual(parse_duration('1d'), 86400)
+        self.assertEqual(parse_duration('1day'), 86400)
+        self.assertEqual(parse_duration('7days'), 604800)
+    
+    def test_default_unit(self):
+        self.assertEqual(parse_duration('30', default_unit='sec'), 30)
+        self.assertEqual(parse_duration('30', default_unit='hr'), 108000)
+    
+    def test_invalid_format(self):
+        with self.assertRaises(ValueError):
+            parse_duration('invalid')
+        with self.assertRaises(ValueError):
+            parse_duration('')
+
+
+class TestFormatDuration(unittest.TestCase):
+    """Test duration formatting utility."""
+    
+    def test_seconds(self):
+        self.assertEqual(format_duration(30), '30s')
+    
+    def test_minutes(self):
+        self.assertEqual(format_duration(60), '1m')
+        self.assertEqual(format_duration(90), '1m 30s')
+        self.assertEqual(format_duration(300), '5m')
+    
+    def test_hours(self):
+        self.assertEqual(format_duration(3600), '1h')
+        self.assertEqual(format_duration(5400), '1h 30m')
+    
+    def test_days(self):
+        self.assertEqual(format_duration(86400), '1d')
+        self.assertEqual(format_duration(90000), '1d 1h')
+        self.assertEqual(format_duration(604800), '7d')
+
+
+class TestFibonacciLevel(unittest.TestCase):
+    """Test FibonacciLevel dataclass."""
+    
+    def test_effectiveness_no_touches(self):
+        level = FibonacciLevel(ratio=0.5, price=100.0)
+        self.assertIsNone(level.effectiveness)
+    
+    def test_effectiveness_with_touches(self):
+        level = FibonacciLevel(ratio=0.5, price=100.0, touch_count=10, bounce_count=7)
+        self.assertEqual(level.effectiveness, 70.0)
+    
+    def test_to_dict(self):
+        level = FibonacciLevel(
+            ratio=0.618,
+            price=87.64,
+            touch_count=5,
+            bounce_count=3,
+            breakthrough_count=2,
+            avg_bounce_magnitude=1.5
+        )
+        d = level.to_dict()
+        self.assertEqual(d['ratio'], 0.618)
+        self.assertEqual(d['price'], 87.64)
+        self.assertEqual(d['touch_count'], 5)
+        self.assertEqual(d['effectiveness_pct'], 60.0)
+
+
+class TestFibonacciAnalyzer(unittest.TestCase):
+    """Test FibonacciAnalyzer core functionality."""
+    
+    def setUp(self):
+        """Set up test analyzer."""
+        self.analyzer = FibonacciAnalyzer(
+            data_dir='./test_data',  # Won't be used in these tests
+            touch_tolerance_pct=0.5,
+            confirmation_periods=3,
+            min_touches=2
+        )
+    
+    def test_calculate_fib_levels(self):
+        """Test Fibonacci level calculation."""
+        levels = self.analyzer._calculate_fib_levels(high=100.0, low=80.0)
+        
+        # Check all standard levels are present
+        self.assertIn('0.0%', levels)
+        self.assertIn('23.6%', levels)
+        self.assertIn('38.2%', levels)
+        self.assertIn('50.0%', levels)
+        self.assertIn('61.8%', levels)
+        self.assertIn('78.6%', levels)
+        self.assertIn('100.0%', levels)
+        
+        # Verify calculations: retracement_price = high - (high - low) * ratio
+        # Range = 20
+        self.assertAlmostEqual(levels['0.0%'].price, 100.0, places=4)
+        self.assertAlmostEqual(levels['23.6%'].price, 100 - (20 * 0.236), places=4)  # 95.28
+        self.assertAlmostEqual(levels['38.2%'].price, 100 - (20 * 0.382), places=4)  # 92.36
+        self.assertAlmostEqual(levels['50.0%'].price, 90.0, places=4)
+        self.assertAlmostEqual(levels['61.8%'].price, 100 - (20 * 0.618), places=4)  # 87.64
+        self.assertAlmostEqual(levels['78.6%'].price, 100 - (20 * 0.786), places=4)  # 84.28
+        self.assertAlmostEqual(levels['100.0%'].price, 80.0, places=4)
+    
+    def test_find_swing_points(self):
+        """Test high/low point detection."""
+        prices = [
+            PricePoint(timestamp=datetime.now(timezone.utc) - timedelta(hours=5), price=100.0),
+            PricePoint(timestamp=datetime.now(timezone.utc) - timedelta(hours=4), price=90.0),
+            PricePoint(timestamp=datetime.now(timezone.utc) - timedelta(hours=3), price=80.0),  # Low
+            PricePoint(timestamp=datetime.now(timezone.utc) - timedelta(hours=2), price=95.0),
+            PricePoint(timestamp=datetime.now(timezone.utc) - timedelta(hours=1), price=120.0),  # High
+            PricePoint(timestamp=datetime.now(timezone.utc), price=110.0),
+        ]
+        
+        high, high_idx, low, low_idx = self.analyzer._find_swing_points(prices)
+        
+        self.assertEqual(high, 120.0)
+        self.assertEqual(high_idx, 4)
+        self.assertEqual(low, 80.0)
+        self.assertEqual(low_idx, 2)
+    
+    def test_find_swing_points_empty(self):
+        """Test swing point detection with empty list."""
+        high, high_idx, low, low_idx = self.analyzer._find_swing_points([])
+        self.assertIsNone(high)
+        self.assertIsNone(low)
+    
+    def test_analyze_with_price_data(self):
+        """Test full analysis with provided price data."""
+        # Create price data that clearly bounces off a Fib level
+        base_time = datetime.now(timezone.utc) - timedelta(hours=10)
+        prices = []
+        
+        # Create a swing: start at 100, go down to 80, back up
+        # Then test touch at 38.2% level (92.36 for high=100, low=80)
+        price_sequence = [
+            100.0,  # Start
+            95.0,
+            90.0,
+            85.0,
+            80.0,   # Low point
+            82.0,
+            85.0,
+            88.0,
+            92.0,   # Approaching 38.2% level (~92.36)
+            92.3,   # Touch the level
+            91.5,   # Bounce back
+            90.0,
+            91.0,
+            92.5,   # Another approach
+            92.3,   # Touch again
+            91.0,   # Bounce again
+            90.5,
+            91.0,
+        ]
+        
+        for i, price in enumerate(price_sequence):
+            prices.append(PricePoint(
+                timestamp=base_time + timedelta(minutes=i * 30),
+                price=price
+            ))
+        
+        report = self.analyzer.analyze('TEST', prices=prices)
+        
+        self.assertIsNotNone(report)
+        self.assertEqual(report.symbol, 'TEST')
+        self.assertEqual(report.high_price, 100.0)
+        self.assertEqual(report.low_price, 80.0)
+        self.assertEqual(report.trend_direction, 'down')  # High at index 0 comes before low at index 4
+        self.assertEqual(report.data_points_analyzed, len(prices))
+    
+    def test_analyze_downtrend(self):
+        """Test analysis detects downtrend correctly."""
+        base_time = datetime.now(timezone.utc) - timedelta(hours=5)
+        prices = [
+            PricePoint(timestamp=base_time, price=100.0),  # High first
+            PricePoint(timestamp=base_time + timedelta(hours=1), price=95.0),
+            PricePoint(timestamp=base_time + timedelta(hours=2), price=90.0),
+            PricePoint(timestamp=base_time + timedelta(hours=3), price=85.0),
+            PricePoint(timestamp=base_time + timedelta(hours=4), price=80.0),  # Low last
+        ]
+        
+        report = self.analyzer.analyze('TEST', prices=prices)
+        
+        self.assertIsNotNone(report)
+        self.assertEqual(report.trend_direction, 'down')  # High came before low
+
+
+class TestDataLoader(unittest.TestCase):
+    """Test DataLoader with synthetic JSONL data."""
+    
+    def setUp(self):
+        """Create temporary directory with test data."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.data_dir = Path(self.temp_dir) / 'test_data'
+        self.data_dir.mkdir(parents=True)
+        
+        # Create date subdirectory
+        date_dir = self.data_dir / '2026-01-01'
+        date_dir.mkdir()
+        
+        # Create JSONL file with test records
+        jsonl_file = date_dir / 'prices_00-06.jsonl'
+        
+        base_time = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        records = []
+        
+        for i in range(10):
+            timestamp = base_time + timedelta(minutes=i * 30)
+            records.append({
+                'symbol': 'TEST',
+                'timestamp': timestamp.isoformat(),
+                'source': 'test',
+                'price': 100.0 + i,  # 100, 101, 102, ...
+            })
+            records.append({
+                'symbol': 'OTHER',
+                'timestamp': timestamp.isoformat(),
+                'source': 'test',
+                'price': 50.0 + i,
+            })
+        
+        with open(jsonl_file, 'w') as f:
+            for record in records:
+                f.write(json.dumps(record) + '\n')
+        
+        self.loader = DataLoader(str(self.data_dir))
+    
+    def tearDown(self):
+        """Clean up temporary directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir)
+    
+    def test_load_symbol(self):
+        """Test loading data for a specific symbol."""
+        df = self.loader.load_symbol('TEST')
+        
+        self.assertEqual(len(df), 10)
+        self.assertEqual(df['price'].iloc[0], 100.0)
+        self.assertEqual(df['price'].iloc[9], 109.0)
+    
+    def test_load_symbol_case_insensitive(self):
+        """Test symbol matching is case-insensitive."""
+        df = self.loader.load_symbol('test')
+        self.assertEqual(len(df), 10)
+        
+        df = self.loader.load_symbol('Test')
+        self.assertEqual(len(df), 10)
+    
+    def test_load_symbol_not_found(self):
+        """Test loading non-existent symbol returns empty DataFrame."""
+        df = self.loader.load_symbol('NOTFOUND')
+        self.assertTrue(df.empty)
+    
+    def test_get_available_symbols(self):
+        """Test listing available symbols."""
+        symbols = self.loader.get_available_symbols()
+        self.assertIn('TEST', symbols)
+        self.assertIn('OTHER', symbols)
+        self.assertEqual(len(symbols), 2)
+
+
+class TestFormatReport(unittest.TestCase):
+    """Test report formatting."""
+    
+    def test_format_report_basic(self):
+        """Test basic report formatting."""
+        report = FibonacciReport(
+            symbol='SOL',
+            analysis_window='7d',
+            window_start=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            window_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+            high_price=185.42,
+            high_timestamp=datetime(2026, 5, 27, 14, 30, tzinfo=timezone.utc),
+            low_price=142.18,
+            low_timestamp=datetime(2026, 5, 22, 3, 15, tzinfo=timezone.utc),
+            trend_direction='up',
+            levels={
+                '0.0%': FibonacciLevel(ratio=0.0, price=185.42, touch_count=1),
+                '23.6%': FibonacciLevel(ratio=0.236, price=175.22, touch_count=4, bounce_count=3, breakthrough_count=1),
+                '38.2%': FibonacciLevel(ratio=0.382, price=168.90, touch_count=7, bounce_count=5, breakthrough_count=2),
+                '50.0%': FibonacciLevel(ratio=0.5, price=163.80, touch_count=5, bounce_count=2, breakthrough_count=3),
+                '61.8%': FibonacciLevel(ratio=0.618, price=158.70, touch_count=3, bounce_count=2, breakthrough_count=1),
+                '78.6%': FibonacciLevel(ratio=0.786, price=151.42, touch_count=2, bounce_count=2, breakthrough_count=0),
+                '100.0%': FibonacciLevel(ratio=1.0, price=142.18, touch_count=1),
+            },
+            most_respected_level='78.6%',
+            overall_effectiveness=66.7,
+            total_touches=21,
+            total_bounces=14,
+            data_points_analyzed=2000
+        )
+        
+        output = format_report(report)
+        
+        # Check key elements are present
+        self.assertIn('FIBONACCI RETRACEMENT ANALYSIS', output)
+        self.assertIn('SOL', output)
+        self.assertIn('UPTREND', output)
+        self.assertIn('185.42', output)  # High price
+        self.assertIn('142.18', output)  # Low price
+        self.assertIn('78.6%', output)   # Most respected level
+        self.assertIn('66.7%', output)   # Overall effectiveness
+
+
+class TestIntegration(unittest.TestCase):
+    """Integration tests for complete workflows."""
+    
+    def test_full_analysis_pipeline(self):
+        """Test complete analysis from price data to formatted report."""
+        analyzer = FibonacciAnalyzer(
+            data_dir='./test_data',
+            touch_tolerance_pct=1.0,  # Wider tolerance for test
+            confirmation_periods=2,
+            min_touches=1
+        )
+        
+        # Create realistic price data
+        base_time = datetime.now(timezone.utc) - timedelta(days=7)
+        prices = []
+        
+        # Simulate a price swing from 100 to 80 and back up
+        import math
+        for i in range(200):
+            t = i / 200.0  # 0 to 1
+            # Create a wave pattern: down then up
+            if t < 0.3:
+                price = 100 - (20 * t / 0.3)  # 100 → 80
+            elif t < 0.6:
+                price = 80 + (30 * (t - 0.3) / 0.3)  # 80 → 110
+            else:
+                price = 110 - (10 * (t - 0.6) / 0.4)  # 110 → 100
+            
+            # Add some noise
+            price += math.sin(i * 0.3) * 2
+            
+            prices.append(PricePoint(
+                timestamp=base_time + timedelta(hours=i),
+                price=price
+            ))
+        
+        report = analyzer.analyze('TEST', prices=prices)
+        
+        self.assertIsNotNone(report)
+        self.assertEqual(report.symbol, 'TEST')
+        self.assertEqual(len(report.levels), 7)  # All standard Fib levels
+        
+        # Verify report can be serialized
+        report_dict = report.to_dict()
+        self.assertIn('symbol', report_dict)
+        self.assertIn('levels', report_dict)
+        
+        # Verify report can be formatted
+        formatted = format_report(report)
+        self.assertIsInstance(formatted, str)
+        self.assertIn('TEST', formatted)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from coingeckoutil import get_multiple_prices, get_coingecko_price
 from preflight import PreflightValidator, PreflightResult, run_preflight
+from fibonacci_analyzer import FibonacciAnalyzer, format_report as format_fib_report
 
 # Supported exchanges for price fetching
 SUPPORTED_EXCHANGES = ['coingecko', 'jupiter', 'coinbase']
@@ -3217,6 +3218,18 @@ Examples:
                         choices=['trustwallet', 'local'],
                         help='Wallet backend: trustwallet (default, recommended) or local (legacy, has key format issues)')
     
+    # Fibonacci analysis options
+    parser.add_argument('--fibonacci-analysis', action='store_true',
+                        help='Run Fibonacci retracement analysis on the follower coin before trading')
+    parser.add_argument('--fib-window', type=str, default='7d',
+                        help='Analysis window for Fibonacci levels (default: 7d)')
+    parser.add_argument('--fib-confirmation-periods', type=int, default=3,
+                        help='Periods to confirm bounce vs breakthrough (default: 3)')
+    parser.add_argument('--fib-touch-tolerance', type=float, default=0.5,
+                        help='Tolerance %% for Fibonacci level touch detection (default: 0.5)')
+    parser.add_argument('--fib-min-touches', type=int, default=2,
+                        help='Minimum touches to report a Fibonacci level as significant (default: 2)')
+    
     args = parser.parse_args()
     
     # Set logging level early
@@ -3379,6 +3392,51 @@ Examples:
         print(f"\nCreate a discovery report first using:")
         print(f"  python correlation_tracker.py --analyze --data-dir ./correlation_data")
         sys.exit(1)
+    
+    # ==================== FIBONACCI ANALYSIS ====================
+    if args.fibonacci_analysis:
+        print("\n" + "=" * 70)
+        print("                    FIBONACCI RETRACEMENT ANALYSIS")
+        print("=" * 70)
+        
+        try:
+            # Parse Fibonacci window
+            from fibonacci_analyzer import parse_duration as fib_parse_duration
+            fib_window_seconds = fib_parse_duration(args.fib_window)
+        except ValueError as e:
+            parser.error(f"Invalid --fib-window: {e}")
+        
+        # Run Fibonacci analysis on the follower coin
+        fib_analyzer = FibonacciAnalyzer(
+            data_dir='./correlation_data',
+            touch_tolerance_pct=args.fib_touch_tolerance,
+            confirmation_periods=args.fib_confirmation_periods,
+            min_touches=args.fib_min_touches
+        )
+        
+        fib_report = fib_analyzer.analyze(follower, window_seconds=fib_window_seconds)
+        
+        if fib_report:
+            print(format_fib_report(fib_report))
+            print("")
+            
+            # Show significant levels as potential entry/exit points
+            significant_levels = [
+                (k, v) for k, v in fib_report.levels.items()
+                if v.touch_count >= args.fib_min_touches 
+                and v.effectiveness is not None 
+                and v.effectiveness >= 60
+            ]
+            
+            if significant_levels:
+                print("Key Fibonacci levels for trading consideration:")
+                for key, level in sorted(significant_levels, key=lambda x: x[1].price, reverse=True):
+                    print(f"  • {key}: ${level.price:.4f} ({level.effectiveness:.1f}% bounce rate)")
+                print("")
+        else:
+            print(f"Warning: Could not generate Fibonacci report for {follower}")
+            print("Continuing without Fibonacci analysis...")
+            print("")
     
     # ==================== LIVE MODE PREFLIGHT ====================
     if args.trading_mode == 'live':
