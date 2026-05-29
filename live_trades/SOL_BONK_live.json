@@ -1,0 +1,107 @@
+{
+  "pair": "SOL:BONK",
+  "wallet": "FU8PNVhhNhAN7vjUnb7YpLuXnSY5WoZM9kNnSyqDg22t",
+  "trades": [
+    {
+      "id": "lt_20260528_074403_001",
+      "timestamp": "2026-05-28T07:44:03.950295+00:00",
+      "type": "live",
+      "pair": "SOL:BONK",
+      "action": "BUY",
+      "follower": "BONK",
+      "input_token": "USDC",
+      "output_token": "BONK",
+      "input_amount": 10.0,
+      "output_amount": 1822485.19909,
+      "amount": 0.0,
+      "position_size_usd": 0.0,
+      "output_amount_actual": 1822485.1990890503,
+      "price_usd": 5.487013011130725e-06,
+      "slippage_bps": 100,
+      "slippage_actual_bps": 0,
+      "trigger": {
+        "leader": "SOL",
+        "direction": "rise",
+        "change_pct": 0.7206759443339938,
+        "leader_price": 81.06
+      },
+      "timing": {
+        "signal_time": "2026-05-28T07:44:03.718462+00:00",
+        "execution_time": "2026-05-28T07:44:03.718877+00:00",
+        "wait_seconds": 0
+      },
+      "transaction": {
+        "signature": "bgRVrgYht2BHvgEsPKe2BWRgCW6xbns2qHGY81xzgNQtSA1DjF6fP8DFninBzVDUUfY9PX9QkXgn2aNxs1ARABn",
+        "status": "confirmed",
+        "price_impact_pct": 0.0,
+        "quoted_output": 1822485.19909,
+        "actual_output": 1822485.1990890503,
+        "slippage_actual_bps": 0,
+        "fee_sol": 5e-06
+      },
+      "outcome": null
+    },
+    {
+      "id": "lt_20260529_155120_002",
+      "timestamp": "2026-05-29T15:51:20.506494+00:00",
+      "type": "live",
+      "pair": "SOL:BONK",
+      "action": "BUY",
+      "follower": "BONK",
+      "input_token": "USDC",
+      "output_token": "BONK",
+      "input_amount": 10.0,
+      "output_amount": 1800992.85038,
+      "amount": 1800992.85038,
+      "position_size_usd": 10.0,
+      "output_amount_actual": 1801143.0772323608,
+      "price_usd": 5.552492891845769e-06,
+      "slippage_bps": 100,
+      "slippage_actual_bps": 0,
+      "trigger": {
+        "leader": "SOL",
+        "direction": "rise",
+        "change_pct": 2.1321432998636403,
+        "leader_price": 82.39
+      },
+      "timing": {
+        "signal_time": "2026-05-29T15:51:20.026539+00:00",
+        "execution_time": "2026-05-29T15:51:20.026881+00:00",
+        "wait_seconds": 0
+      },
+      "transaction": {
+        "signature": "5mRs28f8CCzn7BGfAnvufpc14xNL5rB8oT3yzk8xX89UFLzt3J6SHq6APLJrwkCr2Z1wuMstfgnEHGsfLawDHdQ7",
+        "status": "confirmed",
+        "price_impact_pct": 0.000508078257416606,
+        "quoted_output": 1800992.85038,
+        "actual_output": 1801143.0772323608,
+        "slippage_actual_bps": 0,
+        "fee_sol": 1.9e-05
+      },
+      "outcome": null
+    }
+  ],
+  "summary": {
+    "total_trades": 2,
+    "buys": 2,
+    "sells": 0,
+    "total_bought_usd": 20.0,
+    "total_sold_usd": 0,
+    "total_tokens_bought": 3623478.04947,
+    "total_tokens_sold": 0,
+    "avg_buy_price_usd": 6e-06,
+    "avg_sell_price_usd": 0,
+    "realized_pnl_usd": 0,
+    "tokens_held": 3623478.04947,
+    "unrealized_cost_basis_usd": 20.0,
+    "net_cash_flow_usd": -20.0,
+    "slippage_tracked_trades": 2,
+    "avg_slippage_bps": 0.0,
+    "max_slippage_bps": 0,
+    "min_slippage_bps": 0,
+    "trades_exceeded_tolerance": 0,
+    "tx_confirmed": 2,
+    "tx_failed": 0,
+    "tx_unconfirmed": 0
+  }
+}

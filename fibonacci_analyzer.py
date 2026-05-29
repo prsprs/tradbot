@@ -327,6 +327,68 @@ class DataLoader:
         
         return sorted(symbols)
 
+    def load_csv(self, csv_filename: str) -> pd.DataFrame:
+        """
+        Load price data from a CSV file with OHLCV format.
+        
+        Expected CSV format:
+            - First column: timestamp (auto-detected, any name)
+            - Must have 'Close' column for price data
+            - Optional: Open, High, Low, Volume columns
+        
+        Args:
+            csv_filename: Name of CSV file (located in data_dir)
+            
+        Returns:
+            DataFrame with columns: timestamp, price (sorted by timestamp)
+        """
+        csv_path = self.data_dir / csv_filename
+        
+        if not csv_path.exists():
+            logger.error(f"CSV file not found: {csv_path}")
+            return pd.DataFrame()
+        
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as e:
+            logger.error(f"Failed to read CSV file: {e}")
+            return pd.DataFrame()
+        
+        if df.empty:
+            logger.warning(f"CSV file is empty: {csv_path}")
+            return pd.DataFrame()
+        
+        # Auto-detect timestamp column (first column)
+        timestamp_col = df.columns[0]
+        logger.debug(f"Using '{timestamp_col}' as timestamp column")
+        
+        # Find Close column (case-insensitive)
+        close_col = None
+        for col in df.columns:
+            if col.lower() == 'close':
+                close_col = col
+                break
+        
+        if close_col is None:
+            logger.error(f"CSV must have a 'Close' column. Found columns: {list(df.columns)}")
+            return pd.DataFrame()
+        
+        # Create standardized DataFrame
+        result = pd.DataFrame({
+            'timestamp': pd.to_datetime(df[timestamp_col]),
+            'price': pd.to_numeric(df[close_col], errors='coerce')
+        })
+        
+        # Remove any rows with invalid data
+        result = result.dropna()
+        
+        # Sort by timestamp
+        result = result.sort_values('timestamp').reset_index(drop=True)
+        
+        logger.info(f"Loaded {len(result)} price points from CSV: {csv_filename}")
+        
+        return result
+
 
 # ============================================================================
 # Fibonacci Analyzer
@@ -722,6 +784,46 @@ def format_report(report: FibonacciReport) -> str:
     return "\n".join(lines)
 
 
+def format_summary_table(reports: List[FibonacciReport]) -> str:
+    """Format a summary table for multiple symbol reports."""
+    lines = []
+    
+    lines.append("=" * 90)
+    lines.append("                         FIBONACCI ANALYSIS SUMMARY")
+    lines.append("=" * 90)
+    lines.append(f"{'Symbol':<10}{'Trend':<8}{'High':<12}{'Low':<12}{'Range%':<10}{'Touches':<10}{'Effect%':<10}{'Best Level':<12}")
+    lines.append("-" * 90)
+    
+    for report in sorted(reports, key=lambda r: r.overall_effectiveness, reverse=True):
+        range_pct = ((report.high_price - report.low_price) / report.low_price * 100) if report.low_price > 0 else 0
+        best_level = report.most_respected_level or "-"
+        
+        lines.append(
+            f"{report.symbol:<10}"
+            f"{report.trend_direction.upper():<8}"
+            f"${report.high_price:<11.4f}"
+            f"${report.low_price:<11.4f}"
+            f"{range_pct:<10.1f}"
+            f"{report.total_touches:<10}"
+            f"{report.overall_effectiveness:<10.1f}"
+            f"{best_level:<12}"
+        )
+    
+    lines.append("-" * 90)
+    lines.append(f"Total symbols analyzed: {len(reports)}")
+    
+    # Find top performers
+    effective_reports = [r for r in reports if r.overall_effectiveness >= 60 and r.total_touches >= 5]
+    if effective_reports:
+        lines.append("\nTop Fibonacci responders (>60% effectiveness, >5 touches):")
+        for r in sorted(effective_reports, key=lambda x: x.overall_effectiveness, reverse=True)[:5]:
+            lines.append(f"  • {r.symbol}: {r.overall_effectiveness:.1f}% effectiveness at {r.most_respected_level}")
+    
+    lines.append("=" * 90)
+    
+    return "\n".join(lines)
+
+
 # ============================================================================
 # CLI
 # ============================================================================
@@ -732,8 +834,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Analyze SOL for the last 7 days
+  # Analyze SOL for the last 7 days (from JSONL data)
   python fibonacci_analyzer.py --symbol SOL --window 7d
+  
+  # Analyze from CSV file (OHLCV format)
+  python fibonacci_analyzer.py --symbol BTC --csv btc_prices.csv
+  
+  # Analyze multiple symbols
+  python fibonacci_analyzer.py --symbol SOL,BTC,ETH --window 7d
+  
+  # Analyze ALL symbols in data directory
+  python fibonacci_analyzer.py --window 7d
   
   # With custom tolerance and confirmation
   python fibonacci_analyzer.py --symbol BTC --window 24h --touch-tolerance 0.3 --confirmation-periods 5
@@ -747,11 +858,15 @@ Examples:
     )
     
     parser.add_argument('--symbol', type=str,
-                        help='Token symbol to analyze (e.g., SOL, BTC, ETH)')
+                        help='Token symbol(s) to analyze. Comma-separated for multiple (e.g., SOL,BTC,ETH). '
+                             'If omitted, analyzes ALL symbols in data directory. Required when using --csv.')
     parser.add_argument('--window', type=str, default='7d',
-                        help='Analysis window (e.g., 24h, 7d, 14days). Default: 7d')
+                        help='Analysis window (e.g., 24h, 7d, 14days). Default: 7d. Ignored when using --csv.')
     parser.add_argument('--data-dir', type=str, default='./correlation_data',
                         help='Directory containing price data (default: ./correlation_data)')
+    parser.add_argument('--csv', type=str, metavar='FILENAME',
+                        help='Load data from CSV file (OHLCV format) instead of JSONL. '
+                             'File should be in --data-dir. Requires --symbol.')
     
     # Analysis parameters
     parser.add_argument('--touch-tolerance', type=float, default=0.5,
@@ -767,6 +882,8 @@ Examples:
                         help='Output format (default: text)')
     parser.add_argument('--output-file', type=str,
                         help='Write output to file instead of stdout')
+    parser.add_argument('--summary-only', action='store_true',
+                        help='Only show summary table when analyzing multiple symbols')
     
     # Utility options
     parser.add_argument('--list-symbols', action='store_true',
@@ -779,9 +896,11 @@ Examples:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
+    # Initialize data loader for symbol discovery
+    loader = DataLoader(args.data_dir)
+    
     # Handle --list-symbols
     if args.list_symbols:
-        loader = DataLoader(args.data_dir)
         symbols = loader.get_available_symbols()
         if symbols:
             print("Available symbols:")
@@ -791,15 +910,9 @@ Examples:
             print(f"No data found in {args.data_dir}")
         return
     
-    # Require --symbol for analysis
-    if not args.symbol:
-        parser.error("--symbol is required for analysis")
-    
-    # Parse window
-    try:
-        window_seconds = parse_duration(args.window)
-    except ValueError as e:
-        parser.error(f"Invalid --window: {e}")
+    # Validate CSV mode requirements
+    if args.csv and not args.symbol:
+        parser.error("--symbol is required when using --csv")
     
     # Run analysis
     analyzer = FibonacciAnalyzer(
@@ -809,18 +922,104 @@ Examples:
         min_touches=args.min_touches
     )
     
-    report = analyzer.analyze(args.symbol, window_seconds=window_seconds)
+    reports = []
+    failed_symbols = []
     
-    if report is None:
-        print(f"Error: Could not generate report for {args.symbol}")
-        print(f"Check that data exists in {args.data_dir}")
-        sys.exit(1)
+    # CSV mode: load from CSV file
+    if args.csv:
+        symbols = [s.strip().upper() for s in args.symbol.split(',') if s.strip()]
+        
+        # Load CSV data once
+        csv_df = loader.load_csv(args.csv)
+        if csv_df.empty:
+            print(f"Error: Could not load data from CSV file: {args.csv}")
+            print(f"Make sure the file exists in {args.data_dir} and has a 'Close' column")
+            sys.exit(1)
+        
+        # Convert to PricePoints for analysis
+        prices = [
+            PricePoint(timestamp=row['timestamp'].to_pydatetime(), price=row['price'])
+            for _, row in csv_df.iterrows()
+        ]
+        
+        # Analyze each symbol with the same CSV data
+        for symbol in symbols:
+            report = analyzer.analyze(symbol, prices=prices)
+            if report:
+                reports.append(report)
+            else:
+                failed_symbols.append(symbol)
+        
+        if not reports:
+            print(f"Error: Could not generate any reports from CSV data")
+            sys.exit(1)
+    
+    # JSONL mode: load from data directory
+    else:
+        # Parse window
+        try:
+            window_seconds = parse_duration(args.window)
+        except ValueError as e:
+            parser.error(f"Invalid --window: {e}")
+        
+        # Determine symbols to analyze
+        if args.symbol:
+            # Parse comma-separated list
+            symbols = [s.strip().upper() for s in args.symbol.split(',') if s.strip()]
+        else:
+            # Analyze all available symbols
+            symbols = loader.get_available_symbols()
+            if not symbols:
+                print(f"No symbols found in {args.data_dir}")
+                print("Use --list-symbols to check available data or specify --symbol")
+                sys.exit(1)
+            print(f"No --symbol specified. Analyzing all {len(symbols)} symbols in {args.data_dir}...\n")
+        
+        for symbol in symbols:
+            report = analyzer.analyze(symbol, window_seconds=window_seconds)
+            if report:
+                reports.append(report)
+            else:
+                failed_symbols.append(symbol)
+                if args.verbose:
+                    logger.warning(f"Could not generate report for {symbol}")
+        
+        if not reports:
+            print("Error: Could not generate any reports")
+            print(f"Failed symbols: {', '.join(failed_symbols)}")
+            sys.exit(1)
     
     # Format output
     if args.output_format == 'json':
-        output = json.dumps(report.to_dict(), indent=2, default=str)
+        if len(reports) == 1:
+            output = json.dumps(reports[0].to_dict(), indent=2, default=str)
+        else:
+            output = json.dumps({
+                'summary': {
+                    'total_symbols': len(reports),
+                    'failed_symbols': failed_symbols,
+                    'window': args.window
+                },
+                'reports': [r.to_dict() for r in reports]
+            }, indent=2, default=str)
     else:
-        output = format_report(report)
+        if len(reports) == 1:
+            output = format_report(reports[0])
+        else:
+            # Multiple reports - show summary and optionally full reports
+            output_parts = []
+            
+            if not args.summary_only:
+                for report in reports:
+                    output_parts.append(format_report(report))
+                    output_parts.append("")  # Blank line between reports
+            
+            output_parts.append(format_summary_table(reports))
+            
+            if failed_symbols:
+                output_parts.append(f"\nNote: Failed to analyze {len(failed_symbols)} symbol(s): {', '.join(failed_symbols)}")
+            
+            output = "\n".join(output_parts)
     
     # Write output
     if args.output_file:

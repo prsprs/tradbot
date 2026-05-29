@@ -80,22 +80,60 @@ The Fibonacci analyzer should be a **standalone module** that can be used in two
 
 ### Usage Modes
 
-**Mode 1: Standalone Analysis**
+**Mode 1: Standalone Analysis (JSONL Data)**
 ```bash
-python fibonacci_analyzer.py --symbol SOL --window 7d --granularity 5min \
+python fibonacci_analyzer.py --symbol SOL --window 7d \
     --data-dir ./correlation_data \
     --confirmation-periods 3 \
     --touch-tolerance 0.5 \
     --min-touches 2
 ```
 
-**Mode 2: Preflight Integration**
+**Mode 2: Standalone Analysis (CSV OHLCV Data)**
+```bash
+python fibonacci_analyzer.py --symbol BTC --csv btc_ohlcv.csv \
+    --data-dir ./correlation_data \
+    --confirmation-periods 3 \
+    --touch-tolerance 0.5
+```
+
+**Mode 3: Multi-Symbol Analysis**
+```bash
+# Analyze specific symbols
+python fibonacci_analyzer.py --symbol SOL,BTC,ETH --window 7d
+
+# Analyze ALL symbols in data directory
+python fibonacci_analyzer.py --window 7d --summary-only
+```
+
+**Mode 4: Preflight Integration**
 ```bash
 python leading_indicator_tester.py --pair BTC:SOL --trading-mode live \
     --fibonacci-analysis \
     --fib-window 7d \
     --fib-confirmation-periods 5 \
     --fib-min-touches 2
+```
+
+### Data Input Formats
+
+**Format 1: JSONL (from correlation_tracker)**
+- Located in `--data-dir` subdirectories
+- Records with `symbol`, `timestamp`, `price` fields
+- Loaded automatically based on `--symbol` and `--window`
+
+**Format 2: CSV OHLCV (external data sources)**
+- Standard OHLCV format with columns: timestamp, Open, High, Low, Close, Volume
+- Timestamp column auto-detected (first column)
+- Uses **Close** prices for Fibonacci analysis
+- File located in `--data-dir` directory
+- Requires `--symbol` to identify the asset
+
+Example CSV format:
+```csv
+Etc/UTC,Open,High,Low,Close,Volume
+2026-05-29T00:00:00+00:00,73498.3,73785.2,73498.3,73774.4,14287
+2026-05-29T00:45:00+00:00,73726.6,73784.8,73449,73524.8,13168
 ```
 
 ---

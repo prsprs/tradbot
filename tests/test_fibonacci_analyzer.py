@@ -29,6 +29,7 @@ from fibonacci_analyzer import (
     parse_duration,
     format_duration,
     format_report,
+    format_summary_table,
 )
 
 
@@ -310,6 +311,45 @@ class TestDataLoader(unittest.TestCase):
         self.assertIn('TEST', symbols)
         self.assertIn('OTHER', symbols)
         self.assertEqual(len(symbols), 2)
+    
+    def test_load_csv(self):
+        """Test loading data from CSV file with OHLCV format."""
+        # Create a CSV file
+        csv_file = self.data_dir / 'test_ohlcv.csv'
+        csv_content = """Etc/UTC,Open,High,Low,Close,Volume
+2026-05-29T00:00:00+00:00,73498.3,73785.2,73498.3,73774.4,14287
+2026-05-29T00:45:00+00:00,73726.6,73784.8,73449,73524.8,13168
+2026-05-29T01:30:00+00:00,73496.4,73559.8,73340.2,73549.8,13073
+2026-05-29T02:15:00+00:00,73551.5,73574.8,73061.8,73103.2,14485
+2026-05-29T03:00:00+00:00,73103.4,73381.8,73103.4,73237.8,10766
+"""
+        with open(csv_file, 'w') as f:
+            f.write(csv_content)
+        
+        df = self.loader.load_csv('test_ohlcv.csv')
+        
+        self.assertEqual(len(df), 5)
+        self.assertEqual(df['price'].iloc[0], 73774.4)  # First Close price
+        self.assertEqual(df['price'].iloc[4], 73237.8)  # Last Close price
+        self.assertIn('timestamp', df.columns)
+        self.assertIn('price', df.columns)
+    
+    def test_load_csv_not_found(self):
+        """Test loading non-existent CSV returns empty DataFrame."""
+        df = self.loader.load_csv('nonexistent.csv')
+        self.assertTrue(df.empty)
+    
+    def test_load_csv_missing_close_column(self):
+        """Test loading CSV without Close column returns empty DataFrame."""
+        csv_file = self.data_dir / 'no_close.csv'
+        csv_content = """Timestamp,Open,High,Low,Volume
+2026-05-29T00:00:00+00:00,73498.3,73785.2,73498.3,14287
+"""
+        with open(csv_file, 'w') as f:
+            f.write(csv_content)
+        
+        df = self.loader.load_csv('no_close.csv')
+        self.assertTrue(df.empty)
 
 
 class TestFormatReport(unittest.TestCase):
@@ -353,6 +393,56 @@ class TestFormatReport(unittest.TestCase):
         self.assertIn('142.18', output)  # Low price
         self.assertIn('78.6%', output)   # Most respected level
         self.assertIn('66.7%', output)   # Overall effectiveness
+
+
+class TestFormatSummaryTable(unittest.TestCase):
+    """Test summary table formatting for multiple reports."""
+    
+    def test_format_summary_table(self):
+        """Test summary table generation."""
+        reports = [
+            FibonacciReport(
+                symbol='SOL',
+                analysis_window='7d',
+                window_start=datetime(2026, 5, 21, tzinfo=timezone.utc),
+                window_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+                high_price=185.42,
+                high_timestamp=datetime(2026, 5, 27, tzinfo=timezone.utc),
+                low_price=142.18,
+                low_timestamp=datetime(2026, 5, 22, tzinfo=timezone.utc),
+                trend_direction='up',
+                levels={},
+                most_respected_level='38.2%',
+                overall_effectiveness=71.4,
+                total_touches=14,
+                total_bounces=10,
+            ),
+            FibonacciReport(
+                symbol='BTC',
+                analysis_window='7d',
+                window_start=datetime(2026, 5, 21, tzinfo=timezone.utc),
+                window_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+                high_price=68500.0,
+                high_timestamp=datetime(2026, 5, 26, tzinfo=timezone.utc),
+                low_price=64200.0,
+                low_timestamp=datetime(2026, 5, 23, tzinfo=timezone.utc),
+                trend_direction='up',
+                levels={},
+                most_respected_level='61.8%',
+                overall_effectiveness=55.0,
+                total_touches=20,
+                total_bounces=11,
+            ),
+        ]
+        
+        output = format_summary_table(reports)
+        
+        self.assertIn('FIBONACCI ANALYSIS SUMMARY', output)
+        self.assertIn('SOL', output)
+        self.assertIn('BTC', output)
+        self.assertIn('Total symbols analyzed: 2', output)
+        # SOL should be first (higher effectiveness)
+        self.assertTrue(output.index('SOL') < output.index('BTC'))
 
 
 class TestIntegration(unittest.TestCase):
