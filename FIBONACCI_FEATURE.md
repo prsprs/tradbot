@@ -516,6 +516,289 @@ def detect_level_interactions(
 
 ---
 
+## Phase 3: Autonomous Trading (`--auto-select`)
+
+### Overview
+
+The `--auto-select` feature enables fully autonomous trading by automatically:
+1. Collecting price data for a configurable period
+2. Running correlation and profitability analysis
+3. Generating Fibonacci analysis for candidate pairs
+4. Selecting the optimal pair and parameters
+5. Beginning trading with minimal human intervention
+
+### Goals
+
+- **Zero-touch startup**: Start the system and walk away
+- **Data-driven pair selection**: Choose the best pair based on actual market data
+- **Adaptive parameters**: Auto-configure lag times, intervals, and filters
+- **Integrated Fib analysis**: Use Fib levels to enhance trade timing
+
+### Workflow
+
+The auto-select feature orchestrates existing tools - no new data collection code is needed.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        AUTO-SELECT MODE                              │
+│         (Orchestrates existing correlation_tracker + tools)          │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ PHASE 1: Data Collection (uses correlation_tracker.py)              │
+│ - Runs: correlation_tracker.py --coins X --interval 30 --duration Y │
+│ - Uses EXACT same collection logic, no changes                      │
+│ - Stores to --data-dir (default: ./correlation_data)                │
+│ - OR: --skip-collection to use existing data                        │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ PHASE 2: Correlation Analysis (uses correlation_tracker.py)         │
+│ - Runs: correlation_tracker.py --analyze --data-dir X               │
+│ - Reads discovery_report.json output                                │
+│ - Filters pairs by min_confidence threshold                         │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ PHASE 3: Profitability Analysis (uses preflight.py)                 │
+│ - Runs preflight for each candidate pair                            │
+│ - Uses existing PreflightValidator class                            │
+│ - Filters out pairs with insufficient volatility                    │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ PHASE 4: Fibonacci Analysis (uses fibonacci_analyzer.py)            │
+│ - Runs Fib analysis on follower candidates                          │
+│ - Uses existing FibonacciAnalyzer class                             │
+│ - Caches reports via save_fib_report()                              │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ PHASE 5: Pair Selection & Scoring                                   │
+│ - NEW: AutoSelectScorer class                                       │
+│ - Combines scores from correlation, profitability, Fib              │
+│ - Ranks and selects top pair(s)                                     │
+└─────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ PHASE 6: Trading (uses leading_indicator_tester.py)                 │
+│ - Auto-configures from analysis results:                            │
+│   • --pair from selection                                           │
+│   • Lag time from discovery_report                                  │
+│   • --use-fib with cached Fib report                                │
+│   • --directional-filter based on profitability                     │
+│ - Periodic re-analysis triggers return to Phase 2                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Design Decision: Reuse Existing Code
+
+The auto-select feature is an **orchestrator**, not new functionality:
+
+| Phase | Existing Code | New Code Needed |
+|-------|---------------|-----------------|
+| Collection | `correlation_tracker.py` collector mode | None - subprocess call |
+| Correlation | `correlation_tracker.py` analyzer mode | None - subprocess call |
+| Profitability | `preflight.py` / `PreflightValidator` | None - import and call |
+| Fibonacci | `fibonacci_analyzer.py` / `FibonacciAnalyzer` | None - import and call |
+| Selection | - | `AutoSelectScorer` class (NEW) |
+| Trading | `leading_indicator_tester.py` | Integration hooks |
+
+This means:
+- Collection interval, rate limiting, error handling → already solved
+- Analysis logic, confidence scoring → already solved  
+- Fib calculations, caching → already solved
+- Only new code: scoring/selection logic and orchestration
+
+### CLI Arguments
+
+Auto-select mode uses **existing CLI parameters** - no new parameter names needed for most functionality.
+
+**Auto-Select Control** (new):
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--auto-select` | Enable autonomous pair selection mode | false |
+| `--skip-collection` | Skip collection phase, use existing data | false |
+
+**Required with `--auto-select`:**
+
+| Argument | Description |
+|----------|-------------|
+| `--use-fib` | Must be explicitly specified with `--auto-select` |
+
+**Existing Parameters Used Throughout:**
+
+| Parameter | Used In | Default |
+|-----------|---------|---------|
+| `--coins` | Collection phase | *(required)* |
+| `--interval` | Collection phase | 30s |
+| `--duration` | Collection + Trading | *(indefinite)* |
+| `--data-dir` | All phases | ./correlation_data |
+| `--min-samples` | Correlation analysis | 500 |
+| `--min-confidence` | Correlation analysis | 0.6 |
+| `--trading-mode` | Trading phase | paper |
+| `--position-size` | Trading phase | 1000.0 |
+| `--use-fib` | **Required** with `--auto-select` | false |
+| `--fib-touch-tolerance` | Fib analysis + trading | 0.5 |
+| `--fib-min-effectiveness` | Fib analysis + trading | 60 |
+| `--directional-filter` | Trading phase (auto-configured) | false |
+
+**Note:** `--auto-select` requires `--use-fib` to be explicitly specified. The system auto-configures `--directional-filter` based on profitability analysis. All other parameters use their existing defaults or user-specified values.
+
+### Example Usage
+
+```bash
+# Full autonomous mode - collect 48hr of data, analyze, select, paper trade
+python leading_indicator_tester.py --auto-select --use-fib \
+    --coins BTC,ETH,SOL,BONK,WIF \
+    --interval 30 \
+    --duration 48hr \
+    --trading-mode paper
+
+# Skip collection, use existing data, custom thresholds
+python leading_indicator_tester.py --auto-select --use-fib \
+    --skip-collection \
+    --min-confidence 0.7 \
+    --fib-min-effectiveness 70 \
+    --trading-mode paper
+
+# Live autonomous trading with existing data
+python leading_indicator_tester.py --auto-select --use-fib \
+    --skip-collection \
+    --trading-mode live \
+    --max-trade-usd 50 \
+    --position-size 50
+```
+
+**Parameter Flow:**
+- Collection: `--coins`, `--interval`, `--duration`
+- Analysis: `--min-samples`, `--min-confidence`, `--data-dir`
+- Fib: `--fib-window`, `--fib-touch-tolerance`, `--fib-min-effectiveness`
+- Trading: `--trading-mode`, `--position-size`
+
+### Pair Ranking (When Multiple Candidates)
+
+If multiple pairs pass eligibility, rank by correlation confidence (highest first):
+
+```
+eligible_pairs = [p for p in all_pairs if passes_eligibility(p)]
+ranked_pairs = sorted(eligible_pairs, key=lambda p: p.confidence, reverse=True)
+```
+
+Display ranked candidates and prompt user to select.
+
+### Safety Mechanisms
+
+1. **Minimum Data Requirements** (via existing parameters)
+   - Won't proceed if samples < `--min-samples` (default 500)
+   - Won't trade if no pairs meet `--min-confidence` threshold (default 0.6)
+
+2. **Confirmation Prompts** (live mode)
+   - Display selected pair and parameters
+   - Require confirmation before trading starts
+   - Option: `--auto-confirm` to skip (for scheduled jobs)
+
+3. **Circuit Breakers**
+   - Max consecutive losses before pause
+   - Max daily loss limit
+   - Fib range invalidation halts trading
+
+4. **Logging & Monitoring**
+   - Log all selection decisions with reasoning
+   - Output selection report to file
+   - Send alerts on pair changes or trading halts
+
+### Design Decisions (MVP)
+
+1. **Pair Selection & Eligibility**
+   - Set minimum requirements for eligibility:
+     - Correlation: meets `--min-confidence` threshold
+     - Fib effectiveness: meets `--fib-min-effectiveness` threshold
+     - Profitability: preflight shows viable direction
+   - **No candidates eligible**: Halt with explanation of why each pair failed
+   - **Multiple candidates eligible**: Pause, display ranked candidates with scores, prompt user to select a pair
+   - **One candidate eligible**: Auto-select and proceed (with confirmation in live mode)
+
+2. **Single Pair Trading**
+   - MVP only trades one pair at a time
+   - `--auto-top-pairs` deferred to future version
+
+3. **No Re-Analysis for MVP**
+   - Analysis runs once at startup
+   - User must restart to re-analyze
+   - Re-analysis feature deferred to future version
+
+4. **Fib Integration**
+   - `--auto-select` always requires `--use-fib` to be explicitly specified
+   - Pairs with poor Fib effectiveness are filtered out by eligibility requirements
+   - `--collect-duration` deferred - use `--duration` for collection phase, `--skip-collection` for existing data
+
+5. **Paper vs Live: User Decision**
+   - No mandatory paper trading period - user decides risk level
+   - **Important**: Data validity is time-sensitive. Extended paper trading may cause Fib levels to become stale. If paper testing takes too long, the analysis may no longer reflect current market conditions.
+   - Recommendation: Use `--skip-collection` with fresh data, or keep paper testing brief
+
+6. **Monitoring & Shutdown**
+   - No cron/systemd integration for MVP
+   - Uses existing live trading monitoring mechanisms (same as leading_indicator_tester)
+   - **Enhancement**: Add currently-traded pair to periodic status output (alongside HTTP request notifications)
+   - Graceful shutdown: same behavior as existing live trading
+
+### Eligibility Parameters (All Existing)
+
+Auto-select uses **existing parameters** as eligibility thresholds - no new parameters needed:
+
+| Parameter | Purpose | Default | Source |
+|-----------|---------|---------|--------|
+| `--min-confidence` | Min correlation confidence | 0.6 | correlation_tracker.py |
+| `--fib-min-effectiveness` | Min Fib bounce rate % | 60 | leading_indicator_tester.py |
+| Profitability | Must pass viability check | VIABLE or PARTIALLY_VIABLE | preflight.py |
+
+**Eligibility Logic:**
+```
+pair_eligible = (
+    correlation_confidence >= --min-confidence AND
+    fib_effectiveness >= --fib-min-effectiveness AND
+    preflight_verdict in [VIABLE, PARTIALLY_VIABLE_UP, PARTIALLY_VIABLE_DOWN]
+)
+```
+
+**Suggested Defaults** (already implemented):
+- `--min-confidence 0.6` - 60% confidence is reasonable starting point
+- `--fib-min-effectiveness 60` - 60% bounce rate indicates level is respected
+- Profitability viability is binary (costs vs expected returns) - no threshold needed
+
+### Resolved by Design (Using Existing Code)
+
+The following are **already solved** by reusing existing tools and parameters:
+
+**Collection (correlation_tracker.py):**
+- ~~Collection strategy~~ → Uses existing collector logic unchanged
+- ~~Collection interval~~ → Uses existing `--interval` (default 30s)  
+- ~~Rate limit handling~~ → Already implemented in collector
+- ~~Error recovery~~ → Already implemented (retries, graceful degradation)
+- ~~Coin symbol resolution~~ → Uses existing CoinGecko lookup with auto-search
+
+**Analysis (correlation_tracker.py + preflight.py):**
+- ~~Confidence thresholds~~ → Uses existing `--min-confidence` (default 0.6)
+- ~~Sample requirements~~ → Uses existing `--min-samples` (default 500)
+- ~~Profitability calculation~~ → Uses existing PreflightValidator
+
+**Trading (leading_indicator_tester.py):**
+- ~~Position sizing~~ → Uses existing `--position-size` (default 1000.0)
+- ~~Trading mode~~ → Uses existing `--trading-mode` (paper/live)
+- ~~Fib filtering~~ → Uses existing `--use-fib` and related parameters
+- ~~Directional filtering~~ → Uses existing `--directional-filter`
+
+---
+
 ## Implementation Plan
 
 ### MVP Tasks (COMPLETED)
@@ -531,28 +814,41 @@ def detect_level_interactions(
 10. [x] Add CSV OHLCV input support
 11. [x] Add multi-symbol analysis with summary table
 
-### Phase 2 Tasks: Trading Integration
-1. [ ] Implement Fib Report Cache
-   - [ ] Add `save_report()` method to FibonacciAnalyzer
-   - [ ] Add `load_report()` method to FibonacciAnalyzer
-   - [ ] Create `./correlation_data/fib_reports/` directory structure
-   - [ ] Update `fibonacci_analyzer.py` CLI to auto-save reports
-2. [ ] Update `leading_indicator_tester.py --fibonacci-analysis` to save to cache
-3. [ ] Add `--use-fib` flag to `leading_indicator_tester.py`
-4. [ ] Add Fib-related CLI arguments (`--fib-tolerance`, `--fib-min-effectiveness`, etc.)
-5. [ ] Load Fib report from cache on startup when `--use-fib` is specified
-6. [ ] Implement trend-direction filtering (Rule 1)
-7. [ ] Implement support/resistance level validation (Rules 2 & 3)
-8. [ ] Implement range invalidation check (Rule 4)
-9. [ ] Implement conflict detection with `--directional-filter`
-10. [ ] Add Fib context to trade logging
-11. [ ] Write unit tests for trade filtering logic
+### Phase 2 Tasks: Trading Integration (COMPLETED)
+1. [x] Implement Fib Report Cache
+   - [x] Add `save_report()` function
+   - [x] Add `load_report()` function
+   - [x] Create `./correlation_data/fib_reports/` directory structure
+   - [x] Update `fibonacci_analyzer.py` CLI with --save-report and --list-cached
+2. [x] Update `leading_indicator_tester.py --fibonacci-analysis` to save to cache
+3. [x] Add `--use-fib` flag to `leading_indicator_tester.py`
+4. [x] Add Fib-related CLI arguments (`--fib-min-effectiveness`, etc.)
+5. [x] Load Fib report from cache on startup when `--use-fib` is specified
+6. [x] Implement trend-direction filtering (Rule 1)
+7. [x] Implement support/resistance level validation (Rules 2 & 3)
+8. [x] Implement range invalidation check (Rule 4)
+9. [x] Implement conflict detection with `--directional-filter`
+10. [x] Write unit tests for FibTradeFilter class
+
+### Phase 3 Tasks: Auto-Select Mode (MVP)
+1. [ ] Add `--auto-select` and `--skip-collection` CLI arguments
+2. [ ] Validate `--use-fib` is specified with `--auto-select`
+3. [ ] Implement collection phase (subprocess call to correlation_tracker)
+4. [ ] Implement correlation analysis phase (subprocess call to correlation_tracker --analyze)
+5. [ ] Implement profitability analysis for candidates (call PreflightValidator)
+6. [ ] Implement Fib analysis for candidates (call FibonacciAnalyzer + cache)
+7. [ ] Implement eligibility filtering (min-confidence, fib-effectiveness, profitability)
+8. [ ] Implement candidate display and user selection prompt
+9. [ ] Auto-configure --directional-filter based on profitability
+10. [ ] Add pair info to periodic status output
+11. [ ] Write unit tests
+12. [ ] Update operations manual
 
 ### Estimated Effort
-- MVP: 2-3 days ✓ COMPLETED
-- Phase 2 (Trading Integration): 2-3 days
-- Phase 3 (Continuous Re-analysis): 1-2 days
-- Phase 4 (Multi-Timeframe): 2-3 days
+- MVP (Fib Analyzer): 2-3 days ✓ COMPLETED
+- Phase 2 (Trading Integration): 2-3 days ✓ COMPLETED
+- Phase 3 (Auto-Select MVP): 2-3 days
+- Future: Re-analysis, multi-pair, multi-timeframe
 
 ---
 

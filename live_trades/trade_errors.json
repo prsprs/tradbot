@@ -15,5 +15,12 @@
     "action": "SELL",
     "reason": "Failed to send transaction to network",
     "details": {}
+  },
+  {
+    "timestamp": "2026-05-30T01:52:36.342165+00:00",
+    "pair": "SOL:BONK",
+    "action": "BUY",
+    "reason": "Jupiter Error 6024: InsufficientFunds - Not enough tokens in wallet to complete swap",
+    "details": {}
   }
 ]

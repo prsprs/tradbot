@@ -171,6 +171,19 @@ class FibonacciLevel:
             'avg_bounce_magnitude': self.avg_bounce_magnitude
         }
         return result
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'FibonacciLevel':
+        """Reconstruct a FibonacciLevel from a dictionary."""
+        return cls(
+            ratio=data['ratio'],
+            price=data['price'],
+            touch_count=data.get('touch_count', 0),
+            bounce_count=data.get('bounce_count', 0),
+            breakthrough_count=data.get('breakthrough_count', 0),
+            avg_bounce_magnitude=data.get('avg_bounce_magnitude', 0.0),
+            bounce_magnitudes=data.get('bounce_magnitudes', [])
+        )
 
 
 @dataclass
@@ -202,6 +215,7 @@ class FibonacciReport:
     def to_dict(self) -> Dict[str, Any]:
         return {
             'symbol': self.symbol,
+            'generated_at': datetime.now(timezone.utc).isoformat(),
             'analysis_window': self.analysis_window,
             'window_start': self.window_start.isoformat(),
             'window_end': self.window_end.isoformat(),
@@ -220,6 +234,123 @@ class FibonacciReport:
             'min_touches': self.min_touches,
             'data_points_analyzed': self.data_points_analyzed
         }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'FibonacciReport':
+        """Reconstruct a FibonacciReport from a dictionary (e.g., loaded from JSON cache)."""
+        # Parse timestamps
+        def parse_ts(ts_str):
+            if isinstance(ts_str, datetime):
+                return ts_str
+            dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        
+        # Reconstruct levels
+        levels = {}
+        for key, level_data in data.get('levels', {}).items():
+            levels[key] = FibonacciLevel.from_dict(level_data)
+        
+        return cls(
+            symbol=data['symbol'],
+            analysis_window=data['analysis_window'],
+            window_start=parse_ts(data['window_start']),
+            window_end=parse_ts(data['window_end']),
+            high_price=data['high_price'],
+            high_timestamp=parse_ts(data['high_timestamp']),
+            low_price=data['low_price'],
+            low_timestamp=parse_ts(data['low_timestamp']),
+            trend_direction=data['trend_direction'],
+            levels=levels,
+            most_respected_level=data.get('most_respected_level'),
+            overall_effectiveness=data.get('overall_effectiveness', 0.0),
+            total_touches=data.get('total_touches', 0),
+            total_bounces=data.get('total_bounces', 0),
+            touch_tolerance_pct=data.get('touch_tolerance_pct', 0.5),
+            confirmation_periods=data.get('confirmation_periods', 3),
+            min_touches=data.get('min_touches', 2),
+            data_points_analyzed=data.get('data_points_analyzed', 0)
+        )
+
+
+# ============================================================================
+# Fib Report Cache
+# ============================================================================
+
+FIB_REPORTS_DIR = 'fib_reports'
+
+
+def get_fib_report_path(data_dir: str, symbol: str) -> Path:
+    """Get the path for a symbol's Fib report cache file."""
+    return Path(data_dir) / FIB_REPORTS_DIR / f"{symbol.upper()}_fib_report.json"
+
+
+def save_fib_report(report: FibonacciReport, data_dir: str = './correlation_data') -> Path:
+    """
+    Save a Fibonacci report to the cache.
+    
+    Args:
+        report: The FibonacciReport to save
+        data_dir: Base data directory (default: ./correlation_data)
+        
+    Returns:
+        Path to the saved report file
+    """
+    report_path = get_fib_report_path(data_dir, report.symbol)
+    
+    # Ensure directory exists
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Save as JSON
+    with open(report_path, 'w') as f:
+        json.dump(report.to_dict(), f, indent=2, default=str)
+    
+    logger.info(f"Saved Fib report for {report.symbol} to {report_path}")
+    return report_path
+
+
+def load_fib_report(symbol: str, data_dir: str = './correlation_data') -> Optional[FibonacciReport]:
+    """
+    Load a Fibonacci report from the cache.
+    
+    Args:
+        symbol: Token symbol (e.g., 'SOL', 'BTC')
+        data_dir: Base data directory (default: ./correlation_data)
+        
+    Returns:
+        FibonacciReport if found, None otherwise
+    """
+    report_path = get_fib_report_path(data_dir, symbol)
+    
+    if not report_path.exists():
+        logger.debug(f"No cached Fib report found for {symbol} at {report_path}")
+        return None
+    
+    try:
+        with open(report_path, 'r') as f:
+            data = json.load(f)
+        
+        report = FibonacciReport.from_dict(data)
+        logger.info(f"Loaded Fib report for {symbol} from cache (generated: {data.get('generated_at', 'unknown')})")
+        return report
+    except Exception as e:
+        logger.error(f"Failed to load Fib report for {symbol}: {e}")
+        return None
+
+
+def list_cached_reports(data_dir: str = './correlation_data') -> List[str]:
+    """List all symbols with cached Fib reports."""
+    reports_dir = Path(data_dir) / FIB_REPORTS_DIR
+    if not reports_dir.exists():
+        return []
+    
+    symbols = []
+    for f in reports_dir.glob('*_fib_report.json'):
+        symbol = f.stem.replace('_fib_report', '')
+        symbols.append(symbol)
+    
+    return sorted(symbols)
 
 
 # ============================================================================
@@ -852,6 +983,12 @@ Examples:
   # Output as JSON
   python fibonacci_analyzer.py --symbol ETH --window 3d --output-format json
   
+  # Save report to cache for use by leading_indicator_tester --use-fib
+  python fibonacci_analyzer.py --symbol SOL --window 7d --save-report
+  
+  # List cached reports
+  python fibonacci_analyzer.py --list-cached
+  
   # List available symbols
   python fibonacci_analyzer.py --list-symbols
         """
@@ -885,6 +1022,12 @@ Examples:
     parser.add_argument('--summary-only', action='store_true',
                         help='Only show summary table when analyzing multiple symbols')
     
+    # Cache options
+    parser.add_argument('--save-report', action='store_true',
+                        help='Save analysis report(s) to cache for use by leading_indicator_tester --use-fib')
+    parser.add_argument('--list-cached', action='store_true',
+                        help='List symbols with cached Fib reports')
+    
     # Utility options
     parser.add_argument('--list-symbols', action='store_true',
                         help='List available symbols in data directory')
@@ -908,6 +1051,26 @@ Examples:
                 print(f"  - {sym}")
         else:
             print(f"No data found in {args.data_dir}")
+        return
+    
+    # Handle --list-cached
+    if args.list_cached:
+        cached = list_cached_reports(args.data_dir)
+        if cached:
+            print("Cached Fib reports:")
+            for sym in cached:
+                report_path = get_fib_report_path(args.data_dir, sym)
+                # Get generated_at from file
+                try:
+                    with open(report_path, 'r') as f:
+                        data = json.load(f)
+                    generated = data.get('generated_at', 'unknown')
+                    trend = data.get('trend_direction', '?')
+                    print(f"  - {sym}: {trend}trend (generated: {generated})")
+                except:
+                    print(f"  - {sym}")
+        else:
+            print(f"No cached Fib reports in {args.data_dir}/fib_reports/")
         return
     
     # Validate CSV mode requirements
@@ -988,6 +1151,17 @@ Examples:
             print("Error: Could not generate any reports")
             print(f"Failed symbols: {', '.join(failed_symbols)}")
             sys.exit(1)
+    
+    # Save reports to cache if requested
+    if args.save_report:
+        saved_count = 0
+        for report in reports:
+            try:
+                save_fib_report(report, args.data_dir)
+                saved_count += 1
+            except Exception as e:
+                logger.error(f"Failed to save report for {report.symbol}: {e}")
+        print(f"\nSaved {saved_count} report(s) to {args.data_dir}/fib_reports/")
     
     # Format output
     if args.output_format == 'json':

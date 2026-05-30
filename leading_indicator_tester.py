@@ -34,7 +34,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from coingeckoutil import get_multiple_prices, get_coingecko_price
 from preflight import PreflightValidator, PreflightResult, run_preflight
-from fibonacci_analyzer import FibonacciAnalyzer, format_report as format_fib_report
+from fibonacci_analyzer import (
+    FibonacciAnalyzer, 
+    FibonacciReport,
+    FibonacciLevel,
+    format_report as format_fib_report, 
+    save_fib_report,
+    load_fib_report,
+)
 
 # Supported exchanges for price fetching
 SUPPORTED_EXCHANGES = ['coingecko', 'jupiter', 'coinbase']
@@ -180,6 +187,8 @@ class TesterConfig:
     down_viable: bool = True  # Whether DOWN direction passed profitability check
     max_trades: Optional[int] = None  # Stop after this many trades (for testing)
     live_trader: Optional[Any] = None  # LiveTrader instance for real swaps (None = paper mode)
+    # Fibonacci trade filtering
+    fib_filter: Optional['FibTradeFilter'] = None  # FibTradeFilter for --use-fib
 
 
 @dataclass
@@ -662,6 +671,238 @@ def translate_rpc_error(error: dict) -> str:
     return message or str(error)
 
 
+# ============================================================================
+# Fibonacci Trade Filter
+# ============================================================================
+
+@dataclass
+class FibFilterResult:
+    """Result of Fibonacci trade filter validation."""
+    can_execute: bool
+    reason: str
+    trend_direction: Optional[str] = None  # 'up' or 'down'
+    nearest_level: Optional[str] = None  # e.g., "38.2%"
+    level_price: Optional[float] = None
+    level_effectiveness: Optional[float] = None
+
+
+class FibTradeFilter:
+    """
+    Fibonacci-based trade filter for leading indicator trading.
+    
+    Rules:
+    1. Trades only in trend direction (buy in uptrend, sell in downtrend)
+    2. Buy signals require price near low or effective support level
+    3. Sell signals require price near high or effective resistance level
+    4. Trading halts if price moves outside the Fib high-low range
+    """
+    
+    def __init__(
+        self,
+        fib_report: FibonacciReport,
+        tolerance_pct: float = 0.5,
+        min_effectiveness: float = 60.0,
+        min_touches: int = 2,
+    ):
+        """
+        Initialize the Fibonacci trade filter.
+        
+        Args:
+            fib_report: FibonacciReport loaded from cache
+            tolerance_pct: % tolerance for "near level" detection
+            min_effectiveness: Min bounce rate to consider level effective
+            min_touches: Min touches for level to be considered
+        """
+        self.report = fib_report
+        self.tolerance_pct = tolerance_pct
+        self.min_effectiveness = min_effectiveness
+        self.min_touches = min_touches
+        
+        # Cache effective levels for quick lookup
+        self._cache_effective_levels()
+    
+    def _cache_effective_levels(self):
+        """Pre-compute effective support and resistance levels."""
+        self.effective_support_levels = []  # Below current price in uptrend
+        self.effective_resistance_levels = []  # Above current price in downtrend
+        
+        for key, level in self.report.levels.items():
+            if level.touch_count >= self.min_touches:
+                if level.effectiveness is not None and level.effectiveness >= self.min_effectiveness:
+                    self.effective_support_levels.append((key, level))
+                    self.effective_resistance_levels.append((key, level))
+        
+        # Sort by price
+        self.effective_support_levels.sort(key=lambda x: x[1].price)
+        self.effective_resistance_levels.sort(key=lambda x: x[1].price, reverse=True)
+    
+    def check_price_in_range(self, current_price: float) -> Tuple[bool, str]:
+        """
+        Check if current price is within the Fib analysis high-low range.
+        
+        Returns:
+            (is_valid, reason)
+        """
+        high = self.report.high_price
+        low = self.report.low_price
+        tolerance = (high - low) * (self.tolerance_pct / 100)
+        
+        if current_price > high + tolerance:
+            return False, f"Price ${current_price:.4f} above Fib high ${high:.4f} + tolerance"
+        if current_price < low - tolerance:
+            return False, f"Price ${current_price:.4f} below Fib low ${low:.4f} - tolerance"
+        
+        return True, "Price within Fib range"
+    
+    def _is_near_level(self, price: float, level_price: float) -> bool:
+        """Check if price is within tolerance of a level."""
+        tolerance = level_price * (self.tolerance_pct / 100)
+        return abs(price - level_price) <= tolerance
+    
+    def _find_nearest_effective_level(
+        self, 
+        price: float, 
+        levels: List[Tuple[str, 'FibonacciLevel']], 
+        direction: str
+    ) -> Optional[Tuple[str, 'FibonacciLevel']]:
+        """
+        Find the nearest effective level to the current price.
+        
+        For buy signals (support): Look for levels at or below current price
+        For sell signals (resistance): Look for levels at or above current price
+        """
+        for key, level in levels:
+            if self._is_near_level(price, level.price):
+                return (key, level)
+        return None
+    
+    def validate_buy_signal(self, current_price: float) -> FibFilterResult:
+        """
+        Validate a BUY signal against Fibonacci rules.
+        
+        Buy is valid if:
+        - Trend is UP (low before high)
+        - Price is near low OR near an effective support level
+        """
+        # Rule 1: Check trend direction
+        if self.report.trend_direction != 'up':
+            return FibFilterResult(
+                can_execute=False,
+                reason=f"BUY blocked: Fib trend is {self.report.trend_direction.upper()}, not UP",
+                trend_direction=self.report.trend_direction
+            )
+        
+        # Rule 2: Check if near low or effective support
+        # Check if near the low point
+        if self._is_near_level(current_price, self.report.low_price):
+            return FibFilterResult(
+                can_execute=True,
+                reason=f"BUY valid: Price near Fib low (${self.report.low_price:.4f})",
+                trend_direction='up',
+                nearest_level='100.0%',
+                level_price=self.report.low_price
+            )
+        
+        # Check effective support levels (at or below current price, within tolerance)
+        # A level is a support if price is at or slightly above the level
+        support_levels = [(k, l) for k, l in self.effective_support_levels 
+                          if l.price <= current_price or self._is_near_level(current_price, l.price)]
+        nearest = self._find_nearest_effective_level(current_price, support_levels, 'buy')
+        
+        if nearest:
+            key, level = nearest
+            return FibFilterResult(
+                can_execute=True,
+                reason=f"BUY valid: Price near {key} support (${level.price:.4f}, {level.effectiveness:.1f}% effective)",
+                trend_direction='up',
+                nearest_level=key,
+                level_price=level.price,
+                level_effectiveness=level.effectiveness
+            )
+        
+        return FibFilterResult(
+            can_execute=False,
+            reason=f"BUY blocked: Price ${current_price:.4f} not near any effective support level",
+            trend_direction='up'
+        )
+    
+    def validate_sell_signal(self, current_price: float) -> FibFilterResult:
+        """
+        Validate a SELL signal against Fibonacci rules.
+        
+        Sell is valid if:
+        - Trend is DOWN (high before low)
+        - Price is near high OR near an effective resistance level
+        """
+        # Rule 1: Check trend direction
+        if self.report.trend_direction != 'down':
+            return FibFilterResult(
+                can_execute=False,
+                reason=f"SELL blocked: Fib trend is {self.report.trend_direction.upper()}, not DOWN",
+                trend_direction=self.report.trend_direction
+            )
+        
+        # Rule 3: Check if near high or effective resistance
+        # Check if near the high point
+        if self._is_near_level(current_price, self.report.high_price):
+            return FibFilterResult(
+                can_execute=True,
+                reason=f"SELL valid: Price near Fib high (${self.report.high_price:.4f})",
+                trend_direction='down',
+                nearest_level='0.0%',
+                level_price=self.report.high_price
+            )
+        
+        # Check effective resistance levels (at or above current price, within tolerance)
+        # A level is resistance if price is at or slightly below the level
+        resistance_levels = [(k, l) for k, l in self.effective_resistance_levels 
+                             if l.price >= current_price or self._is_near_level(current_price, l.price)]
+        nearest = self._find_nearest_effective_level(current_price, resistance_levels, 'sell')
+        
+        if nearest:
+            key, level = nearest
+            return FibFilterResult(
+                can_execute=True,
+                reason=f"SELL valid: Price near {key} resistance (${level.price:.4f}, {level.effectiveness:.1f}% effective)",
+                trend_direction='down',
+                nearest_level=key,
+                level_price=level.price,
+                level_effectiveness=level.effectiveness
+            )
+        
+        return FibFilterResult(
+            can_execute=False,
+            reason=f"SELL blocked: Price ${current_price:.4f} not near any effective resistance level",
+            trend_direction='down'
+        )
+    
+    def validate_signal(self, signal_direction: str, current_price: float) -> FibFilterResult:
+        """
+        Validate a trading signal.
+        
+        Args:
+            signal_direction: 'rise' (buy) or 'fall' (sell)
+            current_price: Current price of the follower
+            
+        Returns:
+            FibFilterResult with validation outcome
+        """
+        # First check if price is in range
+        in_range, range_reason = self.check_price_in_range(current_price)
+        if not in_range:
+            return FibFilterResult(
+                can_execute=False,
+                reason=f"FIB INVALIDATED: {range_reason}",
+                trend_direction=self.report.trend_direction
+            )
+        
+        # Validate based on signal direction
+        if signal_direction == 'rise':
+            return self.validate_buy_signal(current_price)
+        else:  # 'fall'
+            return self.validate_sell_signal(current_price)
+
+
 class LiveTrader:
     """
     Live trading with Jupiter swaps via Trust Wallet (default) or LocalWallet.
@@ -692,6 +933,7 @@ class LiveTrader:
         max_trades: Optional[int] = None,
         max_trade_usd: Optional[float] = None,
         wallet_type: str = 'trustwallet',
+        fib_filter: Optional[FibTradeFilter] = None,
     ):
         self.pair_config = pair_config
         self.position_size_usd = position_size_usd
@@ -706,6 +948,7 @@ class LiveTrader:
         self.max_trades = max_trades
         self.max_trade_usd = max_trade_usd
         self.wallet_type = wallet_type
+        self.fib_filter = fib_filter
         
         # Wallet backend: LocalWallet + JupiterClient
         # Accepts Trust Wallet mnemonic (or any Solana private key)
@@ -934,6 +1177,24 @@ class LiveTrader:
             return False, "DOWN direction not viable per preflight"
         
         return True, "direction viable"
+    
+    def check_fib_filter(self, direction: str, current_follower_price: float) -> FibFilterResult:
+        """Check if a signal passes Fibonacci filtering.
+        
+        Args:
+            direction: 'rise' or 'fall'
+            current_follower_price: Current price of the follower token
+        
+        Returns:
+            FibFilterResult with validation outcome
+        """
+        if not self.fib_filter:
+            return FibFilterResult(
+                can_execute=True,
+                reason="Fib filter not enabled"
+            )
+        
+        return self.fib_filter.validate_signal(direction, current_follower_price)
     
     def _check_sol_balance(self, min_sol: float = 0.005) -> Tuple[bool, float]:
         """Check if wallet has enough SOL for transaction fees.
@@ -2493,6 +2754,32 @@ class LeadingIndicatorTester:
                         leader_t0 = leader_t1
                         continue
                 
+                # Fibonacci trade filtering (--use-fib)
+                if self.config.fib_filter:
+                    fib_result = self.config.fib_filter.validate_signal(direction, follower_price)
+                    
+                    if not fib_result.can_execute:
+                        # Check if this is a fatal invalidation (price outside range)
+                        if "FIB INVALIDATED" in fib_result.reason:
+                            logger.error(f"HALTING: {fib_result.reason}")
+                            print(f"\n{'='*70}")
+                            print(f"FIBONACCI ANALYSIS INVALIDATED")
+                            print(f"{'='*70}")
+                            print(f"Reason: {fib_result.reason}")
+                            print(f"\nTrading halted. To continue, regenerate Fib analysis with current data:")
+                            print(f"  python fibonacci_analyzer.py --symbol {self.pair_config.follower} --window 7d --save-report")
+                            print(f"{'='*70}\n")
+                            self.running = False
+                            break
+                        
+                        if self.config.verbose:
+                            logger.debug(f"Fib filter blocked signal: {fib_result.reason}")
+                        leader_t0 = leader_t1
+                        continue
+                    else:
+                        if self.config.verbose:
+                            logger.info(f"Fib filter: {fib_result.reason}")
+                
                 # LEGACY: Discovery report stronger_direction filter
                 if self.config.honor_directionality and self.pair_config.stronger_direction:
                     stronger = self.pair_config.stronger_direction
@@ -3230,6 +3517,12 @@ Examples:
     parser.add_argument('--fib-min-touches', type=int, default=2,
                         help='Minimum touches to report a Fibonacci level as significant (default: 2)')
     
+    # Fibonacci trade filtering options
+    parser.add_argument('--use-fib', action='store_true',
+                        help='Enable Fibonacci-based trade filtering (requires cached Fib report)')
+    parser.add_argument('--fib-min-effectiveness', type=float, default=60.0,
+                        help='Minimum bounce rate %% to consider a Fib level effective (default: 60)')
+    
     args = parser.parse_args()
     
     # Set logging level early
@@ -3433,10 +3726,67 @@ Examples:
                 for key, level in sorted(significant_levels, key=lambda x: x[1].price, reverse=True):
                     print(f"  • {key}: ${level.price:.4f} ({level.effectiveness:.1f}% bounce rate)")
                 print("")
+            
+            # Save report to cache for use by --use-fib
+            try:
+                save_fib_report(fib_report, './correlation_data')
+                print(f"Fib report saved to cache for {follower}")
+                print("")
+            except Exception as e:
+                logger.warning(f"Failed to save Fib report to cache: {e}")
         else:
             print(f"Warning: Could not generate Fibonacci report for {follower}")
             print("Continuing without Fibonacci analysis...")
             print("")
+    
+    # ==================== FIBONACCI TRADE FILTERING (--use-fib) ====================
+    fib_filter = None
+    if args.use_fib:
+        print("\n" + "=" * 70)
+        print("                    FIBONACCI TRADE FILTERING")
+        print("=" * 70)
+        
+        # Try to load cached Fib report
+        fib_report = load_fib_report(follower, './correlation_data')
+        
+        if not fib_report:
+            print(f"\n✗ ERROR: No cached Fib report found for {follower}")
+            print(f"  Run one of these commands first:")
+            print(f"    python fibonacci_analyzer.py --symbol {follower} --window 7d --save-report")
+            print(f"    python leading_indicator_tester.py --pair {args.pair} --fibonacci-analysis")
+            print("\nCannot proceed with --use-fib without a cached Fib report.")
+            sys.exit(1)
+        
+        # Create Fib filter
+        fib_filter = FibTradeFilter(
+            fib_report=fib_report,
+            tolerance_pct=args.fib_touch_tolerance,
+            min_effectiveness=args.fib_min_effectiveness,
+            min_touches=args.fib_min_touches,
+        )
+        
+        print(f"\nFib report loaded for {follower}:")
+        print(f"  Trend direction: {fib_report.trend_direction.upper()}")
+        print(f"  Price range: ${fib_report.low_price:.4f} - ${fib_report.high_price:.4f}")
+        print(f"  Window: {fib_report.analysis_window}")
+        print(f"  Effective levels: {len(fib_filter.effective_support_levels)}")
+        
+        # Show effective levels
+        if fib_filter.effective_support_levels:
+            print(f"\n  Effective Fib levels (>={args.fib_min_effectiveness}% bounce rate):")
+            for key, level in sorted(fib_filter.effective_support_levels, key=lambda x: x[1].price, reverse=True):
+                print(f"    • {key}: ${level.price:.4f} ({level.effectiveness:.1f}%)")
+        
+        # Trading direction based on Fib trend
+        fib_direction = 'BUY only' if fib_report.trend_direction == 'up' else 'SELL only'
+        print(f"\n  Trade direction: {fib_direction}")
+        
+        # Check for conflict with --directional-filter
+        if args.directional_filter:
+            # Will be checked again after preflight, but warn early if obvious conflict
+            print(f"\n  Note: --directional-filter is also enabled.")
+            print(f"  Fib trend: {fib_report.trend_direction.upper()}")
+            print(f"  Signals will be validated against BOTH filters.")
     
     # ==================== LIVE MODE PREFLIGHT ====================
     if args.trading_mode == 'live':
@@ -3497,6 +3847,37 @@ Examples:
             print(f"  UP signals: {'✓ Allowed' if up_viable else '✗ Blocked'}")
             print(f"  DOWN signals: {'✓ Allowed' if down_viable else '✗ Blocked'}")
         
+        # Check for conflict between --use-fib and --directional-filter
+        if args.use_fib and args.directional_filter and fib_filter:
+            fib_trend = fib_filter.report.trend_direction
+            conflict = False
+            
+            # Fib uptrend = BUY only, Fib downtrend = SELL only
+            if fib_trend == 'up' and not up_viable:
+                conflict = True
+                print(f"\n✗ CONFLICT DETECTED:")
+                print(f"  Fib analysis indicates UPTREND (BUY signals only)")
+                print(f"  Directional filter says UP not viable")
+                print(f"  No valid trading direction available.")
+            elif fib_trend == 'down' and not down_viable:
+                conflict = True
+                print(f"\n✗ CONFLICT DETECTED:")
+                print(f"  Fib analysis indicates DOWNTREND (SELL signals only)")
+                print(f"  Directional filter says DOWN not viable")
+                print(f"  No valid trading direction available.")
+            
+            if conflict:
+                print("\nCannot proceed: --use-fib and --directional-filter conflict.")
+                print("Options:")
+                print("  1. Remove --directional-filter to trade based on Fib trend only")
+                print("  2. Remove --use-fib to trade based on directional analysis only")
+                print("  3. Wait for market conditions to change")
+                sys.exit(1)
+            else:
+                print(f"\n✓ Fib and directional filters are compatible:")
+                print(f"  Fib trend: {fib_trend.upper()} → {'BUY' if fib_trend == 'up' else 'SELL'} signals")
+                print(f"  Directional: {'UP viable' if up_viable else 'UP blocked'}, {'DOWN viable' if down_viable else 'DOWN blocked'}")
+        
         # Dry-run mode: show what would happen and exit
         if args.dry_run:
             mode_str = "SWAP MODE" if args.swap_mode else "USDC MODE"
@@ -3550,6 +3931,7 @@ Examples:
             max_trades=args.max_trades,
             max_trade_usd=args.max_trade_usd,
             wallet_type=args.wallet_type,
+            fib_filter=fib_filter,  # Fibonacci trade filtering (--use-fib)
         )
         
         if not live_trader.initialize():
@@ -3583,6 +3965,7 @@ Examples:
             down_viable=down_viable,
             max_trades=args.max_trades,
             live_trader=live_trader,  # Enables real Jupiter swaps
+            fib_filter=fib_filter,  # Fibonacci trade filtering (--use-fib)
         )
         
         print("[LIVE] Starting monitoring loop...")
@@ -3640,6 +4023,7 @@ Examples:
         auto_refresh=args.auto_refresh == 'yes',
         report_path=args.report,
         max_trades=args.max_trades,
+        fib_filter=fib_filter,  # Fibonacci trade filtering (--use-fib)
     )
     
     # Run tester

@@ -30,7 +30,11 @@ from fibonacci_analyzer import (
     format_duration,
     format_report,
     format_summary_table,
+    save_fib_report,
+    load_fib_report,
+    list_cached_reports,
 )
+from leading_indicator_tester import FibTradeFilter, FibFilterResult
 
 
 class TestParseDuration(unittest.TestCase):
@@ -496,6 +500,279 @@ class TestIntegration(unittest.TestCase):
         formatted = format_report(report)
         self.assertIsInstance(formatted, str)
         self.assertIn('TEST', formatted)
+
+
+class TestFibReportCache(unittest.TestCase):
+    """Test Fib Report Cache save/load functionality."""
+    
+    def setUp(self):
+        """Create temporary directory for cache tests."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.data_dir = Path(self.temp_dir) / 'correlation_data'
+        self.data_dir.mkdir(parents=True)
+    
+    def tearDown(self):
+        """Clean up temporary directory."""
+        import shutil
+        shutil.rmtree(self.temp_dir)
+    
+    def _create_sample_report(self, symbol='SOL'):
+        """Create a sample FibonacciReport for testing."""
+        return FibonacciReport(
+            symbol=symbol,
+            analysis_window='7d',
+            window_start=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            window_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+            high_price=185.42,
+            high_timestamp=datetime(2026, 5, 27, 14, 30, tzinfo=timezone.utc),
+            low_price=142.18,
+            low_timestamp=datetime(2026, 5, 22, 3, 15, tzinfo=timezone.utc),
+            trend_direction='up',
+            levels={
+                '0.0%': FibonacciLevel(ratio=0.0, price=185.42, touch_count=1),
+                '38.2%': FibonacciLevel(ratio=0.382, price=168.90, touch_count=5, bounce_count=4),
+                '61.8%': FibonacciLevel(ratio=0.618, price=158.70, touch_count=3, bounce_count=2),
+            },
+            most_respected_level='38.2%',
+            overall_effectiveness=66.7,
+            total_touches=9,
+            total_bounces=6,
+        )
+    
+    def test_save_and_load_report(self):
+        """Test saving and loading a report."""
+        report = self._create_sample_report()
+        
+        # Save
+        save_fib_report(report, str(self.data_dir))
+        
+        # Verify file exists
+        report_path = self.data_dir / 'fib_reports' / 'SOL_fib_report.json'
+        self.assertTrue(report_path.exists())
+        
+        # Load
+        loaded = load_fib_report('SOL', str(self.data_dir))
+        
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.symbol, 'SOL')
+        self.assertEqual(loaded.high_price, 185.42)
+        self.assertEqual(loaded.low_price, 142.18)
+        self.assertEqual(loaded.trend_direction, 'up')
+        self.assertEqual(len(loaded.levels), 3)
+        self.assertEqual(loaded.levels['38.2%'].touch_count, 5)
+    
+    def test_load_nonexistent_report(self):
+        """Test loading a report that doesn't exist."""
+        loaded = load_fib_report('NOTFOUND', str(self.data_dir))
+        self.assertIsNone(loaded)
+    
+    def test_list_cached_reports(self):
+        """Test listing cached reports."""
+        # Initially empty
+        cached = list_cached_reports(str(self.data_dir))
+        self.assertEqual(len(cached), 0)
+        
+        # Save some reports
+        save_fib_report(self._create_sample_report('SOL'), str(self.data_dir))
+        save_fib_report(self._create_sample_report('BTC'), str(self.data_dir))
+        
+        # List should show both
+        cached = list_cached_reports(str(self.data_dir))
+        self.assertEqual(len(cached), 2)
+        self.assertIn('SOL', cached)
+        self.assertIn('BTC', cached)
+    
+    def test_report_round_trip_preserves_data(self):
+        """Test that save/load preserves all report data."""
+        original = self._create_sample_report()
+        
+        save_fib_report(original, str(self.data_dir))
+        loaded = load_fib_report('SOL', str(self.data_dir))
+        
+        # Compare key fields
+        self.assertEqual(original.symbol, loaded.symbol)
+        self.assertEqual(original.analysis_window, loaded.analysis_window)
+        self.assertEqual(original.high_price, loaded.high_price)
+        self.assertEqual(original.low_price, loaded.low_price)
+        self.assertEqual(original.trend_direction, loaded.trend_direction)
+        self.assertEqual(original.most_respected_level, loaded.most_respected_level)
+        self.assertEqual(original.overall_effectiveness, loaded.overall_effectiveness)
+        self.assertEqual(len(original.levels), len(loaded.levels))
+
+
+class TestFibTradeFilter(unittest.TestCase):
+    """Test Fibonacci trade filtering logic."""
+    
+    def _create_uptrend_report(self):
+        """Create an uptrend Fib report (low before high)."""
+        return FibonacciReport(
+            symbol='SOL',
+            analysis_window='7d',
+            window_start=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            window_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+            high_price=200.0,
+            high_timestamp=datetime(2026, 5, 27, 14, 30, tzinfo=timezone.utc),
+            low_price=100.0,
+            low_timestamp=datetime(2026, 5, 22, 3, 15, tzinfo=timezone.utc),
+            trend_direction='up',  # Low before high = uptrend
+            levels={
+                '0.0%': FibonacciLevel(ratio=0.0, price=200.0, touch_count=1),
+                '38.2%': FibonacciLevel(ratio=0.382, price=161.8, touch_count=5, bounce_count=4),
+                '50.0%': FibonacciLevel(ratio=0.5, price=150.0, touch_count=3, bounce_count=1),
+                '61.8%': FibonacciLevel(ratio=0.618, price=138.2, touch_count=4, bounce_count=3),
+                '100.0%': FibonacciLevel(ratio=1.0, price=100.0, touch_count=1),
+            },
+            most_respected_level='38.2%',
+            overall_effectiveness=66.7,
+        )
+    
+    def _create_downtrend_report(self):
+        """Create a downtrend Fib report (high before low)."""
+        return FibonacciReport(
+            symbol='SOL',
+            analysis_window='7d',
+            window_start=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            window_end=datetime(2026, 5, 28, tzinfo=timezone.utc),
+            high_price=200.0,
+            high_timestamp=datetime(2026, 5, 22, 3, 15, tzinfo=timezone.utc),  # High comes first
+            low_price=100.0,
+            low_timestamp=datetime(2026, 5, 27, 14, 30, tzinfo=timezone.utc),  # Low comes after
+            trend_direction='down',  # High before low = downtrend
+            levels={
+                '0.0%': FibonacciLevel(ratio=0.0, price=200.0, touch_count=1),
+                '38.2%': FibonacciLevel(ratio=0.382, price=161.8, touch_count=5, bounce_count=4),
+                '50.0%': FibonacciLevel(ratio=0.5, price=150.0, touch_count=3, bounce_count=1),
+                '61.8%': FibonacciLevel(ratio=0.618, price=138.2, touch_count=4, bounce_count=3),
+                '100.0%': FibonacciLevel(ratio=1.0, price=100.0, touch_count=1),
+            },
+            most_respected_level='38.2%',
+            overall_effectiveness=66.7,
+        )
+    
+    def test_uptrend_buy_valid_near_low(self):
+        """In uptrend, BUY near the low should be valid."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_uptrend_report(),
+            tolerance_pct=1.0,  # 1% tolerance
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Price near the low (100.0) should be valid for BUY
+        result = fib_filter.validate_signal('rise', 100.5)
+        self.assertTrue(result.can_execute)
+        self.assertIn('BUY valid', result.reason)
+    
+    def test_uptrend_buy_valid_near_support(self):
+        """In uptrend, BUY near effective support level should be valid."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_uptrend_report(),
+            tolerance_pct=1.0,
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Price near 61.8% level (138.2) which has >60% effectiveness
+        result = fib_filter.validate_signal('rise', 138.0)
+        self.assertTrue(result.can_execute)
+        self.assertIn('BUY valid', result.reason)
+    
+    def test_uptrend_buy_blocked_not_near_support(self):
+        """In uptrend, BUY far from support levels should be blocked."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_uptrend_report(),
+            tolerance_pct=0.5,  # Tight tolerance
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Price at 180.0 - far from any effective support level
+        result = fib_filter.validate_signal('rise', 180.0)
+        self.assertFalse(result.can_execute)
+        self.assertIn('BUY blocked', result.reason)
+    
+    def test_uptrend_sell_blocked(self):
+        """In uptrend, SELL signals should be blocked."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_uptrend_report(),
+            tolerance_pct=1.0,
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Any SELL should be blocked in uptrend
+        result = fib_filter.validate_signal('fall', 150.0)
+        self.assertFalse(result.can_execute)
+        self.assertIn('SELL blocked', result.reason)
+        self.assertIn('not DOWN', result.reason)
+    
+    def test_downtrend_sell_valid_near_high(self):
+        """In downtrend, SELL near the high should be valid."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_downtrend_report(),
+            tolerance_pct=1.0,
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Price near the high (200.0) should be valid for SELL
+        result = fib_filter.validate_signal('fall', 199.0)
+        self.assertTrue(result.can_execute)
+        self.assertIn('SELL valid', result.reason)
+    
+    def test_downtrend_buy_blocked(self):
+        """In downtrend, BUY signals should be blocked."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_downtrend_report(),
+            tolerance_pct=1.0,
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Any BUY should be blocked in downtrend
+        result = fib_filter.validate_signal('rise', 150.0)
+        self.assertFalse(result.can_execute)
+        self.assertIn('BUY blocked', result.reason)
+        self.assertIn('not UP', result.reason)
+    
+    def test_price_out_of_range_invalidates(self):
+        """Price outside Fib range should invalidate analysis."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_uptrend_report(),
+            tolerance_pct=0.5,
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Price above high (200.0) + tolerance
+        result = fib_filter.validate_signal('rise', 210.0)
+        self.assertFalse(result.can_execute)
+        self.assertIn('FIB INVALIDATED', result.reason)
+        
+        # Price below low (100.0) - tolerance
+        result = fib_filter.validate_signal('rise', 90.0)
+        self.assertFalse(result.can_execute)
+        self.assertIn('FIB INVALIDATED', result.reason)
+    
+    def test_check_price_in_range(self):
+        """Test price range checking."""
+        fib_filter = FibTradeFilter(
+            fib_report=self._create_uptrend_report(),
+            tolerance_pct=1.0,  # 1% of range (100) = 1 tolerance
+            min_effectiveness=60.0,
+            min_touches=2,
+        )
+        
+        # Within range
+        in_range, _ = fib_filter.check_price_in_range(150.0)
+        self.assertTrue(in_range)
+        
+        # At the boundaries (with tolerance)
+        in_range, _ = fib_filter.check_price_in_range(100.5)
+        self.assertTrue(in_range)
+        
+        in_range, _ = fib_filter.check_price_in_range(200.5)
+        self.assertTrue(in_range)
 
 
 if __name__ == '__main__':

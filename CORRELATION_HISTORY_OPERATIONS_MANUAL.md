@@ -597,6 +597,178 @@ Summary: 2 pairs analyzed
 
 ---
 
+## Fibonacci Retracement Analysis
+
+The Fibonacci analyzer (`fibonacci_analyzer.py`) provides technical analysis of price data to identify key support/resistance levels based on Fibonacci retracement ratios.
+
+### Overview
+
+Fibonacci retracement levels (23.6%, 38.2%, 50%, 61.8%, 78.6%) are derived from the Fibonacci sequence and are used to identify potential support and resistance levels where price may bounce or reverse.
+
+**Key Features:**
+- Analyzes historical price data to find swing highs/lows
+- Calculates Fibonacci levels between extremes
+- Tracks how often price "bounces" vs "breaks through" each level
+- Caches reports for use in trade filtering
+
+### Standalone Usage
+
+```bash
+# Analyze SOL for the last 7 days
+python fibonacci_analyzer.py --symbol SOL --window 7d
+
+# Analyze and save to cache for use by leading_indicator_tester
+python fibonacci_analyzer.py --symbol SOL --window 7d --save-report
+
+# Analyze from CSV file (OHLCV format)
+python fibonacci_analyzer.py --symbol BTC --csv btc_ohlcv.csv
+
+# Analyze multiple symbols with summary
+python fibonacci_analyzer.py --symbol SOL,BTC,ETH --window 7d --summary-only
+
+# List cached Fib reports
+python fibonacci_analyzer.py --list-cached
+```
+
+### CLI Options
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--symbol` | comma-separated | *(all)* | Symbol(s) to analyze |
+| `--window` | duration | `7d` | Analysis window (e.g., 24h, 7d) |
+| `--csv` | filename | *(none)* | Load from CSV instead of JSONL |
+| `--data-dir` | path | `./correlation_data` | Data directory |
+| `--touch-tolerance` | float | `0.5` | % tolerance for level touch detection |
+| `--confirmation-periods` | int | `3` | Periods to confirm bounce/breakthrough |
+| `--min-touches` | int | `2` | Min touches to report level as significant |
+| `--save-report` | flag | `false` | Save report to cache |
+| `--list-cached` | flag | `false` | List cached reports |
+| `--output-format` | text/json | `text` | Output format |
+
+### Fib Report Cache
+
+Reports are cached to `./correlation_data/fib_reports/{SYMBOL}_fib_report.json` for use by the leading indicator tester.
+
+**Writers:**
+- `fibonacci_analyzer.py --save-report`
+- `leading_indicator_tester.py --fibonacci-analysis`
+
+**Readers:**
+- `leading_indicator_tester.py --use-fib`
+
+### Integration with Leading Indicator Tester
+
+#### Reporting Only (--fibonacci-analysis)
+
+Run Fib analysis before trading and display key levels:
+
+```bash
+python leading_indicator_tester.py --pair BTC:SOL --fibonacci-analysis --fib-window 7d
+```
+
+This displays the Fib report and saves it to cache, but does NOT affect trading decisions.
+
+#### Trade Filtering (--use-fib)
+
+Enable Fibonacci-based trade filtering to validate signals:
+
+```bash
+python leading_indicator_tester.py --pair BTC:SOL --use-fib
+```
+
+**Trading Rules:**
+1. **Trend Direction**: Only trade in the direction of the Fib trend
+   - Uptrend (low before high) → BUY signals only
+   - Downtrend (high before low) → SELL signals only
+
+2. **Support/Resistance Validation**:
+   - BUY valid if price is near low or effective support level
+   - SELL valid if price is near high or effective resistance level
+
+3. **Range Invalidation**: Trading halts if price exits the Fib high-low range
+
+#### Fib Trade Filtering Options
+
+| Option | Values | Default | Description |
+|--------|--------|---------|-------------|
+| `--use-fib` | flag | `false` | Enable Fib trade filtering |
+| `--fib-touch-tolerance` | float | `0.5` | % tolerance for "near level" detection |
+| `--fib-min-effectiveness` | float | `60` | Min bounce rate % for effective level |
+| `--fib-min-touches` | int | `2` | Min touches for level to qualify |
+
+### Workflow Example
+
+```bash
+# Step 1: Collect price data
+python correlation_tracker.py --coins BTC,SOL --interval 30 --duration 7d
+
+# Step 2: Run discovery analysis
+python correlation_tracker.py --analyze --data-dir ./correlation_data
+
+# Step 3: Generate and cache Fib analysis
+python fibonacci_analyzer.py --symbol SOL --window 7d --save-report
+
+# Step 4: Paper trade with Fib filtering
+python leading_indicator_tester.py --pair BTC:SOL --use-fib --duration 1hr
+
+# Step 5: Live trade with Fib filtering (after paper testing)
+python leading_indicator_tester.py --pair BTC:SOL --trading-mode live --use-fib
+```
+
+### Understanding the Output
+
+```
+======================================================================
+                    FIBONACCI RETRACEMENT ANALYSIS
+======================================================================
+Symbol: SOL
+Analysis Window: 7 days (2026-05-21 to 2026-05-28)
+Trend Direction: UPTREND (low before high)
+
+Price Range:
+  High: $185.42 (2026-05-27 14:30 UTC)
+  Low:  $142.18 (2026-05-22 03:15 UTC)
+
+----------------------------------------------------------------------
+                         FIBONACCI LEVELS
+----------------------------------------------------------------------
+Level     Price      Touches  Bounces  Breakthroughs  Effectiveness
+----------------------------------------------------------------------
+0.0%      $185.42    1        -        -              (High)
+23.6%     $175.22    4        3        1              75.0%
+38.2%     $168.90    7        5        2              71.4%
+50.0%     $163.80    5        2        3              40.0%
+61.8%     $158.70    3        2        1              66.7%
+78.6%     $151.42    2        2        0              100.0%
+100.0%    $142.18    1        -        -              (Low)
+----------------------------------------------------------------------
+
+Most Respected Level: 78.6% ($151.42) - 100% bounce rate
+Overall Effectiveness: 66.7%
+======================================================================
+```
+
+**Key Metrics:**
+- **Touches**: Number of times price came within tolerance of the level
+- **Bounces**: Price touched and returned to the same side
+- **Breakthroughs**: Price touched and continued to the other side
+- **Effectiveness**: Bounce rate (bounces ÷ touches × 100)
+
+### Conflict Detection
+
+If `--use-fib` and `--directional-filter` are both enabled, the system checks for conflicts:
+
+```
+✗ CONFLICT DETECTED:
+  Fib analysis indicates UPTREND (BUY signals only)
+  Directional filter says UP not viable
+  No valid trading direction available.
+```
+
+This is correct behavior - if filters disagree, no trades can be executed safely.
+
+---
+
 ## Troubleshooting
 
 ### Unknown Coin Symbol
