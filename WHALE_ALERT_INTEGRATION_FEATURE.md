@@ -258,7 +258,7 @@ Conclude your analysis with <**{coin_symbol}-PRS-BUY/SELL/HOLD**>"""
 
 ### Phase 3: Main Script Integration
 
-Update `geminigroundlin15.py`:
+Update `crypto_trading_bot.py`:
 
 ```python
 from whaleutil import WhaleTracker

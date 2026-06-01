@@ -518,7 +518,7 @@ def extract_coin_after_number(text: str, number: int) -> Optional[str]:
 
 ### Phase 2: Integration
 
-Replace current extraction logic in `geminigroundlin15.py`:
+Replace current extraction logic in `crypto_trading_bot.py`:
 
 ```python
 from coinextractor import extract_coin_after_number, extract_coins_from_social_line
@@ -563,7 +563,7 @@ def validate_symbol(symbol: str, trader) -> bool:
 
 1. Create `coinextractor.py` module
 2. Add unit tests for all observed formats
-3. Replace extraction logic in `geminigroundlin15.py`
+3. Replace extraction logic in `crypto_trading_bot.py`
 4. Add debug logging for extraction failures
 5. Monitor production logs for new failure patterns
 6. Expand `NAME_TO_SYMBOL` and `KNOWN_SYMBOLS` as needed
@@ -585,7 +585,7 @@ Implement **Option B6 (Hybrid Multi-Stage Pipeline)** via a dedicated `coinextra
 |----------|--------|--------|--------|
 | 1 | Create `coinextractor.py` module | Medium | High |
 | 2 | Add name-to-symbol mapping table | Low | High |
-| 3 | Replace extraction logic in `geminigroundlin15.py` | Medium | High |
+| 3 | Replace extraction logic in `crypto_trading_bot.py` | Medium | High |
 | 4 | Add Coinbase API validation (optional) | Low | Medium |
 | 5 | Add unit tests for all observed formats | Low | Medium |
 
@@ -596,7 +596,7 @@ Implement **Option B6 (Hybrid Multi-Stage Pipeline)** via a dedicated `coinextra
 ### Files to Modify
 
 1. **New: `coinextractor.py`** - Centralized extraction with fallback chain
-2. **`geminigroundlin15.py`** - Use new extractor module
+2. **`crypto_trading_bot.py`** - Use new extractor module
 
 ### Future Consideration
 

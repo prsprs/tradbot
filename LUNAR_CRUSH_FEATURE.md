@@ -45,13 +45,13 @@ CATEGORIES = os.environ.get('CATEGORIES', '')  # e.g., "meme-coins,defi"
 **Usage Examples:**
 ```bash
 # Solana meme coins
-CHAINS=solana CATEGORIES=meme-coins python geminigroundlin15.py
+CHAINS=solana CATEGORIES=meme-coins python crypto_trading_bot.py
 
 # Base DeFi tokens
-CHAINS=base CATEGORIES=defi python geminigroundlin15.py
+CHAINS=base CATEGORIES=defi python crypto_trading_bot.py
 
 # Multi-chain meme coins
-CHAINS=solana,base,ethereum CATEGORIES=meme-coins python geminigroundlin15.py
+CHAINS=solana,base,ethereum CATEGORIES=meme-coins python crypto_trading_bot.py
 ```
 
 **Benefit:** Single API call replaces 500+ per-symbol queries

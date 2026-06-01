@@ -28,7 +28,7 @@ export CLAUDE_API_KEY=...     # Claude
 export COINBASE_API_KEY=...   # Coinbase trading
 
 # Run main trading bot
-python geminigroundlin15.py --trading-mode whatif --llm-mode compare
+python crypto_trading_bot.py --trading-mode whatif --llm-mode compare
 ```
 
 See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
@@ -39,7 +39,7 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 
 | Project | Description | Design Doc | Operations Manual | Status | Main Module | Comments |
 |---------|-------------|------------|-------------------|--------|-------------|----------|
-| **Crypto Trading Bot** | AI-powered trading using multi-LLM consensus | [CRYPTO_TRADING_BOT.md](CRYPTO_TRADING_BOT.md) | [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) | ✅ Implemented | `geminigroundlin15.py` | Core system - Gemini, Claude, OpenAI, Grok, Perplexity |
+| **Crypto Trading Bot** | AI-powered trading using multi-LLM consensus | [CRYPTO_TRADING_BOT.md](CRYPTO_TRADING_BOT.md) | [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) | ✅ Implemented | `crypto_trading_bot.py` | Core system - Gemini, Claude, OpenAI, Grok, Perplexity |
 | **LLM Compare** | Multi-LLM comparison and integration framework | [LLMCompareFeature.md](LLMCompareFeature.md) | [LLM_COMPARE_OPERATIONS_MANUAL.md](LLM_COMPARE_OPERATIONS_MANUAL.md) | ✅ Implemented | `llm_compare.py` | General-purpose LLM comparison tool |
 | **Correlation Tracker** | Intraday price collection and leading indicator discovery | [CORRELATION_HISTORY_TRACKER.md](CORRELATION_HISTORY_TRACKER.md) | [CORRELATION_HISTORY_OPERATIONS_MANUAL.md](CORRELATION_HISTORY_OPERATIONS_MANUAL.md) | ✅ Implemented | `correlation_tracker.py` | Collect mode + Analyze mode |
 | **Leading Indicator Tester** | Paper trading simulation for correlation pairs | [LEADING_INDICATOR_PERFORMANCE_TESTER.md](LEADING_INDICATOR_PERFORMANCE_TESTER.md) | — | ✅ Implemented | `leading_indicator_tester.py` | Cross-exchange arbitrage investigation |
@@ -56,14 +56,14 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 | Feature | Description | Design Doc | Status | Module | Comments |
 |---------|-------------|------------|--------|--------|----------|
 | **Coin Categorization** | Filter coins by category (meme, DeFi, AI) | [COIN_CATEGORIZATION_FEATURE.md](COIN_CATEGORIZATION_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Uses LunarCrush API |
-| **Coin Choice** | Analyze specific coins directly | [COIN_CHOICE_FEATURE.md](COIN_CHOICE_FEATURE.md) | ✅ Implemented | `geminigroundlin15.py` | `--coins` flag or `ANALYZE_COINS` env |
+| **Coin Choice** | Analyze specific coins directly | [COIN_CHOICE_FEATURE.md](COIN_CHOICE_FEATURE.md) | ✅ Implemented | `crypto_trading_bot.py` | `--coins` flag or `ANALYZE_COINS` env |
 | **Compare with Bitcoin** | Evaluate altcoin alpha vs BTC | [COMPARE_WITH_BITCOIN_FEATURE.md](COMPARE_WITH_BITCOIN_FEATURE.md) | 📋 Design Only | — | Risk-adjusted comparison |
 | **History Analysis** | Track and analyze recommendation accuracy | [HISTORY_ANALYSIS_FEATURE.md](HISTORY_ANALYSIS_FEATURE.md) | ✅ Implemented | `historyutil.py` | Performance metrics by LLM |
 | **LunarCrush Integration** | Social intelligence data for coins | [LUNAR_CRUSH_FEATURE.md](LUNAR_CRUSH_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Categories, blockchains, sentiment |
 | **Polymarket Integration** | Prediction market sentiment data | [POLYMARKET_FEATURE.md](POLYMARKET_FEATURE.md) | ✅ Implemented | `polymarketutil.py` | Market-validated coin selection |
 | **Stock Trading** | Extend bot to Coinbase stock trading | [STOCK_TRADING_FEATURE.md](STOCK_TRADING_FEATURE.md) | 📋 Design Only | — | US equities via Coinbase |
 | **Whale Alert** | Large transaction tracking | [WHALE_ALERT_INTEGRATION_FEATURE.md](WHALE_ALERT_INTEGRATION_FEATURE.md) | 📋 Design Only | — | Exchange inflow/outflow signals |
-| **What-If Mode** | Paper trading / simulation mode | [WHAT_IF_MODE_FEATURE.md](WHAT_IF_MODE_FEATURE.md) | ✅ Implemented | `geminigroundlin15.py` | `--trading-mode whatif` |
+| **What-If Mode** | Paper trading / simulation mode | [WHAT_IF_MODE_FEATURE.md](WHAT_IF_MODE_FEATURE.md) | ✅ Implemented | `crypto_trading_bot.py` | `--trading-mode whatif` |
 
 ---
 
@@ -82,7 +82,7 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 
 ```
 tradingbot/
-├── geminigroundlin15.py      # Main trading bot
+├── crypto_trading_bot.py      # Main trading bot
 ├── llm_compare.py            # General-purpose LLM comparison
 ├── correlation_tracker.py    # Price collection & correlation analysis
 ├── leading_indicator_tester.py # Paper trading for correlation pairs
@@ -139,7 +139,7 @@ tradingbot/
 ## Getting Started by Use Case
 
 ### I want to trade crypto with AI recommendations
-→ Start with [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) and `geminigroundlin15.py`
+→ Start with [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) and `crypto_trading_bot.py`
 
 ### I want to find correlated trading pairs
 → See [CORRELATION_HISTORY_TRACKER.md](CORRELATION_HISTORY_TRACKER.md) and run `correlation_tracker.py`

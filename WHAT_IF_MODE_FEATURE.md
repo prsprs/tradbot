@@ -32,14 +32,14 @@ Per the recommendations in `METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md`, trading m
 
 **Command-line argument (preferred for explicitness):**
 ```bash
-python geminigroundlin15.py --trading-mode=whatif
-python geminigroundlin15.py --trading-mode=live
+python crypto_trading_bot.py --trading-mode=whatif
+python crypto_trading_bot.py --trading-mode=live
 ```
 
 **Environment variable (fallback):**
 ```bash
 export TRADING_MODE=whatif
-python geminigroundlin15.py
+python crypto_trading_bot.py
 ```
 
 **Precedence:** CLI argument > Environment variable > Default (`live`)
@@ -77,7 +77,7 @@ No actual trades were executed.
 
 ### Implementation Changes
 
-#### 1. Add Argument Parsing (geminigroundlin15.py)
+#### 1. Add Argument Parsing (crypto_trading_bot.py)
 
 ```python
 import argparse
@@ -200,7 +200,7 @@ This allows the analyzer to filter or flag what-if recommendations separately.
 
 ## Files to Modify
 
-1. `geminigroundlin15.py` - Add TRADING_MODE logic, update trade execution
+1. `crypto_trading_bot.py` - Add TRADING_MODE logic, update trade execution
 2. `historyutil.py` - Optionally add trading_mode to recommendation records
 3. `OPERATIONS_MANUAL.md` - Document new environment variable
 4. `README.md` - Add what-if mode to quick start

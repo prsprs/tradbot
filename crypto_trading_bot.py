@@ -40,8 +40,8 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python geminigroundlin15.py --llm-mode=compare --coins=PEPE,BONK
-  python geminigroundlin15.py --trading-mode=whatif --llm-mode=integrate
+  python crypto_trading_bot.py --llm-mode=compare --coins=PEPE,BONK
+  python crypto_trading_bot.py --trading-mode=whatif --llm-mode=integrate
   
 Environment variables can also be used (CLI takes precedence):
   TRADING_MODE, LLM_MODE, PRIMARY_LLM, COMPARE_LLMS, ANALYZE_COINS, etc.

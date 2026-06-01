@@ -1030,7 +1030,7 @@ The following decisions were made for MVP scope:
 
 | Trading Bot Component | General Purpose Equivalent |
 |----------------------|---------------------------|
-| `geminigroundlin15.py` (LLM calls) | `llm_utils/*.py` |
+| `crypto_trading_bot.py` (LLM calls) | `llm_utils/*.py` |
 | `process_coin_with_comparison()` | `process_prompt_with_comparison()` |
 | `get_llm_response()` | `get_llm_response()` (abstracted) |
 | `googleTrendsRequest()` | `context/trends.py` |
@@ -1119,7 +1119,7 @@ Recommendation saved to ./history/recommendations.json
 
 ## References
 
-- Trading bot architecture (`geminigroundlin15.py`)
+- Trading bot architecture (`crypto_trading_bot.py`)
 - LLM utility patterns (`claudeutil.py`, `grokutil.py`, etc.)
 - History recording patterns (`historyutil.py`)
 - Multi-LLM integration logic (compare/integrate modes)

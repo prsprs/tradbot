@@ -148,7 +148,7 @@ asterisks, followed by a right angle bracket
 ### 1. Asset Type Configuration
 
 ```python
-# In geminigroundlin15.py
+# In crypto_trading_bot.py
 ASSET_TYPE = os.environ.get('ASSET_TYPE', 'crypto').lower()
 
 def get_discovery_prompt():
@@ -254,12 +254,12 @@ def send_recommendation_request(self, asset_type='crypto'):
 
 ### Stock Discovery Mode
 ```bash
-ASSET_TYPE=stock python geminigroundlin15.py
+ASSET_TYPE=stock python crypto_trading_bot.py
 ```
 
 ### Analyze Specific Stocks
 ```bash
-ASSET_TYPE=stock ANALYZE_COINS=AAPL,TSLA,NVDA python geminigroundlin15.py
+ASSET_TYPE=stock ANALYZE_COINS=AAPL,TSLA,NVDA python crypto_trading_bot.py
 ```
 
 ### Stock with Multi-LLM Compare
@@ -268,7 +268,7 @@ ASSET_TYPE=stock \
   ANALYZE_COINS=AAPL,MSFT \
   LLM_MODE=compare \
   COMPARE_LLMS=gemini,claude,grok \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 
 ### Mixed Mode (Future)
@@ -277,7 +277,7 @@ ASSET_TYPE=stock \
 ASSET_TYPE=mixed \
   ANALYZE_CRYPTO=BTC,ETH \
   ANALYZE_STOCKS=AAPL,TSLA \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 
 ## Open Questions

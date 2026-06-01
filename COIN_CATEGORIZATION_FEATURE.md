@@ -691,22 +691,22 @@ def get_coins_with_markets(self) -> Set[str]:
 
 ```bash
 # Solana meme coins only
-CHAINS=solana CATEGORIES=meme-coins python geminigroundlin15.py
+CHAINS=solana CATEGORIES=meme-coins python crypto_trading_bot.py
 
 # Base ecosystem DeFi tokens
-CHAINS=base CATEGORIES=defi python geminigroundlin15.py
+CHAINS=base CATEGORIES=defi python crypto_trading_bot.py
 
 # Any meme coin with Polymarket interest (market-validated)
-CATEGORIES=meme-coins POLYMARKET_FILTER=true python geminigroundlin15.py
+CATEGORIES=meme-coins POLYMARKET_FILTER=true python crypto_trading_bot.py
 
 # Multi-chain: Solana OR Base meme coins
-CHAINS=solana,base CATEGORIES=meme-coins python geminigroundlin15.py
+CHAINS=solana,base CATEGORIES=meme-coins python crypto_trading_bot.py
 
 # Only coins people are betting on (no category/chain filter)
-POLYMARKET_FILTER=true python geminigroundlin15.py
+POLYMARKET_FILTER=true python crypto_trading_bot.py
 
 # Combine all filters: Solana meme coins with Polymarket markets
-CHAINS=solana CATEGORIES=meme-coins POLYMARKET_FILTER=true python geminigroundlin15.py
+CHAINS=solana CATEGORIES=meme-coins POLYMARKET_FILTER=true python crypto_trading_bot.py
 ```
 
 ### Expected Output
@@ -898,7 +898,7 @@ Instead of live API calls, use a **cached coin database** that is refreshed on-d
 │                              ▼                                               │
 │  TRADING BOT (reads from cache, no LunarCrush API needed)                   │
 │  ┌────────────────────────────────────────────────────────────────────────┐│
-│  │  python geminigroundlin15.py --categories=meme-coins --chains=solana   ││
+│  │  python crypto_trading_bot.py --categories=meme-coins --chains=solana   ││
 │  │                                                                        ││
 │  │  1. Load coin_cache.json                                               ││
 │  │  2. Filter coins by categories/chains from cache                       ││
@@ -984,7 +984,7 @@ LUNARCRUSH_API_KEY=xxx python refresh_coin_cache.py
    - Add `filter_from_cache()` function
    - Keep live API functions for refresh script
 
-3. **Modify: `geminigroundlin15.py`**
+3. **Modify: `crypto_trading_bot.py`**
    - Check for cache file existence
    - Use cache for filtering instead of live API
    - Warn if cache is stale (configurable threshold)

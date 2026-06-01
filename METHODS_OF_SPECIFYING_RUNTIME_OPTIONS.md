@@ -20,12 +20,12 @@ This document examines the trade-offs between different methods of configuring r
 ```bash
 export TRADING_MODE=whatif
 export LLM_MODE=compare
-python geminigroundlin15.py
+python crypto_trading_bot.py
 ```
 
 Or inline:
 ```bash
-TRADING_MODE=whatif LLM_MODE=compare python geminigroundlin15.py
+TRADING_MODE=whatif LLM_MODE=compare python crypto_trading_bot.py
 ```
 
 ### Advantages
@@ -57,15 +57,15 @@ This is the most significant issue with environment variables for operational mo
 ```bash
 # Morning: testing
 export TRADING_MODE=whatif
-python geminigroundlin15.py  # Safe, no trades
+python crypto_trading_bot.py  # Safe, no trades
 
 # Afternoon: forgot to unset, think I'm in live mode
-python geminigroundlin15.py  # Still whatif! Missed real opportunities
+python crypto_trading_bot.py  # Still whatif! Missed real opportunities
 
 # Or worse, the reverse:
 export TRADING_MODE=live
 # ... hours later, debugging ...
-python geminigroundlin15.py  # Accidentally executed real trades!
+python crypto_trading_bot.py  # Accidentally executed real trades!
 ```
 
 ---
@@ -75,7 +75,7 @@ python geminigroundlin15.py  # Accidentally executed real trades!
 ### How It Works
 
 ```bash
-python geminigroundlin15.py --trading-mode=whatif --llm-mode=compare
+python crypto_trading_bot.py --trading-mode=whatif --llm-mode=compare
 ```
 
 ### Advantages
@@ -102,11 +102,11 @@ python geminigroundlin15.py --trading-mode=whatif --llm-mode=compare
 
 ```bash
 # BAD: API key visible in process list and shell history
-python geminigroundlin15.py --api-key=sk-abc123xyz
+python crypto_trading_bot.py --api-key=sk-abc123xyz
 
 # Anyone on the system can see this:
 $ ps aux | grep python
-user  python geminigroundlin15.py --api-key=sk-abc123xyz
+user  python crypto_trading_bot.py --api-key=sk-abc123xyz
 ```
 
 ---
@@ -124,7 +124,7 @@ credentials:
 ```
 
 ```bash
-python geminigroundlin15.py --config=config.yaml
+python crypto_trading_bot.py --config=config.yaml
 ```
 
 ### Advantages
@@ -170,7 +170,7 @@ CLI argument > Environment variable > Default value
 Example:
 ```bash
 export TRADING_MODE=live
-python geminigroundlin15.py --trading-mode=whatif  # Uses whatif
+python crypto_trading_bot.py --trading-mode=whatif  # Uses whatif
 ```
 
 ### Implementation Pattern
@@ -215,21 +215,21 @@ export COINBASE_CREDENTIALS_FILE=./cdp_api_key.json
 **Operational modes (CLI preferred, env fallback):**
 ```bash
 # Explicit per-run (recommended)
-python geminigroundlin15.py --trading-mode=whatif --llm-mode=integrate
+python crypto_trading_bot.py --trading-mode=whatif --llm-mode=integrate
 
 # Or use env var for session-wide default
 export TRADING_MODE=whatif
-python geminigroundlin15.py  # Uses whatif from env
+python crypto_trading_bot.py  # Uses whatif from env
 
 # CLI overrides env
-python geminigroundlin15.py --trading-mode=live  # Uses live despite env
+python crypto_trading_bot.py --trading-mode=live  # Uses live despite env
 ```
 
 **Help output:**
 ```
-$ python geminigroundlin15.py --help
+$ python crypto_trading_bot.py --help
 
-usage: geminigroundlin15.py [-h] [--trading-mode {live,whatif}] 
+usage: crypto_trading_bot.py [-h] [--trading-mode {live,whatif}] 
                             [--llm-mode {gemini,claude,...}]
                             [--coins COINS]
 

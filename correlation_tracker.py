@@ -170,6 +170,46 @@ def format_duration(seconds: int) -> str:
 
 
 # ============================================================================
+# Candidate Coins Datastore
+# ============================================================================
+
+def load_candidate_coins(data_dir: str = './correlation_data') -> List[str]:
+    """
+    Load candidate coins from CSV datastore.
+    
+    Args:
+        data_dir: Directory containing candidate_coins.csv
+        
+    Returns:
+        List of unique coin symbols (uppercase, deduplicated)
+    """
+    import csv
+    
+    csv_path = Path(data_dir) / 'candidate_coins.csv'
+    
+    if not csv_path.exists():
+        logger.warning(f"Candidate coins file not found: {csv_path}")
+        return []
+    
+    coins = set()
+    try:
+        with open(csv_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = row.get('symbol', '').strip().upper()
+                if symbol:
+                    coins.add(symbol)
+        
+        coin_list = sorted(coins)
+        logger.info(f"Loaded {len(coin_list)} candidate coins from {csv_path}")
+        return coin_list
+        
+    except Exception as e:
+        logger.error(f"Error reading candidate coins: {e}")
+        return []
+
+
+# ============================================================================
 # Data Classes
 # ============================================================================
 
@@ -2261,6 +2301,8 @@ IMPORTANT WARNINGS:
     collector = parser.add_argument_group('Collector Options')
     collector.add_argument('--coins', type=str,
                           help='Comma-separated list of coin symbols (e.g., BTC,ETH,SOL)')
+    collector.add_argument('--use-candidate-coins', action='store_true',
+                          help='Load coins from candidate_coins.csv instead of --coins parameter')
     collector.add_argument('--interval', type=str, default='30',
                           help='Collection interval (e.g., 30, 30sec, 5min, 1hr; default: 30sec)')
     collector.add_argument('--output-dir', type=str, default='./correlation_data',
@@ -2800,9 +2842,18 @@ def main():
         if 'coins' in yaml_config:
             config.coins = yaml_config['coins']
         
-        # Apply CLI args (override YAML)
+        # Apply CLI args (override YAML) - priority: --coins > --use-candidate-coins > YAML
         if args.coins:
             config.coins = [c.strip().upper() for c in args.coins.split(',')]
+            logger.info(f"Using coins from --coins: {', '.join(config.coins)}")
+        elif args.use_candidate_coins:
+            config.coins = load_candidate_coins(args.output_dir)
+            if config.coins:
+                logger.info(f"Using {len(config.coins)} candidate coins from CSV: {', '.join(config.coins)}")
+            else:
+                logger.error(f"No candidate coins found in {args.output_dir}/candidate_coins.csv")
+                logger.error("Create the file or use --coins to specify coins directly")
+                sys.exit(1)
         
         # Parse interval with duration support
         try:
@@ -2825,7 +2876,7 @@ def main():
                 sys.exit(1)
         
         if not config.coins:
-            logger.error("No coins specified. Use --coins BTC,ETH,SOL or provide a config file.")
+            logger.error("No coins specified. Use --coins BTC,ETH,SOL, --use-candidate-coins, or provide a config file.")
             sys.exit(1)
         
         collector = DataCollector(config)

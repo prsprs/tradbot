@@ -33,7 +33,7 @@ A comma-separated list of coin symbols to analyze directly.
 
 ## Implementation Design
 
-### 1. Configuration (geminigroundlin15.py)
+### 1. Configuration (crypto_trading_bot.py)
 
 ```python
 # Coin choice configuration
@@ -113,19 +113,19 @@ The existing `coinsToExclude` set still applies:
 
 ### Example 1: Analyze Specific Coins with Default Settings
 ```bash
-ANALYZE_COINS=DOGE,SHIB,BONK python geminigroundlin15.py
+ANALYZE_COINS=DOGE,SHIB,BONK python crypto_trading_bot.py
 ```
 Analyzes 3 coins using Gemini (default PRIMARY_LLM) in compare mode.
 
 ### Example 2: Analyze with Grok as Primary
 ```bash
-ANALYZE_COINS=PEPE,WIF PRIMARY_LLM=grok python geminigroundlin15.py
+ANALYZE_COINS=PEPE,WIF PRIMARY_LLM=grok python crypto_trading_bot.py
 ```
 Analyzes 2 coins with Grok performing initial analysis.
 
 ### Example 3: Single LLM Analysis
 ```bash
-ANALYZE_COINS=DOGE,SHIB LLM_MODE=claude python geminigroundlin15.py
+ANALYZE_COINS=DOGE,SHIB LLM_MODE=claude python crypto_trading_bot.py
 ```
 Analyzes 2 coins using Claude only.
 
@@ -135,7 +135,7 @@ ANALYZE_COINS=DOGE,SHIB,BONK,PEPE,WIF \
   LLM_MODE=integrate \
   PRIMARY_LLM=grok \
   COMPARE_LLMS=grok,gemini,claude,openai \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 Analyzes 5 coins with Grok as primary, integrating responses from all 4 LLMs.
 

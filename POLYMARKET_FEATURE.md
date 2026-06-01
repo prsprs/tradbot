@@ -133,13 +133,13 @@ The Polymarket filter is the **final filter** in the pipeline, applied after Lun
 
 ```bash
 # Only coins with active prediction markets (no other filters)
-POLYMARKET_FILTER=true python geminigroundlin15.py
+POLYMARKET_FILTER=true python crypto_trading_bot.py
 
 # Meme coins that also have Polymarket markets
-CATEGORIES=meme-coins POLYMARKET_FILTER=true python geminigroundlin15.py
+CATEGORIES=meme-coins POLYMARKET_FILTER=true python crypto_trading_bot.py
 
 # Solana meme coins with Polymarket validation
-CHAINS=solana CATEGORIES=meme-coins POLYMARKET_FILTER=true python geminigroundlin15.py
+CHAINS=solana CATEGORIES=meme-coins POLYMARKET_FILTER=true python crypto_trading_bot.py
 ```
 
 ### Current Coverage (as of testing)
@@ -363,7 +363,7 @@ class PolymarketClient:
 ### Integration with Main Script
 
 ```python
-# In geminigroundlin15.py
+# In crypto_trading_bot.py
 
 def get_coins_to_analyze() -> List[str]:
     """Determine which coins to analyze based on configuration."""
@@ -406,25 +406,25 @@ def get_coins_to_analyze() -> List[str]:
 ```bash
 # Discover coins from smart money activity
 POLYMARKET_DISCOVERY=true \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 
 # Smart money discovery with stricter criteria
 POLYMARKET_DISCOVERY=true \
   POLYMARKET_MIN_WIN_RATE=0.70 \
   POLYMARKET_MIN_PROFIT=100000 \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 
 # Combine with multi-LLM analysis
 POLYMARKET_DISCOVERY=true \
   LLM_MODE=integrate \
   COMPARE_LLMS=gemini,claude,grok \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 
 # Smart money discovery + sentiment confirmation
 POLYMARKET_DISCOVERY=true \
   USE_POLYMARKET=true \
   REQUIRE_POLYMARKET_BULLISH=true \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 
 ### Expected Output
@@ -704,7 +704,7 @@ class PolymarketClient:
 ### Integration with Main Script
 
 ```python
-# In geminigroundlin15.py
+# In crypto_trading_bot.py
 
 from polymarketutil import PolymarketClient
 
@@ -810,7 +810,7 @@ This represents real-money bets from market participants on the cryptocurrency's
 ### Basic Usage
 ```bash
 # Enable Polymarket integration
-USE_POLYMARKET=true python geminigroundlin15.py
+USE_POLYMARKET=true python crypto_trading_bot.py
 ```
 
 ### With Coin Selection
@@ -818,7 +818,7 @@ USE_POLYMARKET=true python geminigroundlin15.py
 # Check Polymarket sentiment for specific coins
 USE_POLYMARKET=true \
   ANALYZE_COINS=BTC,ETH,DOGE \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 
 ### Require Polymarket Confirmation
@@ -827,7 +827,7 @@ USE_POLYMARKET=true \
 USE_POLYMARKET=true \
   REQUIRE_POLYMARKET_BULLISH=true \
   POLYMARKET_BULLISH_THRESHOLD=0.65 \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 
 ### With Multi-LLM Integration
@@ -838,7 +838,7 @@ USE_POLYMARKET=true \
   COMPARE_LLMS=gemini,claude,grok \
   REQUIRE_CONSENSUS=true \
   REQUIRE_POLYMARKET_BULLISH=true \
-  python geminigroundlin15.py
+  python crypto_trading_bot.py
 ```
 
 ## Expected Output

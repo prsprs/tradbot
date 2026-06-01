@@ -6,13 +6,13 @@ This document describes the programs, environment variables, APIs, and credentia
 
 ## Programs
 
-### 1. Trading Bot (`geminigroundlin15.py`)
+### 1. Trading Bot (`crypto_trading_bot.py`)
 
 The main trading bot that analyzes cryptocurrency coins and makes buy/sell/hold recommendations using one or more LLMs.
 
 **Usage:**
 ```bash
-python geminigroundlin15.py [OPTIONS]
+python crypto_trading_bot.py [OPTIONS]
 ```
 
 **Command-Line Options:**
@@ -331,7 +331,7 @@ Location: Project root (or path specified by `COINBASE_CREDENTIALS_FILE`)
 
 ```
 tradingbot/
-├── geminigroundlin15.py      # Main trading bot
+├── crypto_trading_bot.py      # Main trading bot
 ├── refresh_coin_cache.py     # LunarCrush cache refresh tool
 ├── tradeanalyzer.py          # Recommendation analyzer
 ├── historyutil.py            # History recording utility
@@ -359,18 +359,18 @@ tradingbot/
 
 ### Run in What-If Mode (safe testing, no real trades)
 ```bash
-python geminigroundlin15.py --trading-mode=whatif
+python crypto_trading_bot.py --trading-mode=whatif
 ```
 
 ### Run with Gemini only
 ```bash
-python geminigroundlin15.py --llm-mode=gemini
+python crypto_trading_bot.py --llm-mode=gemini
 ```
 
 ### Run with Claude + Gemini comparison
 ```bash
 export CLAUDE_API_KEY=sk-ant-...
-python geminigroundlin15.py --llm-mode=compare --compare-llms=gemini,claude
+python crypto_trading_bot.py --llm-mode=compare --compare-llms=gemini,claude
 ```
 
 ### Run with all 5 LLMs in integration mode
@@ -379,17 +379,17 @@ export CLAUDE_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 export XAI_API_KEY=xai-...
 export PERPLEXITY_API_KEY=pplx-...
-python geminigroundlin15.py --llm-mode=integrate --compare-llms=gemini,claude,openai,grok,perplexity
+python crypto_trading_bot.py --llm-mode=integrate --compare-llms=gemini,claude,openai,grok,perplexity
 ```
 
 ### Analyze specific coins instead of discovery
 ```bash
-python geminigroundlin15.py --coins=BTC,ETH,DOGE
+python crypto_trading_bot.py --coins=BTC,ETH,DOGE
 ```
 
 ### Combine options: What-If mode with specific coins
 ```bash
-python geminigroundlin15.py --trading-mode=whatif --coins=PEPE,BONK --llm-mode=compare
+python crypto_trading_bot.py --trading-mode=whatif --coins=PEPE,BONK --llm-mode=compare
 ```
 
 ### Using environment variables (legacy style)
@@ -397,7 +397,7 @@ python geminigroundlin15.py --trading-mode=whatif --coins=PEPE,BONK --llm-mode=c
 export TRADING_MODE=whatif
 export LLM_MODE=compare
 export ANALYZE_COINS=BTC,ETH
-python geminigroundlin15.py
+python crypto_trading_bot.py
 ```
 
 ### Run the analyzer
@@ -411,27 +411,27 @@ python tradeanalyzer.py
 LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py
 
 # Then run with category filter
-python geminigroundlin15.py --categories=meme-coins
+python crypto_trading_bot.py --categories=meme-coins
 ```
 
 ### Filter by blockchain (e.g., Solana coins only)
 ```bash
-python geminigroundlin15.py --chains=solana
+python crypto_trading_bot.py --chains=solana
 ```
 
 ### Combine category and chain filters
 ```bash
-python geminigroundlin15.py --categories=meme-coins --chains=solana
+python crypto_trading_bot.py --categories=meme-coins --chains=solana
 ```
 
 ### Filter to coins with active Polymarket prediction markets
 ```bash
-python geminigroundlin15.py --polymarket-filter=true
+python crypto_trading_bot.py --polymarket-filter=true
 ```
 
 ### Combine all filters (meme coins on Solana with Polymarket markets)
 ```bash
-python geminigroundlin15.py --categories=meme-coins --chains=solana --polymarket-filter=true
+python crypto_trading_bot.py --categories=meme-coins --chains=solana --polymarket-filter=true
 ```
 
 ---
@@ -442,25 +442,25 @@ The trading bot supports multiple discovery methods for finding coins to analyze
 
 ### LLM-only discovery (default)
 ```bash
-python geminigroundlin15.py --discovery=llm
+python crypto_trading_bot.py --discovery=llm
 ```
 Asks the primary LLM to recommend 3 coins to analyze.
 
 ### Santiment discovery (volume-based)
 ```bash
-python geminigroundlin15.py --discovery=santiment
+python crypto_trading_bot.py --discovery=santiment
 ```
 Finds coins with highest 24h volume change from Santiment API. Auto-refreshes cache at startup.
 
 ### Hybrid discovery (both methods)
 ```bash
-python geminigroundlin15.py --discovery=llm,santiment
+python crypto_trading_bot.py --discovery=llm,santiment
 ```
 Combines LLM recommendations (3 coins) with Santiment volume movers (3 coins). Deduplicates and caps at 6 coins total.
 
 ### Santiment discovery with filters
 ```bash
-python geminigroundlin15.py --discovery=santiment --categories=memecoin --chains=solana
+python crypto_trading_bot.py --discovery=santiment --categories=memecoin --chains=solana
 ```
 Discovers top volume movers within filtered category/chain. Auto-refreshes cache.
 
@@ -569,14 +569,14 @@ python -c "from dex.jupiterutil import JupiterClient; j = JupiterClient(); print
 
 ```bash
 export JUPITER_API_KEY="your-key"
-python geminigroundlin15.py --dex --trading-mode=whatif --coins=BONK,WIF
+python crypto_trading_bot.py --dex --trading-mode=whatif --coins=BONK,WIF
 ```
 
 #### Run in DEX live mode (requires private key)
 
 ```bash
 export JUPITER_API_KEY="your-key"
-python geminigroundlin15.py --dex --trading-mode=live --coins=BONK
+python crypto_trading_bot.py --dex --trading-mode=live --coins=BONK
 ```
 
 When running in live mode:
@@ -588,7 +588,7 @@ When running in live mode:
 #### Adjust slippage tolerance
 
 ```bash
-python geminigroundlin15.py --dex --slippage=2.0 --coins=BONK
+python crypto_trading_bot.py --dex --slippage=2.0 --coins=BONK
 ```
 
 ### Supported Tokens

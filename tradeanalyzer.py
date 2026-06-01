@@ -380,7 +380,7 @@ def main():
     if not all_recs:
         print("\nNo recommendations found in history.")
         print(f"Expected file: {os.path.abspath(os.path.join(HISTORY_DIR, 'recommendations.json'))}")
-        print("\nTo generate history, run the trading bot (geminigroundlin15.py)")
+        print("\nTo generate history, run the trading bot (crypto_trading_bot.py)")
         print("Recommendations will be recorded automatically.")
         return
     

@@ -144,6 +144,83 @@ def format_duration(seconds: int) -> str:
 
 
 # ============================================================================
+# Candidate Coins Datastore
+# ============================================================================
+
+def load_candidate_coins(data_dir: str = './correlation_data') -> List[str]:
+    """
+    Load candidate coins from CSV datastore.
+    
+    Args:
+        data_dir: Directory containing candidate_coins.csv
+        
+    Returns:
+        List of unique coin symbols (uppercase, deduplicated)
+    """
+    import csv
+    
+    csv_path = Path(data_dir) / 'candidate_coins.csv'
+    
+    if not csv_path.exists():
+        logger.warning(f"Candidate coins file not found: {csv_path}")
+        return []
+    
+    coins = set()
+    try:
+        with open(csv_path, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = row.get('symbol', '').strip().upper()
+                if symbol:
+                    coins.add(symbol)
+        
+        coin_list = sorted(coins)
+        logger.info(f"Loaded {len(coin_list)} candidate coins from {csv_path}")
+        return coin_list
+        
+    except Exception as e:
+        logger.error(f"Error reading candidate coins: {e}")
+        return []
+
+
+def add_candidate_coin(symbol: str, blockchain: str, source: str,
+                       data_dir: str = './correlation_data') -> bool:
+    """
+    Add a candidate coin to the CSV datastore.
+    
+    Args:
+        symbol: Token/coin symbol (e.g., BTC, SOL)
+        blockchain: Blockchain name (e.g., Solana, Bitcoin)
+        source: Origin of the candidate (e.g., manual, llm_trending)
+        data_dir: Directory containing candidate_coins.csv
+        
+    Returns:
+        True if successful, False on error
+    """
+    import csv
+    
+    csv_path = Path(data_dir) / 'candidate_coins.csv'
+    added_at = datetime.now(timezone.utc).isoformat()
+    
+    # Create file with header if it doesn't exist
+    if not csv_path.exists():
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['symbol', 'blockchain', 'added_at', 'updated_at', 'source'])
+    
+    try:
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([symbol.upper(), blockchain, added_at, '', source])
+        logger.info(f"Added candidate coin: {symbol.upper()} ({blockchain}) from {source}")
+        return True
+    except Exception as e:
+        logger.error(f"Error adding candidate coin: {e}")
+        return False
+
+
+# ============================================================================
 # Data Classes
 # ============================================================================
 
@@ -4305,6 +4382,8 @@ Examples:
                         help='Skip correlation recheck at profitable interval (default: recheck is ON)')
     parser.add_argument('--coins', type=str,
                         help='Comma-separated list of coins to collect/analyze (e.g., BTC,ETH,SOL)')
+    parser.add_argument('--use-candidate-coins', action='store_true',
+                        help='Load coins from candidate_coins.csv instead of --coins parameter')
     parser.add_argument('--interval', type=int, default=30,
                         help='Collection interval in seconds (default: 30)')
     parser.add_argument('--data-dir', type=str, default='./correlation_data',
@@ -4362,8 +4441,8 @@ Examples:
     if args.auto_select:
         if not args.use_fib:
             parser.error("--auto-select requires --use-fib to be explicitly specified")
-        if not args.skip_collection and not args.coins:
-            parser.error("--auto-select requires --coins (or use --skip-collection with existing data)")
+        if not args.skip_collection and not args.coins and not args.use_candidate_coins:
+            parser.error("--auto-select requires --coins or --use-candidate-coins (or use --skip-collection with existing data)")
         if args.pair:
             parser.error("--auto-select cannot be used with --pair (pair is auto-selected)")
         if args.pairs:
@@ -4459,10 +4538,20 @@ Examples:
     
     # Auto-select mode
     if args.auto_select:
-        # Parse coins
+        # Parse coins - priority: --coins > --use-candidate-coins > data dir fallback
         coins = []
         if args.coins:
+            # Explicit --coins takes precedence
             coins = [c.strip().upper() for c in args.coins.split(',')]
+            print(f"[AUTO-SELECT] Using coins from --coins: {', '.join(coins)}")
+        elif args.use_candidate_coins:
+            # Load from candidate_coins.csv
+            coins = load_candidate_coins(args.data_dir)
+            if not coins:
+                print(f"Error: No candidate coins found in {args.data_dir}/candidate_coins.csv")
+                print("Create the file or use --coins to specify coins directly")
+                sys.exit(1)
+            print(f"[AUTO-SELECT] Using {len(coins)} candidate coins from CSV: {', '.join(coins)}")
         elif args.skip_collection:
             # If skip_collection and no coins specified, we'll analyze all coins in data dir
             from fibonacci_analyzer import DataLoader as FibDataLoader

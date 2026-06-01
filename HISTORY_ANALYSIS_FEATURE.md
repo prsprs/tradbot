@@ -346,7 +346,7 @@ This feature consists of two separate components:
 
 ```
 ┌─────────────────────────────────┐
-│   geminigroundlin15.py          │
+│   crypto_trading_bot.py          │
 │   (Trading Bot)                 │
 │                                 │
 │   Uses: historyutil.py          │
@@ -441,7 +441,7 @@ def create_recommendation_record(
     }
 ```
 
-### Integration in geminigroundlin15.py
+### Integration in crypto_trading_bot.py
 
 ```python
 # At top of file

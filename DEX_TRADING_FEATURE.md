@@ -340,7 +340,7 @@ Since WalletConnect/Reown signup may not be available, an alternative approach u
 **User Flow:**
 
 ```
-$ python geminigroundlin15.py --dex --trading-mode=live --coins=BONK
+$ python crypto_trading_bot.py --dex --trading-mode=live --coins=BONK
 
 [DEX] Live trading mode requires wallet key
 [DEX] Export from Phantom: Settings → Security → Export Private Key
@@ -466,7 +466,7 @@ This section outlines how to implement DEX support while **minimizing risk to th
 
 ```
 tradingbot/
-├── geminigroundlin15.py      # Main entry - add --dex flag check only
+├── crypto_trading_bot.py      # Main entry - add --dex flag check only
 ├── coinbaseutil2.py          # CEX trading (UNCHANGED)
 ├── santimentutil.py          # Discovery (UNCHANGED - used by both)
 ├── historyutil.py            # History recording (minor: add exchange field)
@@ -524,7 +524,7 @@ class SolanaDEXTrader:
 
 #### Entry Point Isolation
 
-Single decision point in `geminigroundlin15.py`:
+Single decision point in `crypto_trading_bot.py`:
 
 ```python
 # At startup - ONE place where mode is determined
@@ -555,7 +555,7 @@ else:
 
 | File | Change | Risk Level |
 |------|--------|------------|
-| `geminigroundlin15.py` | Add `--dex` argument, conditional trader import | Low |
+| `crypto_trading_bot.py` | Add `--dex` argument, conditional trader import | Low |
 | `historyutil.py` | Add optional `exchange` field to record | Low |
 | `requirements.txt` | Add DEX dependencies (optional section) | None |
 
@@ -569,13 +569,13 @@ else:
 
 ```
 # CEX regression test (run before and after DEX implementation)
-python geminigroundlin15.py --trading-mode=whatif --coins=DOGE,SHIB
+python crypto_trading_bot.py --trading-mode=whatif --coins=DOGE,SHIB
 
 # DEX isolated test
 python -m pytest dex/test_dex.py
 
 # DEX integration test
-python geminigroundlin15.py --dex --trading-mode=whatif --coins=BONK,WIF
+python crypto_trading_bot.py --dex --trading-mode=whatif --coins=BONK,WIF
 ```
 
 #### Rollback Plan
@@ -671,7 +671,7 @@ httpx>=0.25.0            # Async HTTP for Jupiter API
 3. **Prototype WalletConnect connection** with Phantom in isolation
 4. **Test Jupiter quote/swap API** in isolation  
 5. **Build `SolanaDEXTrader` class** combining WalletConnect + Jupiter
-6. **Add `--exchange` parameter** to `geminigroundlin15.py` (cex | solana-dex)
+6. **Add `--exchange` parameter** to `crypto_trading_bot.py` (cex | solana-dex)
 7. **Modify cross-reference logic** to use Jupiter list when `--exchange=solana-dex`
 8. **Add `exchange` field** to history recording
 9. **Test full flow** with what-if mode first

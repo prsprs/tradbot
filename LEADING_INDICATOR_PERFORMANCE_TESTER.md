@@ -2188,19 +2188,33 @@ PEPE,Solana,2026-06-01T16:00:00Z,,price_screener
 
 ### Usage
 
+**Leading Indicator Tester (auto-select mode):**
 ```bash
 # Use candidate coins instead of --coins parameter
-python leading_indicator_tester.py --auto-select --use-candidate-coins
+python leading_indicator_tester.py --auto-select --use-candidate-coins --use-fib
 
 # Combine with other options
-python leading_indicator_tester.py --auto-select --use-candidate-coins --skip-collection --min-confidence 0.3
+python leading_indicator_tester.py --auto-select --use-candidate-coins --use-fib --skip-collection --min-confidence 0.3
 
 # Override: --coins takes precedence if both specified
-python leading_indicator_tester.py --auto-select --coins BTC,SOL --use-candidate-coins  # Uses BTC,SOL only
+python leading_indicator_tester.py --auto-select --coins BTC,SOL --use-candidate-coins --use-fib  # Uses BTC,SOL only
+```
+
+**Correlation Tracker (data collection and analysis):**
+```bash
+# Collect data on candidate coins
+python correlation_tracker.py --collect --use-candidate-coins --duration 4hr
+
+# Analyze correlations for candidate coins
+python correlation_tracker.py --analyze --use-candidate-coins
+
+# Discovery mode with candidate coins
+python correlation_tracker.py --discover --use-candidate-coins
 ```
 
 ### Parameter
 
+Both `leading_indicator_tester.py` and `correlation_tracker.py` support:
 ```
 --use-candidate-coins    Load coins from candidate_coins.csv instead of --coins parameter
 ```
