@@ -67,7 +67,9 @@ class PreflightValidator:
                  recent: str = "48hr",
                  position_size_usd: float = 1000.0,
                  target_profit_pct: float = 0.5,
-                 data_dir: str = './correlation_data'):
+                 data_dir: str = './correlation_data',
+                 skip_jupiter_check: bool = False,
+                 min_correlation: float = 0.3):
         """
         Initialize preflight validator.
         
@@ -79,6 +81,8 @@ class PreflightValidator:
             position_size_usd: Position size for cost calculations
             target_profit_pct: Target profit percentage per trade
             data_dir: Directory containing correlation data
+            skip_jupiter_check: Skip Jupiter tradeability validation (if pre-validated)
+            min_correlation: Minimum correlation threshold for viability (default: 0.3)
         """
         self.leader = leader.upper()
         self.follower = follower.upper()
@@ -87,6 +91,8 @@ class PreflightValidator:
         self.position_size_usd = position_size_usd
         self.target_profit_pct = target_profit_pct
         self.data_dir = data_dir
+        self.skip_jupiter_check = skip_jupiter_check
+        self.min_correlation = min_correlation
         
         self._result: Optional[PreflightResult] = None
         self._directional_result: Optional[DirectionalProfitabilityResult] = None
@@ -177,9 +183,10 @@ class PreflightValidator:
                 )
             
             # Validate mint address is actually tradeable on Jupiter by attempting a quote
-            validation_result = self._validate_jupiter_quote(follower_mint)
-            if validation_result:
-                return validation_result
+            if not self.skip_jupiter_check:
+                validation_result = self._validate_jupiter_quote(follower_mint)
+                if validation_result:
+                    return validation_result
                 
         except ImportError:
             logger.warning("Could not import token_cache for mint validation")
@@ -209,6 +216,7 @@ class PreflightValidator:
             directional_filter=self.directional_filter,
             recent_seconds=recent_seconds,
             min_samples=100,  # Lower threshold for preflight
+            min_correlation=self.min_correlation,
         )
         
         analyzer = ProfitabilityAnalyzer(config)
@@ -423,7 +431,9 @@ def run_preflight(leader: str, follower: str,
                   directional_filter: bool = False,
                   recent: str = "48hr",
                   position_size_usd: float = 1000.0,
-                  verbose: bool = True) -> PreflightResult:
+                  verbose: bool = True,
+                  skip_jupiter_check: bool = False,
+                  min_correlation: float = 0.3) -> PreflightResult:
     """
     Convenience function to run preflight validation.
     
@@ -434,6 +444,8 @@ def run_preflight(leader: str, follower: str,
         recent: Time window for analysis
         position_size_usd: Position size for cost calculations
         verbose: Print results to console
+        skip_jupiter_check: Skip Jupiter tradeability validation (e.g., for Trust Wallet)
+        min_correlation: Minimum correlation threshold for viability (default: 0.3)
         
     Returns:
         PreflightResult
@@ -443,7 +455,9 @@ def run_preflight(leader: str, follower: str,
         follower=follower,
         directional_filter=directional_filter,
         recent=recent,
-        position_size_usd=position_size_usd
+        position_size_usd=position_size_usd,
+        skip_jupiter_check=skip_jupiter_check,
+        min_correlation=min_correlation
     )
     
     result = validator.validate()

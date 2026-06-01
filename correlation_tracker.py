@@ -379,6 +379,7 @@ class AnalyzerConfig:
     position_size_usd: float = 1000.0  # Position size for cost calculations
     target_profit_pct: float = 0.5  # Target profit percentage per trade
     directional_filter: bool = False  # Enable two-pass UP/DOWN profitability analysis
+    min_correlation: float = 0.3  # Minimum correlation threshold for viability
 
 
 # ============================================================================
@@ -701,18 +702,19 @@ class CorrelationAnalyzer:
         return lags, correlations
 
     def granger_causality_test(self, leader_returns: pd.Series, follower_returns: pd.Series,
-                               max_lag: int = 5) -> Tuple[float, bool]:
+                               max_lag: int = 5) -> Tuple[float, bool, bool]:
         """
         Perform Granger causality test.
         
         Tests if leader helps predict follower.
-        Returns (p-value, is_significant).
+        Returns (p-value, is_significant, was_run).
+        If was_run is False, the test was skipped (statsmodels not installed or insufficient data).
         """
         try:
             from statsmodels.tsa.stattools import grangercausalitytests
         except ImportError:
             logger.warning("statsmodels not installed, skipping Granger causality test")
-            return 1.0, False
+            return 1.0, False, False  # was_run=False
         
         # Align series
         aligned = pd.concat([follower_returns, leader_returns], axis=1, join='inner')
@@ -720,20 +722,24 @@ class CorrelationAnalyzer:
         aligned = aligned.dropna()
         
         if len(aligned) < max_lag * 3:
-            return 1.0, False
+            return 1.0, False, False  # was_run=False (insufficient data)
         
         try:
             # Granger test expects [effect, cause] order
-            result = grangercausalitytests(aligned[['follower', 'leader']], maxlag=max_lag, verbose=False)
+            # Note: verbose parameter deprecated in statsmodels >= 0.14
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", FutureWarning)
+                result = grangercausalitytests(aligned[['follower', 'leader']], maxlag=max_lag, verbose=False)
             
             # Get minimum p-value across all lags
             min_pvalue = min(result[lag][0]['ssr_ftest'][1] for lag in range(1, max_lag + 1))
             
-            return min_pvalue, min_pvalue < 0.05
+            return min_pvalue, min_pvalue < 0.05, True  # was_run=True
             
         except Exception as e:
             logger.debug(f"Granger test failed: {e}")
-            return 1.0, False
+            return 1.0, False, False  # was_run=False
 
     def rolling_correlation(self, leader_returns: pd.Series, follower_returns: pd.Series,
                            window_size: int = 120) -> Tuple[pd.Series, float]:
@@ -884,7 +890,7 @@ class CorrelationAnalyzer:
         
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            up_pvalue, up_significant = self.granger_causality_test(up_leader, up_follower)
+            up_pvalue, up_significant, _ = self.granger_causality_test(up_leader, up_follower)
         
         # Analyze DOWN direction
         down_leader = down_data['leader']
@@ -927,7 +933,7 @@ class CorrelationAnalyzer:
         
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            down_pvalue, down_significant = self.granger_causality_test(down_leader, down_follower)
+            down_pvalue, down_significant, _ = self.granger_causality_test(down_leader, down_follower)
         
         # Calculate asymmetry score
         corr_diff = abs(abs(up_correlation) - abs(down_correlation))
@@ -1119,22 +1125,31 @@ class CorrelationAnalyzer:
         ))
         
         # TEST 3: Granger causality test
-        pvalue, is_significant = self.granger_causality_test(leader_returns, follower_returns)
+        pvalue, is_significant, granger_was_run = self.granger_causality_test(leader_returns, follower_returns)
         
-        if not is_significant:
+        if not granger_was_run:
+            caveats.append("Granger causality test skipped (statsmodels not installed)")
+            granger_reason = "Test skipped - statsmodels not installed or insufficient data"
+            granger_reason_code = "GRANGER_SKIPPED"
+        elif not is_significant:
             caveats.append("Granger causality not significant")
+            granger_reason = f"p={pvalue:.4f} >= 0.05, cannot reject null hypothesis"
+            granger_reason_code = "GRANGER_NOT_SIGNIFICANT"
+        else:
+            granger_reason = f"p={pvalue:.4f} < 0.05, statistically significant predictive relationship"
+            granger_reason_code = None
         
         test_results.append(TestResult(
             test_name="Granger Causality",
-            passed=is_significant,
+            passed=is_significant if granger_was_run else "Skipped",
             metrics={
                 'test_type': 'ssr_ftest',
-                'p_value': round(pvalue, 4),
-                'significance_threshold': 0.05
+                'p_value': round(pvalue, 4) if granger_was_run else None,
+                'significance_threshold': 0.05,
+                'test_run': granger_was_run
             },
-            reason=f"p={pvalue:.4f} < 0.05, statistically significant predictive relationship" if is_significant else \
-                   f"p={pvalue:.4f} >= 0.05, cannot reject null hypothesis",
-            reason_code=None if is_significant else "GRANGER_NOT_SIGNIFICANT"
+            reason=granger_reason,
+            reason_code=granger_reason_code
         ))
         
         # TEST 4: Rolling correlation stability
@@ -1694,7 +1709,7 @@ class ProfitabilityAnalyzer:
                 f"Trade at {recommended_label}+ intervals, expect ~{best.pct_above_breakeven:.0f}% "
                 f"opportunity rate. Correlation is statistically significant."
             )
-        elif correlation_at_recommended and abs(correlation_at_recommended) >= 0.3:
+        elif correlation_at_recommended and abs(correlation_at_recommended) >= self.config.min_correlation:
             verdict = "POSSIBLY VIABLE"
             best = viable_intervals[0]
             verdict_details = (

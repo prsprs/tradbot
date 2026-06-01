@@ -548,7 +548,7 @@ The auto-select feature orchestrates existing tools - no new data collection cod
 ┌─────────────────────────────────────────────────────────────────────┐
 │ PHASE 1: Data Collection (uses correlation_tracker.py)              │
 │ - Runs: correlation_tracker.py --coins X --interval 30 --duration Y │
-│ - Uses EXACT same collection logic, no changes                      │
+│ - Collects price data for ALL coins specified in --coins            │
 │ - Stores to --data-dir (default: ./correlation_data)                │
 │ - OR: --skip-collection to use existing data                        │
 └─────────────────────────────────────────────────────────────────────┘
@@ -557,32 +557,37 @@ The auto-select feature orchestrates existing tools - no new data collection cod
 ┌─────────────────────────────────────────────────────────────────────┐
 │ PHASE 2: Correlation Analysis (uses correlation_tracker.py)         │
 │ - Runs: correlation_tracker.py --analyze --data-dir X               │
-│ - Reads discovery_report.json output                                │
-│ - Filters pairs by min_confidence threshold                         │
+│ - Analyzes ALL possible pairs from --coins (e.g., 5 coins = 20 pairs)│
+│ - Outputs discovery_report.json with confidence scores              │
+│ - Filters to pairs meeting --min-confidence threshold               │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ PHASE 3: Profitability Analysis (uses preflight.py)                 │
-│ - Runs preflight for each candidate pair                            │
+│ - Runs preflight for EACH pair passing correlation threshold       │
 │ - Uses existing PreflightValidator class                            │
-│ - Filters out pairs with insufficient volatility                    │
+│ - Determines viability (UP, DOWN, or NOT_VIABLE) for each pair      │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ PHASE 4: Fibonacci Analysis (uses fibonacci_analyzer.py)            │
-│ - Runs Fib analysis on follower candidates                          │
+│ - Runs Fib analysis for EACH follower coin in viable pairs          │
 │ - Uses existing FibonacciAnalyzer class                             │
-│ - Caches reports via save_fib_report()                              │
+│ - Caches reports via save_fib_report() for trading phase            │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ PHASE 5: Pair Selection & Scoring                                   │
-│ - NEW: AutoSelectScorer class                                       │
-│ - Combines scores from correlation, profitability, Fib              │
-│ - Ranks and selects top pair(s)                                     │
+│ PHASE 5: Pair Selection (eligibility filtering)                     │
+│ - Apply eligibility thresholds:                                     │
+│   • Correlation >= --min-confidence                                 │
+│   • Fib effectiveness >= --fib-min-effectiveness                    │
+│   • Profitability = VIABLE or PARTIALLY_VIABLE                      │
+│ - 0 eligible: Halt with explanation                                 │
+│ - 1 eligible: Auto-select                                           │
+│ - Multiple: Display ranked list, prompt user to choose              │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -637,7 +642,7 @@ Auto-select mode uses **existing CLI parameters** - no new parameter names neede
 
 | Parameter | Used In | Default |
 |-----------|---------|---------|
-| `--coins` | Collection phase | *(required)* |
+| `--coins` | Collection + Candidate filtering | *(required)* |
 | `--interval` | Collection phase | 30s |
 | `--duration` | Collection + Trading | *(indefinite)* |
 | `--data-dir` | All phases | ./correlation_data |
@@ -650,7 +655,13 @@ Auto-select mode uses **existing CLI parameters** - no new parameter names neede
 | `--fib-min-effectiveness` | Fib analysis + trading | 60 |
 | `--directional-filter` | Trading phase (auto-configured) | false |
 
-**Note:** `--auto-select` requires `--use-fib` to be explicitly specified. The system auto-configures `--directional-filter` based on profitability analysis. All other parameters use their existing defaults or user-specified values.
+**Notes:**
+- `--auto-select` requires `--use-fib` to be explicitly specified
+- `--coins` serves dual purpose:
+  - **With collection**: Specifies which coins to collect data for
+  - **With `--skip-collection`**: Filters which coins in existing data to consider as candidates
+  - If omitted with `--skip-collection`, analyzes all coins found in `--data-dir`
+- The system auto-configures `--directional-filter` based on profitability analysis
 
 ### Example Usage
 
@@ -662,11 +673,16 @@ python leading_indicator_tester.py --auto-select --use-fib \
     --duration 48hr \
     --trading-mode paper
 
-# Skip collection, use existing data, custom thresholds
+# Skip collection, filter candidates to specific coins
 python leading_indicator_tester.py --auto-select --use-fib \
     --skip-collection \
+    --coins BTC,SOL,ETH \
     --min-confidence 0.7 \
-    --fib-min-effectiveness 70 \
+    --trading-mode paper
+
+# Skip collection, analyze ALL coins in data directory
+python leading_indicator_tester.py --auto-select --use-fib \
+    --skip-collection \
     --trading-mode paper
 
 # Live autonomous trading with existing data
@@ -677,11 +693,13 @@ python leading_indicator_tester.py --auto-select --use-fib \
     --position-size 50
 ```
 
-**Parameter Flow:**
-- Collection: `--coins`, `--interval`, `--duration`
-- Analysis: `--min-samples`, `--min-confidence`, `--data-dir`
-- Fib: `--fib-window`, `--fib-touch-tolerance`, `--fib-min-effectiveness`
-- Trading: `--trading-mode`, `--position-size`
+**Complete Flow with `--coins BTC,ETH,SOL,BONK,WIF`:**
+1. **Collection**: Collects price data for all 5 coins
+2. **Correlation**: Analyzes all 20 possible pairs (5×4), outputs those meeting `--min-confidence`
+3. **Profitability**: Runs preflight for each correlated pair, filters to viable pairs
+4. **Fib Analysis**: Analyzes each follower coin, filters by `--fib-min-effectiveness`
+5. **Selection**: Displays eligible pairs, user selects (or auto-selects if only one)
+6. **Trading**: Begins trading selected pair with auto-configured parameters
 
 ### Pair Ranking (When Multiple Candidates)
 
@@ -933,6 +951,48 @@ Top Fibonacci responders (>60% effectiveness, >5 touches):
 ```
 
 Use `--summary-only` to show only the summary table without individual reports.
+
+---
+
+## Design Discussions (Proposed Features)
+
+### `--recheck-correlation` Flag
+
+#### Problem Statement
+
+Currently there's a disconnect between two analysis phases in auto-select mode:
+
+1. **Correlation analysis** finds optimal lag (e.g., 30s) where correlation is strongest
+2. **Profitability analysis** determines a much longer interval (e.g., 14400s/4hr) is needed to cover fees
+
+The system then trades using the profitability interval, but we don't know if the correlation still holds at that interval. A pair might show strong correlation at 30s lag but weak/no correlation at 4hr lag.
+
+#### Proposed Behavior
+
+When `--recheck-correlation` is specified, after profitability analysis determines its recommended interval, re-run correlation analysis specifically at that lag to verify:
+
+- Does correlation still exist at the longer interval?
+- What is the correlation strength at that interval?
+- Is it still statistically significant?
+
+#### Design Decisions
+
+1. **What threshold should be used?**
+   - ✓ Use the same `--min-confidence` at the longer interval
+
+2. **What if correlation is negative/weak at the profitable interval?**
+   - ✓ Reject the pair entirely
+
+3. **Should this be opt-in or default?**
+   - ✓ Default ON, use `--skip-recheck` to opt out
+
+4. **How to handle the recheck output?**
+   - ✓ Show both correlations (original vs rechecked)
+
+5. **MVP Implementation:**
+   - ✓ Find the confidence level at the profitability-required lag
+   - ✓ Check if it meets `--min-confidence`
+   - ✓ Reject pair if it doesn't meet threshold
 
 ---
 

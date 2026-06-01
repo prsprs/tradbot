@@ -292,6 +292,12 @@ WELL_KNOWN_TOKENS = {
     "FLOKI": "FLokitvNngGxrqA5tVp2MDPH2bqWUFMQ76LqCVwC2C1H",
     # Wrapped TAO (Bittensor) on Solana - listed as TAO on Jupiter
     "WTAO": "taoC6xyv2v8tDLcev4uaGUgV4vdQsWJrGft2kcBRrBY",
+    # TAO alias for wrapped TAO
+    "TAO": "taoC6xyv2v8tDLcev4uaGUgV4vdQsWJrGft2kcBRrBY",
+    # Jupiter Perps LP token
+    "PERP": "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4",
+    # Shiba Inu (Portal) - wrapped SHIB on Solana
+    "SHIB": "CiKu4eHsVrc1eueVQeHn7qhXTcVu95gSQmBpX4utjL9z",
 }
 
 # Well-known token decimals (for price calculations)
@@ -305,6 +311,9 @@ WELL_KNOWN_DECIMALS = {
     "PEPE": 9,
     "FLOKI": 9,
     "WTAO": 9,
+    "TAO": 9,
+    "PERP": 6,
+    "SHIB": 8,
 }
 
 

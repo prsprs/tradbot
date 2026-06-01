@@ -2152,3 +2152,137 @@ Summary: 2 pairs analyzed
    - Filters by leader/follower if specified
    - Deduplicates pairs before analysis
 
+---
+
+## Candidate Coins Datastore
+
+### Overview
+
+The Candidate Coins Datastore provides a persistent, human-editable list of coins for the leading indicator tester to analyze. This enables integration with external discovery tools (LLMs, screeners, social sentiment analyzers) that can programmatically add candidate coins for correlation analysis.
+
+### File Format
+
+**Location:** `./correlation_data/candidate_coins.csv`
+
+**Format:** CSV with header row
+
+```csv
+symbol,blockchain,added_at,updated_at,source
+BTC,Bitcoin,2026-06-01T12:00:00Z,,manual
+ETH,Ethereum,2026-06-01T12:00:00Z,,manual
+SOL,Solana,2026-06-01T12:00:00Z,,manual
+BONK,Solana,2026-06-01T14:30:00Z,,llm_trending
+WIF,Solana,2026-06-01T14:30:00Z,2026-06-01T18:00:00Z,whale_alert
+TAO,Bittensor,2026-06-01T15:00:00Z,,social_sentiment
+PEPE,Solana,2026-06-01T16:00:00Z,,price_screener
+```
+
+**Column Definitions:**
+| Column | Description | Required |
+|--------|-------------|----------|
+| `symbol` | Token/coin symbol (e.g., BTC, SOL, BONK) | Yes |
+| `blockchain` | Blockchain or asset class (e.g., Solana, Bitcoin, Ethereum, Stock) | Yes |
+| `added_at` | ISO 8601 timestamp when coin was added | Yes |
+| `updated_at` | ISO 8601 timestamp when coin was last updated (empty if never updated) | No |
+| `source` | Origin of the candidate (e.g., manual, llm_trending, whale_alert, social_sentiment) | Yes |
+
+### Usage
+
+```bash
+# Use candidate coins instead of --coins parameter
+python leading_indicator_tester.py --auto-select --use-candidate-coins
+
+# Combine with other options
+python leading_indicator_tester.py --auto-select --use-candidate-coins --skip-collection --min-confidence 0.3
+
+# Override: --coins takes precedence if both specified
+python leading_indicator_tester.py --auto-select --coins BTC,SOL --use-candidate-coins  # Uses BTC,SOL only
+```
+
+### Parameter
+
+```
+--use-candidate-coins    Load coins from candidate_coins.csv instead of --coins parameter
+```
+
+### Behavior
+
+1. **Loading:** When `--use-candidate-coins` is true, read `candidate_coins.csv` from `--data-dir`
+2. **Filtering:** Extract only coins matching the current trading context (e.g., Solana-only for DEX trading)
+3. **Deduplication:** Remove duplicate symbols (case-insensitive)
+4. **Fallback:** If file doesn't exist or is empty, warn and require `--coins`
+
+### Integration with External Tools
+
+External tools can append to the CSV:
+
+```python
+# Example: LLM-based coin discovery tool
+import csv
+from datetime import datetime, timezone
+
+def add_candidate_coin(symbol: str, blockchain: str, source: str,
+                       csv_path: str = './correlation_data/candidate_coins.csv'):
+    """Add a candidate coin to the datastore."""
+    added_at = datetime.now(timezone.utc).isoformat()
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([symbol.upper(), blockchain, added_at, '', source])
+```
+
+```bash
+# Manual addition
+echo "RENDER,Solana,$(date -u +%Y-%m-%dT%H:%M:%SZ),,manual" >> ./correlation_data/candidate_coins.csv
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       CANDIDATE COINS INTEGRATION                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  External Sources                    Datastore              System           │
+│  ─────────────────                   ─────────              ──────           │
+│                                                                              │
+│  ┌──────────────┐                                                            │
+│  │ LLM Analysis │───┐                                                        │
+│  │ (trending)   │   │                                                        │
+│  └──────────────┘   │                                                        │
+│                     │    ┌─────────────────┐    ┌─────────────────────────┐ │
+│  ┌──────────────┐   │    │                 │    │                         │ │
+│  │ Social       │───┼───▶│ candidate_coins │───▶│ leading_indicator_      │ │
+│  │ Sentiment    │   │    │ .csv            │    │ tester.py               │ │
+│  └──────────────┘   │    │                 │    │ --use-candidate-coins   │ │
+│                     │    └─────────────────┘    └─────────────────────────┘ │
+│  ┌──────────────┐   │           ▲                                           │
+│  │ Whale Alert  │───┤           │                                           │
+│  │ Integration  │   │           │                                           │
+│  └──────────────┘   │    ┌──────┴────────┐                                  │
+│                     │    │ Human Manual  │                                  │
+│  ┌──────────────┐   │    │ Edits         │                                  │
+│  │ Price        │───┘    └───────────────┘                                  │
+│  │ Screeners    │                                                            │
+│  └──────────────┘                                                            │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Design Decisions
+
+1. **Blockchain filtering:** No additional filtering at CSV load time. Existing downstream filtering handles blockchain compatibility. Failures may occur later in the pipeline (e.g., token not tradeable on Jupiter).
+
+2. **Coin validation:** No pre-validation. System relies on existing error handling when coins don't exist or aren't available.
+
+3. **Timestamp/source tracking:** Yes - `added_at`, `updated_at`, and `source` columns included for attribution and potential future pruning.
+
+4. **Automatic cleanup:** No automatic removal. Coins that fail correlation analysis are kept - market conditions change and correlations may emerge later.
+
+5. **Priority/weighting:** Not for MVP. Possible future enhancement.
+
+6. **Conflict with --coins:** `--coins` takes precedence. No merge of sources.
+
+7. **Multi-blockchain pairs:** No special marking. Existing error handling addresses cross-chain issues.
+
+8. **Maximum candidates:** Not for MVP. No limit enforced.
+

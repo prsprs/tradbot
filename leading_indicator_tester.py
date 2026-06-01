@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -903,6 +904,775 @@ class FibTradeFilter:
             return self.validate_sell_signal(current_price)
 
 
+@dataclass
+class CandidatePair:
+    """A candidate pair for auto-selection with all analysis results."""
+    leader: str
+    follower: str
+    correlation_confidence: float  # Original confidence score (composite)
+    original_correlation: float  # Original raw correlation at optimal lag
+    optimal_lag_seconds: int  # From correlation analysis (how fast follower reacts)
+    p_value: float
+    profitability_viable: bool
+    up_viable: bool
+    down_viable: bool
+    fib_effectiveness: float
+    fib_trend_direction: str  # 'up' or 'down'
+    preflight_interval_seconds: Optional[int] = None  # From preflight (min profitable interval)
+    recheck_correlation: Optional[float] = None  # Correlation at preflight interval
+    recheck_confidence: Optional[float] = None  # Full confidence score at preflight interval
+    eligible: bool = False
+    ineligibility_reason: str = ""
+
+
+class AutoSelectOrchestrator:
+    """
+    Orchestrates autonomous pair selection by running:
+    1. Data collection (optional)
+    2. Correlation analysis
+    3. Profitability analysis for each correlated pair
+    4. Fibonacci analysis for each follower
+    5. Eligibility filtering
+    6. User selection (if multiple candidates)
+    """
+    
+    def __init__(
+        self,
+        coins: List[str],
+        data_dir: str = './correlation_data',
+        min_confidence: float = 0.6,
+        min_samples: int = 500,
+        fib_min_effectiveness: float = 60.0,
+        fib_window: str = '7d',
+        fib_touch_tolerance: float = 0.5,
+        position_size_usd: float = 1000.0,
+        skip_collection: bool = False,
+        collection_interval: int = 30,
+        collection_duration_seconds: Optional[int] = None,
+        preflight_recent: str = '48hr',
+        verbose: bool = False,
+        command_line: str = '',
+        skip_recheck: bool = False,
+        wallet_type: str = 'trustwallet'
+    ):
+        self.coins = [c.upper() for c in coins]
+        self.data_dir = data_dir
+        self.min_confidence = min_confidence
+        self.min_samples = min_samples
+        self.fib_min_effectiveness = fib_min_effectiveness
+        self.fib_window = fib_window
+        self.fib_touch_tolerance = fib_touch_tolerance
+        self.position_size_usd = position_size_usd
+        self.skip_collection = skip_collection
+        self.collection_interval = collection_interval
+        self.collection_duration_seconds = collection_duration_seconds
+        self.preflight_recent = preflight_recent
+        self.verbose = verbose
+        self.command_line = command_line
+        self.skip_recheck = skip_recheck
+        self.wallet_type = wallet_type
+        
+        self.candidates: List[CandidatePair] = []
+        self.selected_pair: Optional[CandidatePair] = None
+    
+    def run_collection(self) -> bool:
+        """Run data collection via correlation_tracker subprocess."""
+        if self.skip_collection:
+            print("\n[AUTO-SELECT] Skipping collection, using existing data...")
+            return True
+        
+        print("\n" + "="*70)
+        print("PHASE 1: DATA COLLECTION")
+        print("="*70)
+        
+        coins_str = ','.join(self.coins)
+        cmd = [
+            sys.executable, 'correlation_tracker.py',
+            '--coins', coins_str,
+            '--interval', str(self.collection_interval),
+            '--output-dir', self.data_dir
+        ]
+        
+        if self.collection_duration_seconds:
+            # Convert seconds to duration string
+            if self.collection_duration_seconds >= 3600:
+                duration_str = f"{self.collection_duration_seconds // 3600}hr"
+            else:
+                duration_str = f"{self.collection_duration_seconds // 60}min"
+            cmd.extend(['--duration', duration_str])
+        
+        print(f"Collecting data for: {coins_str}")
+        print(f"Interval: {self.collection_interval}s")
+        if self.collection_duration_seconds:
+            print(f"Duration: {duration_str}")
+        print(f"Command: {' '.join(cmd)}")
+        print("")
+        
+        try:
+            result = subprocess.run(cmd, check=True)
+            return result.returncode == 0
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Collection failed: {e}")
+            return False
+        except FileNotFoundError:
+            print("[ERROR] correlation_tracker.py not found")
+            return False
+    
+    def run_correlation_analysis(self) -> List[dict]:
+        """Run correlation analysis via correlation_tracker --analyze."""
+        print("\n" + "="*70)
+        print("PHASE 2: CORRELATION ANALYSIS")
+        print("="*70)
+        
+        # Build command - filter to specified coins if provided
+        cmd = [
+            sys.executable, 'correlation_tracker.py',
+            '--analyze',
+            '--data-dir', self.data_dir,
+            '--min-confidence', str(self.min_confidence),
+            '--min-samples', str(self.min_samples),
+            '--output-report', os.path.join(self.data_dir, 'discovery_report.json')
+        ]
+        
+        if self.coins:
+            coins_str = ','.join(self.coins)
+            cmd.extend(['--leader-candidates', coins_str])
+            cmd.extend(['--follower-candidates', coins_str])
+        
+        print(f"Analyzing pairs with min_confidence={self.min_confidence}, min_samples={self.min_samples}")
+        print(f"Command: {' '.join(cmd)}")
+        print("")
+        
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            
+            # Filter output based on verbose setting
+            if self.verbose:
+                print(result.stdout)
+            else:
+                # Only show conclusions for each pair
+                in_conclusion = False
+                for line in result.stdout.split('\n'):
+                    if 'CONCLUSION:' in line:
+                        in_conclusion = True
+                        print(line)
+                    elif in_conclusion:
+                        if line.strip().startswith('├─') or line.strip().startswith('└─'):
+                            print(line)
+                        elif line.strip() == '' or line.startswith('---'):
+                            in_conclusion = False
+                            print()
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Correlation analysis failed: {e}")
+            if e.stderr:
+                print(e.stderr)
+            return []
+        
+        # Load discovery report
+        report_path = os.path.join(self.data_dir, 'discovery_report.json')
+        if not os.path.exists(report_path):
+            print(f"[ERROR] Discovery report not found: {report_path}")
+            return []
+        
+        try:
+            with open(report_path, 'r') as f:
+                report = json.load(f)
+            
+            pairs = report.get('significant_pairs', [])
+            
+            # Deduplicate pairs by leader:follower key
+            seen = set()
+            unique_pairs = []
+            for pair in pairs:
+                key = f"{pair.get('leader', '')}:{pair.get('follower', '')}"
+                if key not in seen:
+                    seen.add(key)
+                    unique_pairs.append(pair)
+            
+            if len(unique_pairs) < len(pairs):
+                print(f"\nFound {len(pairs)} pair(s), deduplicated to {len(unique_pairs)}")
+            else:
+                print(f"\nFound {len(unique_pairs)} significant pair(s) meeting confidence threshold")
+            return unique_pairs
+        except Exception as e:
+            print(f"[ERROR] Failed to load discovery report: {e}")
+            return []
+    
+    def run_profitability_analysis(self, pairs: List[dict]) -> List[dict]:
+        """Run profitability analysis for each correlated pair."""
+        print("\n" + "="*70)
+        print("PHASE 3: PROFITABILITY ANALYSIS")
+        print("="*70)
+        
+        from preflight import PreflightValidator
+        
+        # Cache tradeability results to avoid redundant Jupiter API calls
+        tradeability_cache: Dict[str, bool] = {}
+        
+        # Pre-check all unique leaders for CoinGecko availability
+        unique_leaders = set(pair.get('leader', '') for pair in pairs)
+        leader_cache: Dict[str, bool] = {}
+        print(f"\nPre-validating {len(unique_leaders)} unique leader(s) on CoinGecko...")
+        
+        from coingeckoutil import get_coingecko_price, auto_resolve_symbol
+        for leader in unique_leaders:
+            try:
+                # First try auto-resolve (uses same logic as data collection)
+                resolved = auto_resolve_symbol(leader)
+                if resolved:
+                    price = get_coingecko_price(leader)
+                    leader_cache[leader] = price is not None
+                else:
+                    leader_cache[leader] = False
+                status = "✓" if leader_cache[leader] else "✗"
+                print(f"  {status} {leader}")
+            except Exception as e:
+                leader_cache[leader] = False
+                print(f"  ✗ {leader} (error: {e})")
+        
+        # Pre-check all unique followers for tradeability
+        unique_followers = set(pair.get('follower', '') for pair in pairs)
+        
+        if self.wallet_type == 'trustwallet':
+            # Trust Wallet handles its own token validation at trade time
+            # Just verify the token symbol is known (exists in our token cache)
+            print(f"\nPre-validating {len(unique_followers)} unique follower(s) (Trust Wallet mode - symbol check only)...")
+            from dex.token_cache import get_mint_with_fallback
+            for follower in unique_followers:
+                # Trust Wallet can trade any token it recognizes - just check symbol exists
+                mint = get_mint_with_fallback(follower)
+                tradeability_cache[follower] = mint is not None
+                status = "✓" if tradeability_cache[follower] else "✗"
+                print(f"  {status} {follower}")
+        else:
+            # Jupiter wallet - require full Jupiter quote validation
+            print(f"\nPre-validating {len(unique_followers)} unique follower(s) on Jupiter...")
+            from dex.jupiterutil import JupiterClient, symbol_to_mint
+            jupiter = JupiterClient()
+            for follower in unique_followers:
+                try:
+                    # Quick tradeability check via quote
+                    mint = symbol_to_mint(follower)
+                    if mint:
+                        quote = jupiter.get_quote(mint, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', 1_000_000)  # 1 USDC
+                        tradeability_cache[follower] = quote is not None
+                    else:
+                        tradeability_cache[follower] = False
+                    status = "✓" if tradeability_cache[follower] else "✗"
+                    print(f"  {status} {follower}")
+                except Exception as e:
+                    tradeability_cache[follower] = False
+                    print(f"  ✗ {follower} (error: {e})")
+        
+        viable_pairs = []
+        for pair in pairs:
+            leader = pair.get('leader', '')
+            follower = pair.get('follower', '')
+            
+            # Skip if leader not available on CoinGecko (already checked)
+            if not leader_cache.get(leader, False):
+                print(f"\n  ✗ {leader} → {follower} - Leader not available on CoinGecko (cached)")
+                continue
+            
+            # Skip if follower not tradeable (already checked)
+            if not tradeability_cache.get(follower, False):
+                wallet_msg = "symbol unknown" if self.wallet_type == 'trustwallet' else "not tradeable on Jupiter"
+                print(f"\n  ✗ {leader} → {follower} - Follower {wallet_msg} (cached)")
+                continue
+            
+            print(f"\nAnalyzing {leader} → {follower}...")
+            
+            try:
+                validator = PreflightValidator(
+                    leader=leader,
+                    follower=follower,
+                    directional_filter=True,
+                    recent=self.preflight_recent,
+                    position_size_usd=self.position_size_usd,
+                    data_dir=self.data_dir,
+                    skip_jupiter_check=True  # Already validated above
+                )
+                
+                result = validator.validate()
+                
+                # Report profitability at correlation lag vs profitable interval
+                correlation_lag = pair.get('optimal_lag_seconds', 0)
+                self._report_lag_profitability(result, correlation_lag)
+                
+                if result.passed:
+                    pair['profitability_viable'] = True
+                    pair['up_viable'] = result.up_viable
+                    pair['down_viable'] = result.down_viable
+                    pair['preflight_verdict'] = result.verdict
+                    pair['preflight_interval_seconds'] = result.recommended_interval_seconds
+                    viable_pairs.append(pair)
+                    interval_str = f", interval={result.recommended_interval_seconds}s" if result.recommended_interval_seconds else ""
+                    print(f"  ✓ VIABLE - UP: {result.up_viable}, DOWN: {result.down_viable}{interval_str}")
+                else:
+                    print(f"  ✗ NOT VIABLE - {result.verdict}")
+            except Exception as e:
+                print(f"  ✗ Analysis failed: {e}")
+        
+        print(f"\n{len(viable_pairs)} pair(s) passed profitability analysis")
+        return viable_pairs
+    
+    def _report_lag_profitability(self, result, correlation_lag: int):
+        """Report profitability comparison at correlation lag vs profitable interval."""
+        if not result.details:
+            return
+        
+        details = result.details
+        break_even = None
+        
+        # Try to get break-even from directional or standard result
+        if 'up_break_even_pct' in details:
+            break_even = details.get('up_break_even_pct') or details.get('down_break_even_pct')
+        
+        if not break_even:
+            return
+        
+        recommended = result.recommended_interval_seconds
+        if not recommended or recommended == correlation_lag:
+            return
+        
+        # Find interval closest to correlation lag
+        # Standard intervals: 60, 300, 900, 3600, 14400
+        intervals = [60, 300, 900, 3600, 14400]
+        closest_interval = min(intervals, key=lambda x: abs(x - correlation_lag))
+        
+        # Get interval analysis data if available (from non-directional result)
+        # For directional results, we report the recommended interval comparison
+        
+        print(f"  Correlation lag: {correlation_lag}s, Profitable interval: {recommended}s ({recommended // 60}m)")
+        print(f"  Break-even move required: {break_even:.2f}%")
+        
+        if recommended > correlation_lag:
+            ratio = recommended / correlation_lag if correlation_lag > 0 else float('inf')
+            print(f"  Note: Profitable interval is {ratio:.1f}x longer than correlation lag")
+    
+    def run_correlation_recheck(self, pairs: List[dict]) -> List[dict]:
+        """
+        Recheck correlation at the profitability-required lag.
+        
+        The original correlation analysis finds optimal lag where correlation is strongest,
+        but profitability analysis may require a longer interval for trades to be profitable.
+        This phase verifies correlation still holds at the profitable interval.
+        """
+        if self.skip_recheck:
+            print("\n[AUTO-SELECT] Skipping correlation recheck (--skip-recheck)")
+            return pairs
+        
+        print("\n" + "="*70)
+        print("PHASE 3B: CORRELATION RECHECK AT PROFITABLE INTERVAL")
+        print("="*70)
+        
+        rechecked_pairs = []
+        
+        for pair in pairs:
+            leader = pair.get('leader', '')
+            follower = pair.get('follower', '')
+            original_lag = pair.get('optimal_lag_seconds', 0)
+            preflight_interval = pair.get('preflight_interval_seconds')
+            original_confidence = pair.get('confidence', 0)  # Key from discovery report
+            
+            # Skip if no preflight interval or intervals are similar
+            if not preflight_interval or abs(preflight_interval - original_lag) < 60:
+                print(f"\n{leader}:{follower}")
+                print(f"  Original correlation: {original_confidence:.2f} at lag={original_lag}s")
+                print(f"  ✓ No recheck needed (intervals similar)")
+                rechecked_pairs.append(pair)
+                continue
+            
+            print(f"\n{leader}:{follower}")
+            print(f"  Original: confidence={original_confidence:.2f} at lag={original_lag}s")
+            print(f"  Profitable interval: {preflight_interval}s ({preflight_interval // 60}m)")
+            print(f"  Rechecking confidence at {preflight_interval}s lag...")
+            
+            try:
+                # Calculate full confidence at the profitable interval lag
+                recheck_result = self._compute_confidence_at_lag(
+                    leader, follower, preflight_interval
+                )
+                
+                recheck_confidence = recheck_result['confidence']
+                recheck_correlation = recheck_result['correlation']
+                granger_status = "significant" if recheck_result['granger_significant'] else \
+                                ("not significant" if recheck_result['granger_was_run'] else "skipped")
+                
+                pair['recheck_confidence'] = recheck_confidence
+                pair['recheck_correlation'] = recheck_correlation
+                pair['recheck_granger_significant'] = recheck_result['granger_significant']
+                
+                print(f"  Recheck results at {preflight_interval}s:")
+                print(f"    Correlation: {recheck_correlation:.4f}")
+                print(f"    Granger: {granger_status} (p={recheck_result['granger_pvalue']:.4f})")
+                print(f"    Stability: {recheck_result['stability']:.2f}")
+                print(f"    Confidence: {recheck_confidence:.4f} ({recheck_result['confidence_level']})")
+                
+                if recheck_confidence >= self.min_confidence:
+                    print(f"  ✓ Recheck PASSED: confidence={recheck_confidence:.2f} >= {self.min_confidence}")
+                    rechecked_pairs.append(pair)
+                else:
+                    print(f"  ✗ Recheck FAILED: confidence={recheck_confidence:.2f} < {self.min_confidence}")
+                    
+            except Exception as e:
+                print(f"  ✗ Recheck failed: {e}")
+        
+        print(f"\n{len(rechecked_pairs)} pair(s) passed correlation recheck")
+        return rechecked_pairs
+    
+    def _compute_confidence_at_lag(self, leader: str, follower: str, lag_seconds: int) -> dict:
+        """
+        Compute full confidence score at a specific lag.
+        
+        Returns dict with:
+        - correlation: raw correlation at the lag
+        - confidence: composite confidence score
+        - granger_pvalue: Granger test p-value
+        - granger_significant: whether Granger test passed
+        - granger_was_run: whether Granger test was actually run
+        - stability: rolling correlation stability
+        - factors: breakdown of confidence factors
+        """
+        import numpy as np
+        import pandas as pd
+        from correlation_tracker import DataLoader, CorrelationAnalyzer, AnalyzerConfig
+        
+        # Use the existing DataLoader from correlation_tracker
+        loader = DataLoader(self.data_dir)
+        df = loader.load_all()
+        
+        if df.empty:
+            raise ValueError("No price data found")
+        
+        # Get returns series for leader and follower
+        leader_returns = loader.get_returns_series(df, leader.upper())
+        follower_returns = loader.get_returns_series(df, follower.upper())
+        
+        if len(leader_returns) < 10 or len(follower_returns) < 10:
+            raise ValueError("Insufficient price data for correlation calculation")
+        
+        # Convert lag from seconds to number of periods
+        collection_interval = 30  # seconds
+        lag_periods = lag_seconds // collection_interval
+        
+        if lag_periods < 1:
+            lag_periods = 1
+        
+        # Align the series by timestamp
+        aligned = pd.concat([leader_returns, follower_returns], axis=1, join='inner')
+        aligned.columns = ['leader', 'follower']
+        
+        if len(aligned) < lag_periods + 10:
+            raise ValueError(f"Insufficient aligned data for lag={lag_seconds}s")
+        
+        num_samples = len(aligned)
+        
+        # Calculate correlation at zero lag
+        correlation_at_zero = np.corrcoef(aligned['leader'].values, aligned['follower'].values)[0, 1]
+        if np.isnan(correlation_at_zero):
+            correlation_at_zero = 0.0
+        
+        # Calculate correlation at specified lag
+        leader_vals = aligned['leader'].values[:-lag_periods] if lag_periods > 0 else aligned['leader'].values
+        follower_vals = aligned['follower'].values[lag_periods:] if lag_periods > 0 else aligned['follower'].values
+        
+        if len(leader_vals) < 10:
+            raise ValueError(f"Insufficient data points after lag shift: {len(leader_vals)}")
+        
+        correlation_at_lag = np.corrcoef(leader_vals, follower_vals)[0, 1]
+        if np.isnan(correlation_at_lag):
+            correlation_at_lag = 0.0
+        
+        # Calculate lag improvement
+        lag_correlation_diff = abs(correlation_at_lag) - abs(correlation_at_zero)
+        
+        # Create analyzer for Granger test and rolling correlation
+        config = AnalyzerConfig(data_dir=self.data_dir)
+        analyzer = CorrelationAnalyzer(config)
+        
+        # Run Granger causality test
+        pvalue, is_significant, granger_was_run = analyzer.granger_causality_test(
+            pd.Series(leader_vals), pd.Series(follower_vals)
+        )
+        
+        # Calculate rolling correlation stability
+        rolling_corr, stability = analyzer.rolling_correlation(
+            pd.Series(leader_vals), pd.Series(follower_vals)
+        )
+        
+        # Calculate confidence score
+        confidence_score, confidence_level, factors = analyzer.calculate_confidence(
+            correlation_at_lag, pvalue, stability, num_samples, lag_correlation_diff
+        )
+        
+        return {
+            'correlation': abs(correlation_at_lag),
+            'confidence': confidence_score,
+            'confidence_level': confidence_level,
+            'granger_pvalue': pvalue,
+            'granger_significant': is_significant,
+            'granger_was_run': granger_was_run,
+            'stability': stability,
+            'factors': factors,
+            'num_samples': num_samples
+        }
+    
+    def run_fib_analysis(self, pairs: List[dict]) -> List[dict]:
+        """Run Fibonacci analysis for each follower coin."""
+        print("\n" + "="*70)
+        print("PHASE 4: FIBONACCI ANALYSIS")
+        print("="*70)
+        
+        from fibonacci_analyzer import FibonacciAnalyzer, save_fib_report
+        
+        # Get unique followers
+        followers = set(pair.get('follower', '') for pair in pairs)
+        fib_results = {}
+        
+        # Convert fib_window string to seconds
+        fib_window_seconds = parse_duration(self.fib_window, default_unit='d')
+        
+        # FibonacciAnalyzer loads data internally via its data_loader
+        analyzer = FibonacciAnalyzer(
+            data_dir=self.data_dir,
+            touch_tolerance_pct=self.fib_touch_tolerance,
+            confirmation_periods=3
+        )
+        
+        for follower in followers:
+            print(f"\nAnalyzing Fib levels for {follower}...")
+            
+            try:
+                # Run analysis - analyzer loads data internally
+                report = analyzer.analyze(follower, window_seconds=fib_window_seconds)
+                if report is None:
+                    print(f"  ✗ Insufficient data for {follower}")
+                    fib_results[follower] = None
+                    continue
+                
+                if report:
+                    # Cache the report for trading phase
+                    save_fib_report(report, self.data_dir)
+                    
+                    effectiveness = report.overall_effectiveness or 0
+                    fib_results[follower] = {
+                        'effectiveness': effectiveness,
+                        'trend_direction': report.trend_direction,
+                        'report': report
+                    }
+                    print(f"  ✓ Trend: {report.trend_direction.upper()}, Effectiveness: {effectiveness:.1f}%")
+                else:
+                    print(f"  ✗ Analysis failed")
+                    fib_results[follower] = None
+            except Exception as e:
+                print(f"  ✗ Error: {e}")
+                fib_results[follower] = None
+        
+        # Attach Fib results to pairs
+        for pair in pairs:
+            follower = pair.get('follower', '')
+            fib = fib_results.get(follower)
+            if fib:
+                pair['fib_effectiveness'] = fib['effectiveness']
+                pair['fib_trend_direction'] = fib['trend_direction']
+            else:
+                pair['fib_effectiveness'] = 0
+                pair['fib_trend_direction'] = 'unknown'
+        
+        return pairs
+    
+    def filter_eligible_pairs(self, pairs: List[dict]) -> List[CandidatePair]:
+        """Apply eligibility filters and create CandidatePair objects."""
+        print("\n" + "="*70)
+        print("PHASE 5: ELIGIBILITY FILTERING")
+        print("="*70)
+        
+        candidates = []
+        
+        for pair in pairs:
+            leader = pair.get('leader', '')
+            follower = pair.get('follower', '')
+            confidence = pair.get('confidence', 0)
+            fib_effectiveness = pair.get('fib_effectiveness', 0)
+            profitability_viable = pair.get('profitability_viable', False)
+            
+            candidate = CandidatePair(
+                leader=leader,
+                follower=follower,
+                correlation_confidence=confidence,
+                original_correlation=pair.get('correlation', 0),
+                optimal_lag_seconds=pair.get('optimal_lag_seconds', 60),
+                p_value=pair.get('p_value', 1.0),
+                profitability_viable=profitability_viable,
+                up_viable=pair.get('up_viable', False),
+                down_viable=pair.get('down_viable', False),
+                fib_effectiveness=fib_effectiveness,
+                fib_trend_direction=pair.get('fib_trend_direction', 'unknown'),
+                preflight_interval_seconds=pair.get('preflight_interval_seconds'),
+                recheck_correlation=pair.get('recheck_correlation'),
+                recheck_confidence=pair.get('recheck_confidence')
+            )
+            
+            # Check eligibility
+            reasons = []
+            if confidence < self.min_confidence:
+                reasons.append(f"correlation {confidence:.2f} < {self.min_confidence}")
+            if fib_effectiveness < self.fib_min_effectiveness:
+                reasons.append(f"fib effectiveness {fib_effectiveness:.1f}% < {self.fib_min_effectiveness}%")
+            if not profitability_viable:
+                reasons.append("profitability not viable")
+            
+            if reasons:
+                candidate.eligible = False
+                candidate.ineligibility_reason = "; ".join(reasons)
+            else:
+                candidate.eligible = True
+            
+            candidates.append(candidate)
+        
+        # Print results
+        eligible = [c for c in candidates if c.eligible]
+        ineligible = [c for c in candidates if not c.eligible]
+        
+        print(f"\nEligible pairs: {len(eligible)}")
+        for c in eligible:
+            direction = "UP" if c.up_viable else "DOWN" if c.down_viable else "BOTH"
+            print(f"  ✓ {c.leader}:{c.follower} - confidence={c.correlation_confidence:.2f}, "
+                  f"fib={c.fib_effectiveness:.1f}%, direction={direction}")
+        
+        if ineligible:
+            print(f"\nIneligible pairs: {len(ineligible)}")
+            for c in ineligible:
+                print(f"  ✗ {c.leader}:{c.follower} - {c.ineligibility_reason}")
+        
+        self.candidates = candidates
+        return eligible
+    
+    def select_pair(self, eligible: List[CandidatePair]) -> Optional[CandidatePair]:
+        """Select a pair from eligible candidates."""
+        print("\n" + "="*70)
+        print("PAIR SELECTION")
+        print("="*70)
+        
+        if not eligible:
+            print("\n✗ NO ELIGIBLE PAIRS")
+            print("\nAll pairs failed eligibility requirements:")
+            for c in self.candidates:
+                print(f"  • {c.leader}:{c.follower} - {c.ineligibility_reason}")
+            print("\nSuggestions:")
+            print("  • Lower --min-confidence threshold")
+            print("  • Lower --fib-min-effectiveness threshold")
+            print("  • Collect more data")
+            print("  • Try different coins")
+            return None
+        
+        # Sort by correlation confidence (highest first)
+        eligible_sorted = sorted(eligible, key=lambda c: c.correlation_confidence, reverse=True)
+        
+        if len(eligible_sorted) == 1:
+            selected = eligible_sorted[0]
+            print(f"\n✓ AUTO-SELECTED: {selected.leader}:{selected.follower}")
+            print(f"  At original lag={selected.optimal_lag_seconds}s:")
+            print(f"    Correlation: {selected.original_correlation:.4f}")
+            print(f"    Confidence:  {selected.correlation_confidence:.4f}")
+            if selected.recheck_confidence is not None and selected.preflight_interval_seconds:
+                pf_min = selected.preflight_interval_seconds // 60
+                print(f"  At profitable interval lag={selected.preflight_interval_seconds}s ({pf_min}m):")
+                print(f"    Correlation: {selected.recheck_correlation:.4f}" if selected.recheck_correlation is not None else "    Correlation: N/A")
+                print(f"    Confidence:  {selected.recheck_confidence:.4f}")
+            if selected.preflight_interval_seconds:
+                pf_min = selected.preflight_interval_seconds // 60
+                print(f"  Trading Interval: {selected.preflight_interval_seconds}s ({pf_min}m)")
+            print(f"  Fib Effectiveness: {selected.fib_effectiveness:.1f}%")
+            print(f"  Fib Trend: {selected.fib_trend_direction.upper()}")
+            direction = "UP" if selected.up_viable else "DOWN" if selected.down_viable else "BOTH"
+            print(f"  Viable Direction: {direction}")
+            if self.command_line:
+                print(f"\nCommand used:")
+                print(f"  {self.command_line}")
+            self.selected_pair = selected
+            return selected
+        
+        # Multiple candidates - prompt user
+        print(f"\n{len(eligible_sorted)} eligible pairs found. Please select:")
+        print("")
+        for i, c in enumerate(eligible_sorted, 1):
+            direction = "UP" if c.up_viable else "DOWN" if c.down_viable else "BOTH"
+            print(f"  [{i}] {c.leader}:{c.follower}")
+            print(f"      At original lag={c.optimal_lag_seconds}s: corr={c.original_correlation:.4f}, conf={c.correlation_confidence:.4f}")
+            if c.recheck_confidence is not None and c.preflight_interval_seconds:
+                pf_min = c.preflight_interval_seconds // 60
+                recheck_corr = f"{c.recheck_correlation:.4f}" if c.recheck_correlation is not None else "N/A"
+                print(f"      At profitable lag={c.preflight_interval_seconds}s ({pf_min}m): corr={recheck_corr}, conf={c.recheck_confidence:.4f}")
+            if c.preflight_interval_seconds:
+                pf_min = c.preflight_interval_seconds // 60
+                print(f"      Trading Interval: {c.preflight_interval_seconds}s ({pf_min}m)")
+            print(f"      Fib: {c.fib_effectiveness:.1f}% ({c.fib_trend_direction}), Direction: {direction}")
+        print("")
+        
+        while True:
+            try:
+                choice = input(f"Enter selection (1-{len(eligible_sorted)}): ").strip()
+                idx = int(choice) - 1
+                if 0 <= idx < len(eligible_sorted):
+                    selected = eligible_sorted[idx]
+                    print(f"\n✓ SELECTED: {selected.leader}:{selected.follower}")
+                    if self.command_line:
+                        print(f"\nCommand used:")
+                        print(f"  {self.command_line}")
+                    self.selected_pair = selected
+                    return selected
+                else:
+                    print(f"Invalid selection. Enter 1-{len(eligible_sorted)}")
+            except ValueError:
+                print(f"Invalid input. Enter a number 1-{len(eligible_sorted)}")
+            except KeyboardInterrupt:
+                print("\n\nSelection cancelled.")
+                return None
+    
+    def run(self) -> Optional[CandidatePair]:
+        """Run the complete auto-select workflow."""
+        print("\n" + "="*70)
+        print("                    AUTO-SELECT MODE")
+        print("="*70)
+        print(f"Coins: {', '.join(self.coins)}")
+        print(f"Min Confidence: {self.min_confidence}")
+        print(f"Min Fib Effectiveness: {self.fib_min_effectiveness}%")
+        print(f"Data Directory: {self.data_dir}")
+        
+        # Phase 1: Collection
+        if not self.run_collection():
+            return None
+        
+        # Phase 2: Correlation Analysis
+        correlated_pairs = self.run_correlation_analysis()
+        if not correlated_pairs:
+            print("\n✗ No correlated pairs found meeting confidence threshold")
+            return None
+        
+        # Phase 3: Profitability Analysis
+        viable_pairs = self.run_profitability_analysis(correlated_pairs)
+        if not viable_pairs:
+            print("\n✗ No pairs passed profitability analysis")
+            return None
+        
+        # Phase 3B: Correlation Recheck at Profitable Interval
+        rechecked_pairs = self.run_correlation_recheck(viable_pairs)
+        if not rechecked_pairs:
+            print("\n✗ No pairs passed correlation recheck at profitable interval")
+            return None
+        
+        # Phase 4: Fibonacci Analysis
+        pairs_with_fib = self.run_fib_analysis(rechecked_pairs)
+        
+        # Phase 5: Eligibility Filtering
+        eligible = self.filter_eligible_pairs(pairs_with_fib)
+        
+        # Selection
+        return self.select_pair(eligible)
+
+
 class LiveTrader:
     """
     Live trading with Jupiter swaps via Trust Wallet (default) or LocalWallet.
@@ -1063,6 +1833,9 @@ class LiveTrader:
             # Load wallet
             try:
                 self.wallet = LocalWallet(private_key)
+                if not self.wallet.is_loaded():
+                    print("[LIVE] Failed to load wallet - key validation failed")
+                    return False
                 address = self.wallet.get_address()
                 print(f"\n[LIVE] Wallet loaded: {address}")
                 print(f"[LIVE] ⚠️  Verify this matches your expected wallet address!")
@@ -3421,8 +4194,8 @@ Examples:
         """
     )
     
-    # Pair arguments (mutually exclusive)
-    pair_group = parser.add_mutually_exclusive_group(required=True)
+    # Pair arguments (mutually exclusive, not required if using --auto-select)
+    pair_group = parser.add_mutually_exclusive_group(required=False)
     pair_group.add_argument('--pair',
                         help='Single coin pair to test (e.g., BTC:ETH)')
     pair_group.add_argument('--pairs',
@@ -3523,6 +4296,26 @@ Examples:
     parser.add_argument('--fib-min-effectiveness', type=float, default=60.0,
                         help='Minimum bounce rate %% to consider a Fib level effective (default: 60)')
     
+    # Auto-select mode options
+    parser.add_argument('--auto-select', action='store_true',
+                        help='Enable autonomous pair selection mode. Analyzes all pairs from --coins and selects optimal pair.')
+    parser.add_argument('--skip-collection', action='store_true',
+                        help='Skip data collection phase, use existing data in --data-dir')
+    parser.add_argument('--skip-recheck', action='store_true',
+                        help='Skip correlation recheck at profitable interval (default: recheck is ON)')
+    parser.add_argument('--coins', type=str,
+                        help='Comma-separated list of coins to collect/analyze (e.g., BTC,ETH,SOL)')
+    parser.add_argument('--interval', type=int, default=30,
+                        help='Collection interval in seconds (default: 30)')
+    parser.add_argument('--data-dir', type=str, default='./correlation_data',
+                        help='Directory containing correlation data (default: ./correlation_data)')
+    parser.add_argument('--min-confidence', type=float, default=0.6,
+                        help='Minimum correlation confidence for pair eligibility (default: 0.6)')
+    parser.add_argument('--min-samples', type=int, default=500,
+                        help='Minimum samples required for correlation analysis (default: 500)')
+    parser.add_argument('--min-correlation', type=float, default=0.3,
+                        help='Minimum raw correlation threshold for viability verdict (default: 0.3)')
+    
     args = parser.parse_args()
     
     # Set logging level early
@@ -3564,6 +4357,21 @@ Examples:
         max_data_age_hours = max_data_age_seconds // 3600
     except ValueError as e:
         parser.error(f"Invalid --max-data-age: {e}")
+    
+    # Validate auto-select mode
+    if args.auto_select:
+        if not args.use_fib:
+            parser.error("--auto-select requires --use-fib to be explicitly specified")
+        if not args.skip_collection and not args.coins:
+            parser.error("--auto-select requires --coins (or use --skip-collection with existing data)")
+        if args.pair:
+            parser.error("--auto-select cannot be used with --pair (pair is auto-selected)")
+        if args.pairs:
+            parser.error("--auto-select cannot be used with --pairs (pair is auto-selected)")
+    else:
+        # Not auto-select mode - require --pair or --pairs
+        if not args.pair and not args.pairs:
+            parser.error("Either --pair, --pairs, or --auto-select is required")
     
     # Handle multi-pair mode
     if args.pairs:
@@ -3648,6 +4456,66 @@ Examples:
         )
         tester.run()
         return
+    
+    # Auto-select mode
+    if args.auto_select:
+        # Parse coins
+        coins = []
+        if args.coins:
+            coins = [c.strip().upper() for c in args.coins.split(',')]
+        elif args.skip_collection:
+            # If skip_collection and no coins specified, we'll analyze all coins in data dir
+            from fibonacci_analyzer import DataLoader as FibDataLoader
+            loader = FibDataLoader(args.data_dir)
+            coins = loader.get_available_symbols()
+            if not coins:
+                print(f"Error: No data files found in {args.data_dir}")
+                sys.exit(1)
+            print(f"[AUTO-SELECT] No --coins specified, analyzing all coins in data directory: {', '.join(coins)}")
+        
+        # Capture command line for display
+        command_line = ' '.join(sys.argv)
+        
+        # Run auto-select orchestrator
+        orchestrator = AutoSelectOrchestrator(
+            coins=coins,
+            data_dir=args.data_dir,
+            min_confidence=args.min_confidence,
+            min_samples=args.min_samples,
+            fib_min_effectiveness=args.fib_min_effectiveness,
+            fib_window=args.fib_window,
+            fib_touch_tolerance=args.fib_touch_tolerance,
+            position_size_usd=args.position_size,
+            skip_collection=args.skip_collection,
+            collection_interval=args.interval,
+            collection_duration_seconds=duration_seconds,
+            preflight_recent=args.preflight_recent,
+            verbose=args.verbose,
+            command_line=command_line,
+            skip_recheck=args.skip_recheck,
+            wallet_type=args.wallet_type
+        )
+        
+        selected = orchestrator.run()
+        
+        if selected is None:
+            print("\n[AUTO-SELECT] No pair selected. Exiting.")
+            sys.exit(1)
+        
+        # Configure args for trading with selected pair
+        args.pair = f"{selected.leader}:{selected.follower}"
+        args.lag = selected.optimal_lag_seconds
+        
+        # Auto-configure directional filter based on viable direction
+        if selected.up_viable and not selected.down_viable:
+            args.directional_filter = True
+            print(f"\n[AUTO-SELECT] Configured --directional-filter for UP direction only")
+        elif selected.down_viable and not selected.up_viable:
+            args.directional_filter = True
+            print(f"\n[AUTO-SELECT] Configured --directional-filter for DOWN direction only")
+        
+        print(f"\n[AUTO-SELECT] Proceeding to trade {args.pair} with lag={args.lag}s")
+        print("")
     
     # Single pair mode
     if ':' not in args.pair:
@@ -3795,13 +4663,17 @@ Examples:
         print("=" * 70)
         
         # Run preflight validation
+        # Skip Jupiter check for Trust Wallet - it handles its own token validation
+        skip_jupiter = (args.wallet_type == 'trustwallet')
         preflight_result = run_preflight(
             leader=leader,
             follower=follower,
             directional_filter=args.directional_filter,
             recent=args.preflight_recent,
             position_size_usd=args.position_size,
-            verbose=True
+            verbose=True,
+            skip_jupiter_check=skip_jupiter,
+            min_correlation=args.min_correlation
         )
         
         if not preflight_result.passed:
