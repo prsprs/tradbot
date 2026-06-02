@@ -163,6 +163,40 @@ Environment variables can also be used (CLI takes precedence):
         help='Test wallet connection on startup (DEX mode only, default: false)'
     )
     
+    # Candidate coins export - write recommended coins to candidate_coins.csv
+    parser.add_argument(
+        '--export-candidates',
+        action='store_true',
+        default=os.environ.get('EXPORT_CANDIDATES', 'false').lower() == 'true',
+        help='Export recommended coins to candidate_coins.csv for correlation analysis (default: false)'
+    )
+    
+    parser.add_argument(
+        '--candidate-dir',
+        default=os.environ.get('CANDIDATE_DIR', './correlation_data'),
+        help='Directory for candidate_coins.csv (default: ./correlation_data)'
+    )
+    
+    parser.add_argument(
+        '--candidate-blockchain',
+        default=os.environ.get('CANDIDATE_BLOCKCHAIN', 'Solana'),
+        help='Blockchain to record for exported candidates (default: Solana)'
+    )
+    
+    parser.add_argument(
+        '--export-recommendations',
+        default=os.environ.get('EXPORT_RECOMMENDATIONS', 'ALL'),
+        help='Which recommendations to export: ALL, BUY, or BUY,HOLD (default: ALL)'
+    )
+    
+    # Relax discovery failure check
+    parser.add_argument(
+        '--relax-discovery-failure',
+        action='store_true',
+        default=os.environ.get('RELAX_DISCOVERY_FAILURE', 'false').lower() == 'true',
+        help='Proceed with discovered coins even if LLM indicates caveats (default: false)'
+    )
+    
     return parser.parse_args()
 
 
@@ -273,6 +307,15 @@ USE_SANTIMENT_DISCOVERY = 'santiment' in DISCOVERY_METHODS
 DEX_SLIPPAGE = args.slippage
 TEST_WALLET = args.test_wallet
 EXCHANGE_MODE = "solana-dex" if DEX_MODE else "cex"
+
+# Candidate coins export configuration
+EXPORT_CANDIDATES = args.export_candidates
+CANDIDATE_DIR = args.candidate_dir
+CANDIDATE_BLOCKCHAIN = args.candidate_blockchain
+EXPORT_RECOMMENDATIONS = args.export_recommendations.upper()
+
+# Discovery failure relaxation
+RELAX_DISCOVERY_FAILURE = args.relax_discovery_failure
 
 # Validate chain filter compatibility with DEX mode
 if DEX_MODE and not WHATIF_MODE:
@@ -1150,15 +1193,23 @@ if USE_COIN_DISCOVERY and USE_SANTIMENT_DISCOVERY:
         print("")
 
 
-def extract_coins_from_llm_response(response_text):
+def extract_coins_from_llm_response(response_text, relax_failure=False):
     """Extract up to 3 coin symbols from LLM discovery response.
+    
+    Args:
+        response_text: The LLM response text to parse
+        relax_failure: If True, attempt extraction even if ***FAILED*** is present
     
     Returns:
         List of valid coin symbols extracted from the response
     """
     coins = []
     
-    if not response_text or '***FAILED***' in response_text:
+    if not response_text:
+        return coins
+    
+    # Check for failure indicator (skip if relaxed)
+    if '***FAILED***' in response_text and not relax_failure:
         return coins
     
     # First try the +++SYMBOL+++ format (requested in prompt)
@@ -1227,11 +1278,17 @@ def run_llm_discovery():
     print(response_text)
     print(f"--------------ABOVE IS CONTENT OF {PRIMARY_LLM.upper()} RESPONSE----")
     
+    # Check for explicit failure indicator
     if '***FAILED***' in response_text:
-        print("[WARNING] LLM explicitly indicated it cannot provide recommendations")
-        return []
+        if RELAX_DISCOVERY_FAILURE:
+            print("[INFO] LLM indicated caveats, but --relax-discovery-failure is set")
+            print("[INFO] Attempting to extract coins anyway...")
+        else:
+            print("[WARNING] LLM explicitly indicated it cannot provide recommendations")
+            return []
     
-    coins = extract_coins_from_llm_response(response_text)
+    # Extract coins (will also check for ***FAILED*** if not relaxed)
+    coins = extract_coins_from_llm_response(response_text, relax_failure=RELAX_DISCOVERY_FAILURE)
     print(f"LLM discovered coins: {coins}")
     return coins
 
@@ -1320,7 +1377,11 @@ if not USE_COIN_DISCOVERY:
                 mode=LLM_MODE,
                 consensus=consensus,
                 discovery_llm=None,
-                exchange=EXCHANGE_MODE
+                exchange=EXCHANGE_MODE,
+                export_candidate=EXPORT_CANDIDATES,
+                candidate_dir=CANDIDATE_DIR,
+                candidate_blockchain=CANDIDATE_BLOCKCHAIN,
+                export_recommendations=EXPORT_RECOMMENDATIONS
             )
         
         # Track and execute trade if recommended
@@ -1436,7 +1497,11 @@ else:
                 mode=LLM_MODE,
                 consensus=consensus,
                 discovery_llm=discovery_source,
-                exchange=EXCHANGE_MODE
+                exchange=EXCHANGE_MODE,
+                export_candidate=EXPORT_CANDIDATES,
+                candidate_dir=CANDIDATE_DIR,
+                candidate_blockchain=CANDIDATE_BLOCKCHAIN,
+                export_recommendations=EXPORT_RECOMMENDATIONS
             )
         
         # Track and execute trade if recommended
@@ -1471,6 +1536,9 @@ if LLM_MODE in ['compare', 'integrate']:
     print(f"Compare LLMs: {COMPARE_LLMS}")
     print(f"Require Consensus: {REQUIRE_CONSENSUS}")
     print(f"Tiebreaker: {INTEGRATION_TIEBREAKER}")
+if EXPORT_CANDIDATES:
+    print(f"Candidate Export: Enabled ({EXPORT_RECOMMENDATIONS} recommendations)")
+    print(f"Candidate Dir: {CANDIDATE_DIR}")
 print(f"Coins to buy: {coinsToBuy}")
 
 # What-if summary

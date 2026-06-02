@@ -109,11 +109,16 @@ def record_recommendation(
     mode: str,
     consensus: Optional[bool] = None,
     discovery_llm: Optional[str] = None,
-    exchange: Optional[str] = None
+    exchange: Optional[str] = None,
+    export_candidate: bool = False,
+    candidate_dir: str = './correlation_data',
+    candidate_blockchain: str = 'Solana',
+    export_recommendations: str = 'ALL'
 ) -> Optional[Dict]:
     """Record a recommendation by fetching current price from trader and saving.
     
     This is a convenience function that combines fetching price data and saving.
+    Optionally exports the coin to candidate_coins.csv for correlation analysis.
     
     Args:
         coin_symbol: Cryptocurrency symbol (e.g., 'DOGE', 'SHIB')
@@ -124,6 +129,10 @@ def record_recommendation(
         consensus: Whether all LLMs agreed (for multi-LLM modes)
         discovery_llm: Which LLM discovered this coin (None if coin was specified via ANALYZE_COINS)
         exchange: Exchange used for trading (cex, solana-dex), None defaults to cex
+        export_candidate: If True, also write coin to candidate_coins.csv
+        candidate_dir: Directory for candidate_coins.csv (default: ./correlation_data)
+        candidate_blockchain: Blockchain to record for the coin (default: Solana)
+        export_recommendations: Which recommendations to export: 'ALL', 'BUY', or 'BUY,HOLD'
     
     Returns:
         The saved recommendation record, or None if price fetch failed.
@@ -155,6 +164,23 @@ def record_recommendation(
             save_recommendation(rec_record)
             timestamp_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
             print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ ${price:.6f} at {timestamp_str}")
+            
+            # Export to candidate_coins.csv if enabled
+            if export_candidate:
+                rec_upper = recommendation.upper().strip()
+                export_list = [r.strip().upper() for r in export_recommendations.split(',')]
+                should_export = ('ALL' in export_list) or (rec_upper in export_list)
+                
+                if should_export:
+                    from candidate_util import upsert_candidate_coin
+                    source = f"llm_recommendation_{mode}"
+                    upsert_candidate_coin(
+                        symbol=coin_symbol,
+                        blockchain=candidate_blockchain,
+                        source=source,
+                        data_dir=candidate_dir
+                    )
+            
             return rec_record
         else:
             print(f"[HISTORY] Could not get price for {coin_symbol}, skipping record")

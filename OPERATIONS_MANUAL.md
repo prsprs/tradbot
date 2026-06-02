@@ -674,3 +674,216 @@ dex/
 - **Review all transactions in Phantom** before signing
 - **Start with what-if mode** to verify recommendations before live trading
 - **Use small amounts initially** when testing live DEX trades
+
+---
+
+## Candidate Coins Pipeline
+
+The system supports an integrated pipeline for discovering, validating, and analyzing coins across three tools:
+
+```
+┌──────────────────────────┐
+│  1. CRYPTO TRADING BOT   │
+│  crypto_trading_bot.py   │
+│                          │
+│  • LLM discovers coins   │
+│  • Analyzes with multi-  │
+│    LLM consensus         │
+│  • Makes BUY/SELL/HOLD   │
+│    recommendations       │
+│                          │
+│  --export-candidates     │
+└───────────┬──────────────┘
+            │ Writes recommended
+            │ coins to CSV
+            ▼
+┌──────────────────────────┐
+│  candidate_coins.csv     │
+│                          │
+│  symbol,blockchain,      │
+│  added_at,updated_at,    │
+│  source                  │
+└───────────┬──────────────┘
+            │
+            ▼
+┌──────────────────────────┐
+│  2. CORRELATION TRACKER  │
+│  correlation_tracker.py  │
+│                          │
+│  • Collects price data   │
+│    every 30 seconds      │
+│  • Builds correlation    │
+│    history               │
+│  • Discovers leading     │
+│    indicator pairs       │
+│                          │
+│  --use-candidate-coins   │
+└───────────┬──────────────┘
+            │ Produces correlation
+            │ data files
+            ▼
+┌──────────────────────────┐
+│  correlation_data/       │
+│  ├── BTC_prices.csv      │
+│  ├── SOL_prices.csv      │
+│  ├── BONK_prices.csv     │
+│  └── ...                 │
+└───────────┬──────────────┘
+            │
+            ▼
+┌──────────────────────────┐
+│  3. LEADING INDICATOR    │
+│     TESTER               │
+│  leading_indicator_      │
+│  tester.py               │
+│                          │
+│  • Paper trades using    │
+│    correlation signals   │
+│  • Tests profitability   │
+│  • Validates strategies  │
+│                          │
+│  --use-candidate-coins   │
+└──────────────────────────┘
+```
+
+### Important: Leading Indicators Must Be Added Manually
+
+The trading bot discovers **follower coins** (coins to potentially trade based on LLM analysis), but **leading indicators** (like BTC or ETH that predict follower movements) must be manually added to `candidate_coins.csv`.
+
+```bash
+# Add common leading indicators manually
+python -c "from candidate_util import upsert_candidate_coin; upsert_candidate_coin('BTC', 'Bitcoin', 'manual_leader')"
+python -c "from candidate_util import upsert_candidate_coin; upsert_candidate_coin('ETH', 'Ethereum', 'manual_leader')"
+python -c "from candidate_util import upsert_candidate_coin; upsert_candidate_coin('SOL', 'Solana', 'manual_leader')"
+```
+
+The correlation tracker will then analyze relationships between these leaders and the LLM-discovered followers.
+
+### Step 1: Discover and Export Candidate Coins
+
+Run the trading bot with `--export-candidates` to write LLM-recommended coins to `candidate_coins.csv`:
+
+```bash
+# Discover coins and export all recommendations
+python crypto_trading_bot.py --trading-mode=whatif --export-candidates
+
+# Export only BUY recommendations
+python crypto_trading_bot.py --trading-mode=whatif --export-candidates --export-recommendations=BUY
+
+# Specify blockchain for exported coins
+python crypto_trading_bot.py --trading-mode=whatif --export-candidates --candidate-blockchain=Solana
+
+# With specific coins (useful for seeding the candidate list)
+python crypto_trading_bot.py --trading-mode=whatif --coins=BONK,WIF,PEPE --export-candidates
+```
+
+**Configuration:**
+
+| Option | Env Var | Default | Description |
+|--------|---------|---------|-------------|
+| `--export-candidates` | `EXPORT_CANDIDATES` | `false` | Enable candidate export |
+| `--candidate-dir` | `CANDIDATE_DIR` | `./correlation_data` | Directory for CSV |
+| `--candidate-blockchain` | `CANDIDATE_BLOCKCHAIN` | `Solana` | Blockchain for coins |
+| `--export-recommendations` | `EXPORT_RECOMMENDATIONS` | `ALL` | Filter: `ALL`, `BUY`, or `BUY,HOLD` |
+
+### Step 2: Collect Correlation Data
+
+Run the correlation tracker to collect price data for candidate coins:
+
+```bash
+# Collect data for 4 hours
+python correlation_tracker.py --collect --use-candidate-coins --duration 4hr
+
+# Collect with custom interval (5 minutes)
+python correlation_tracker.py --collect --use-candidate-coins --duration 4hr --interval 5min
+
+# Run indefinitely (Ctrl+C to stop)
+python correlation_tracker.py --collect --use-candidate-coins
+```
+
+**What it does:**
+- Reads coin symbols from `candidate_coins.csv`
+- Fetches prices from CoinGecko every `--interval` seconds
+- Writes timestamped price data to `correlation_data/<SYMBOL>_prices.csv`
+
+### Step 3: Analyze Correlations
+
+Discover leading indicator relationships:
+
+```bash
+# Analyze all candidate coins for correlations
+python correlation_tracker.py --analyze --use-candidate-coins
+
+# Discovery mode - find best leader/follower pairs
+python correlation_tracker.py --discover --use-candidate-coins --min-confidence 0.6
+
+# Analyze specific pair
+python correlation_tracker.py --analyze --leader BTC --follower BONK
+```
+
+### Step 4: Test Profitability
+
+Run paper trading simulations using discovered correlations:
+
+```bash
+# Auto-select best pairs from candidate coins
+python leading_indicator_tester.py --auto-select --use-candidate-coins --use-fib
+
+# With specific confidence thresholds
+python leading_indicator_tester.py --auto-select --use-candidate-coins --use-fib \
+    --min-confidence 0.5 --min-correlation 0.3
+
+# Skip data collection, analyze existing data
+python leading_indicator_tester.py --auto-select --use-candidate-coins --use-fib --skip-collection
+```
+
+### Full Pipeline Example
+
+```bash
+# Day 1: Seed candidate list from LLM discovery
+python crypto_trading_bot.py --trading-mode=whatif --export-candidates --export-recommendations=BUY
+
+# Day 1-3: Collect price data (run for several days)
+python correlation_tracker.py --collect --use-candidate-coins --duration 72hr
+
+# Day 3: Analyze correlations
+python correlation_tracker.py --discover --use-candidate-coins --min-confidence 0.5
+
+# Day 3: Test trading strategy
+python leading_indicator_tester.py --auto-select --use-candidate-coins --use-fib
+
+# Ongoing: Add new coins as LLM discovers them
+python crypto_trading_bot.py --trading-mode=whatif --export-candidates
+```
+
+### CSV File Format
+
+The `candidate_coins.csv` file uses upsert semantics (one record per coin):
+
+```csv
+symbol,blockchain,added_at,updated_at,source
+BONK,Solana,2026-06-01T14:30:00Z,,llm_recommendation_gemini
+WIF,Solana,2026-06-01T14:32:00Z,2026-06-02T10:15:00Z,llm_recommendation_compare
+PEPE,Solana,2026-06-01T14:35:00Z,,llm_recommendation_claude
+```
+
+- **symbol**: Coin ticker (uppercase)
+- **blockchain**: Chain name (metadata, not used for filtering yet)
+- **added_at**: First recommendation timestamp
+- **updated_at**: Most recent re-recommendation (empty if never updated)
+- **source**: Origin of the recommendation (e.g., `llm_recommendation_gemini`)
+
+### Manual Candidate Management
+
+You can also manually edit `candidate_coins.csv`:
+
+```bash
+# Add a coin manually
+echo "MYTOKEN,Solana,2026-06-01T12:00:00Z,,manual" >> correlation_data/candidate_coins.csv
+
+# View current candidates
+cat correlation_data/candidate_coins.csv
+
+# Or use Python
+python -c "from candidate_util import upsert_candidate_coin; upsert_candidate_coin('MYTOKEN', 'Solana', 'manual')"
+```
