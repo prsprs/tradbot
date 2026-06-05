@@ -40,6 +40,40 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Price Formatting Utilities
+# ============================================================================
+
+def format_price(price: float, symbol: str = '$') -> str:
+    """
+    Format a price for display, using scientific notation for very small values.
+    
+    Args:
+        price: The price to format
+        symbol: Currency symbol (default: '$')
+    
+    Returns:
+        Formatted price string that's readable for both large and micro-cap coins
+    """
+    if price is None or price == 0:
+        return f"{symbol}0.00"
+    
+    abs_price = abs(price)
+    
+    # For very small prices (< 0.0001), use scientific notation
+    if abs_price < 0.0001:
+        return f"{symbol}{price:.2e}"
+    # For small prices (< 0.01), show more decimals
+    elif abs_price < 0.01:
+        return f"{symbol}{price:.6f}"
+    # For normal prices (< 1000), show 4 decimals
+    elif abs_price < 1000:
+        return f"{symbol}{price:.4f}"
+    # For large prices, show 2 decimals
+    else:
+        return f"{symbol}{price:.2f}"
+
+
+# ============================================================================
 # Time Duration Parsing (shared with correlation_tracker.py)
 # ============================================================================
 
@@ -831,11 +865,11 @@ def format_report(report: FibonacciReport) -> str:
     lines.append(f"Data Points Analyzed: {report.data_points_analyzed}")
     lines.append("")
     lines.append("Price Range:")
-    lines.append(f"  High: ${report.high_price:.4f} ({report.high_timestamp.strftime('%Y-%m-%d %H:%M')} UTC)")
-    lines.append(f"  Low:  ${report.low_price:.4f} ({report.low_timestamp.strftime('%Y-%m-%d %H:%M')} UTC)")
+    lines.append(f"  High: {format_price(report.high_price)} ({report.high_timestamp.strftime('%Y-%m-%d %H:%M')} UTC)")
+    lines.append(f"  Low:  {format_price(report.low_price)} ({report.low_timestamp.strftime('%Y-%m-%d %H:%M')} UTC)")
     price_range = report.high_price - report.low_price
     range_pct = (price_range / report.low_price) * 100 if report.low_price > 0 else 0
-    lines.append(f"  Range: ${price_range:.4f} ({range_pct:.1f}%)")
+    lines.append(f"  Range: {format_price(price_range)} ({range_pct:.1f}%)")
     lines.append("")
     lines.append("-" * 70)
     lines.append("                         FIBONACCI LEVELS")
@@ -859,7 +893,8 @@ def format_report(report: FibonacciReport) -> str:
             bounce_str = str(level.bounce_count) if level.bounce_count > 0 else "-"
             break_str = str(level.breakthrough_count) if level.breakthrough_count > 0 else "-"
             
-            lines.append(f"{key:<10}${level.price:<13.4f}{touch_str:<10}{bounce_str:<10}{break_str:<12}{eff_str:<14}")
+            price_str = format_price(level.price)
+            lines.append(f"{key:<10}{price_str:<14}{touch_str:<10}{bounce_str:<10}{break_str:<12}{eff_str:<14}")
     
     lines.append("-" * 70)
     lines.append("")
@@ -867,7 +902,7 @@ def format_report(report: FibonacciReport) -> str:
     # Summary
     if report.most_respected_level:
         level = report.levels[report.most_respected_level]
-        lines.append(f"Most Respected Level: {report.most_respected_level} (${level.price:.4f}) - {level.effectiveness:.1f}% bounce rate")
+        lines.append(f"Most Respected Level: {report.most_respected_level} ({format_price(level.price)}) - {level.effectiveness:.1f}% bounce rate")
     else:
         lines.append("Most Respected Level: (insufficient touches to determine)")
     
@@ -890,11 +925,11 @@ def format_report(report: FibonacciReport) -> str:
         if len(significant_levels) >= 2:
             high_lvl = significant_levels[0]
             low_lvl = significant_levels[-1]
-            lines.append(f"  • Strong support/resistance zone: {low_lvl[0]}-{high_lvl[0]} (${low_lvl[1].price:.2f}-${high_lvl[1].price:.2f})")
+            lines.append(f"  • Strong support/resistance zone: {low_lvl[0]}-{high_lvl[0]} ({format_price(low_lvl[1].price)}-{format_price(high_lvl[1].price)})")
         else:
             lvl = significant_levels[0]
             zone_type = "resistance" if report.trend_direction == 'up' else "support"
-            lines.append(f"  • Key {zone_type} level: {lvl[0]} (${lvl[1].price:.2f})")
+            lines.append(f"  • Key {zone_type} level: {lvl[0]} ({format_price(lvl[1].price)})")
     
     # Find weak levels
     weak_levels = [

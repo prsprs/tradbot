@@ -363,6 +363,12 @@ def get_jupiter_prices_v3(mint_addresses: List[str], api_key: str = None) -> Dic
                     }
             return result
             
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            # Rate limited - return empty quietly, let caller use fallback
+            return {}
+        print(f"[JUPITER] Price API V3 error: {e}")
+        return {}
     except httpx.HTTPError as e:
         print(f"[JUPITER] Price API V3 error: {e}")
         return {}

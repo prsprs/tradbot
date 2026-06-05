@@ -1494,17 +1494,27 @@ class ProfitabilityAnalyzer:
         self.config = config
         self.loader = DataLoader(config.data_dir)
         self.correlation_analyzer = CorrelationAnalyzer(config)
+        self._liquidity_cache: Dict[str, Tuple[Optional[float], str]] = {}
     
     def _get_liquidity(self, symbol: str) -> Tuple[Optional[float], str]:
         """Get token liquidity from Jupiter or estimate it.
         
+        Results are cached to avoid redundant API calls.
+        
         Returns:
             Tuple of (liquidity_usd, source)
         """
+        symbol_upper = symbol.upper()
+        
+        # Check cache first
+        if symbol_upper in self._liquidity_cache:
+            return self._liquidity_cache[symbol_upper]
+        
         try:
             from dex.jupiterutil import get_token_liquidity
             liquidity = get_token_liquidity(symbol)
             if liquidity and liquidity > 0:
+                self._liquidity_cache[symbol_upper] = (liquidity, "jupiter")
                 return liquidity, "jupiter"
         except ImportError:
             logger.debug("Jupiter util not available for liquidity lookup")
@@ -1525,12 +1535,15 @@ class ProfitabilityAnalyzer:
             'JUP': 8_000_000,
         }
         
-        symbol_upper = symbol.upper()
         if symbol_upper in estimates:
-            return estimates[symbol_upper], "estimated"
+            result = (estimates[symbol_upper], "estimated")
+            self._liquidity_cache[symbol_upper] = result
+            return result
         
         # Conservative default for unknown tokens
-        return 100_000, "estimated"
+        result = (100_000, "estimated")
+        self._liquidity_cache[symbol_upper] = result
+        return result
     
     def _calculate_costs(self, symbol: str, position_size_usd: float,
                         target_profit_pct: float) -> CostAnalysis:

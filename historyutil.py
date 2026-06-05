@@ -16,6 +16,21 @@ HISTORY_DIR = os.environ.get('HISTORY_DIR', './history/')
 RECOMMENDATIONS_FILE = os.path.join(HISTORY_DIR, 'recommendations.json')
 
 
+def format_price(price: float, symbol: str = '$') -> str:
+    """Format a price for display, using scientific notation for very small values."""
+    if price is None or price == 0:
+        return f"{symbol}0.00"
+    abs_price = abs(price)
+    if abs_price < 0.0001:
+        return f"{symbol}{price:.2e}"
+    elif abs_price < 0.01:
+        return f"{symbol}{price:.6f}"
+    elif abs_price < 1000:
+        return f"{symbol}{price:.4f}"
+    else:
+        return f"{symbol}{price:.2f}"
+
+
 def ensure_history_dir():
     """Create history directory if it doesn't exist."""
     os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -163,7 +178,7 @@ def record_recommendation(
             )
             save_recommendation(rec_record)
             timestamp_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-            print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ ${price:.6f} at {timestamp_str}")
+            print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ {format_price(price)} at {timestamp_str}")
             
             # Export to candidate_coins.csv if enabled
             if export_candidate:

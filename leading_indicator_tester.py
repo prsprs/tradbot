@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from coingeckoutil import get_multiple_prices, get_coingecko_price
+from coinmarketcaputil import get_cmc_price, get_multiple_prices_cmc
 from preflight import PreflightValidator, PreflightResult, run_preflight
 from fibonacci_analyzer import (
     FibonacciAnalyzer, 
@@ -45,7 +46,7 @@ from fibonacci_analyzer import (
 )
 
 # Supported exchanges for price fetching
-SUPPORTED_EXCHANGES = ['coingecko', 'jupiter', 'coinbase']
+SUPPORTED_EXCHANGES = ['coingecko', 'jupiter', 'coinbase', 'coinmarketcap', 'cmc']
 DEFAULT_EXCHANGE = 'coingecko'
 
 # Configure logging
@@ -55,6 +56,40 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Price Formatting Utilities
+# ============================================================================
+
+def format_price(price: float, symbol: str = '$') -> str:
+    """
+    Format a price for display, using scientific notation for very small values.
+    
+    Args:
+        price: The price to format
+        symbol: Currency symbol (default: '$')
+    
+    Returns:
+        Formatted price string that's readable for both large and micro-cap coins
+    """
+    if price is None or price == 0:
+        return f"{symbol}0.00"
+    
+    abs_price = abs(price)
+    
+    # For very small prices (< 0.0001), use scientific notation
+    if abs_price < 0.0001:
+        return f"{symbol}{price:.2e}"
+    # For small prices (< 0.01), show more decimals
+    elif abs_price < 0.01:
+        return f"{symbol}{price:.6f}"
+    # For normal prices (< 1000), show 4 decimals
+    elif abs_price < 1000:
+        return f"{symbol}{price:.4f}"
+    # For large prices, show 2 decimals
+    else:
+        return f"{symbol}{price:.2f}"
 
 
 # ============================================================================
@@ -251,8 +286,8 @@ class TesterConfig:
     verbose: bool = False
     dry_run: bool = False
     max_data_age_hours: int = 24
-    leader_exchange: str = 'coingecko'  # Exchange for leader price data
-    follower_exchange: str = 'jupiter'  # Exchange for follower price data (also used for trading)
+    leader_exchange: str = 'coingecko,cmc'  # Exchange(s) for leader price data (comma-separated for fallback)
+    follower_exchange: str = 'jupiter,coingecko'  # Exchange(s) for follower price data (comma-separated for fallback)
     honor_directionality: bool = True  # Only trade in the stronger direction from analysis
     age_check_interval_hours: float = 1.0  # How often to check data age
     min_win_rate: float = 0.5  # Minimum win rate before action
@@ -313,8 +348,15 @@ def get_jupiter_price(symbol: str) -> Optional[float]:
         headers = {'x-api-key': api_key} if api_key else {}
         url = f"https://api.jup.ag/price/v3?ids={mint}"
         
-        response = httpx.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
+        try:
+            response = httpx.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                # Rate limited - return None quietly to allow fallback
+                return None
+            raise
+        
         data = response.json()
         
         if mint in data and 'usdPrice' in data[mint]:
@@ -362,17 +404,17 @@ def get_coinbase_price(symbol: str) -> Optional[float]:
         return None
 
 
-def get_price_from_exchange(symbol: str, exchange: str) -> Optional[float]:
-    """Get price from the specified exchange.
+def get_price_from_single_exchange(symbol: str, exchange: str) -> Optional[float]:
+    """Get price from a single specified exchange.
     
     Args:
         symbol: Token symbol.
-        exchange: Exchange name (coingecko, jupiter, coinbase).
+        exchange: Exchange name (coingecko, jupiter, coinbase, cmc).
     
     Returns:
         USD price or None if not found.
     """
-    exchange = exchange.lower()
+    exchange = exchange.lower().strip()
     
     if exchange == 'coingecko':
         return get_coingecko_price(symbol)
@@ -380,9 +422,123 @@ def get_price_from_exchange(symbol: str, exchange: str) -> Optional[float]:
         return get_jupiter_price(symbol)
     elif exchange == 'coinbase':
         return get_coinbase_price(symbol)
+    elif exchange in ('coinmarketcap', 'cmc'):
+        return get_cmc_price(symbol)
     else:
         logger.error(f"Unknown exchange: {exchange}")
         return None
+
+
+def get_price_from_exchange(symbol: str, exchange: str, 
+                            fib_range: Optional[Tuple[float, float]] = None,
+                            tolerance_pct: float = 5.0) -> Optional[float]:
+    """Get price from exchange(s) with fallback support.
+    
+    Supports comma-separated list of exchanges for primary/secondary fallback.
+    Example: "coingecko,cmc" tries CoinGecko first, falls back to CMC.
+    
+    If fib_range (low, high) is provided, validates that returned price is within
+    the range (with tolerance). If outside range, tries fallback - this catches
+    symbol collisions where different exchanges have different tokens with same symbol.
+    
+    Args:
+        symbol: Token symbol.
+        exchange: Exchange name or comma-separated list (e.g., "jupiter,coingecko").
+        fib_range: Optional (low_price, high_price) tuple for sanity check.
+        tolerance_pct: Tolerance percentage for range check (default 5%).
+    
+    Returns:
+        USD price or None if all exchanges fail.
+    """
+    # Parse exchange list
+    exchanges = [e.strip().lower() for e in exchange.split(',') if e.strip()]
+    
+    if not exchanges:
+        logger.error("No exchanges specified")
+        return None
+    
+    def price_in_fib_range(price: float, low: float, high: float) -> bool:
+        """Check if price is within Fib range with tolerance."""
+        if low <= 0 or high <= 0:
+            return True
+        tolerance = (high - low) * (tolerance_pct / 100)
+        return (low - tolerance) <= price <= (high + tolerance)
+    
+    out_of_range_exchanges = []  # Track which exchanges returned out-of-range prices
+    
+    for i, ex in enumerate(exchanges):
+        try:
+            price = get_price_from_single_exchange(symbol, ex)
+            if price is not None:
+                # If we have a Fib range, validate price is within it
+                if fib_range is not None:
+                    low, high = fib_range
+                    if not price_in_fib_range(price, low, high):
+                        logger.warning(f"[RANGE CHECK] {symbol} on {ex}: {format_price(price)} outside Fib range {format_price(low)}-{format_price(high)}")
+                        out_of_range_exchanges.append((ex, price))
+                        if i < len(exchanges) - 1:
+                            logger.warning(f"  May be symbol collision (different token) - trying {exchanges[i+1]}...")
+                        continue  # Try next exchange
+                
+                if i > 0:
+                    # Log that we used fallback
+                    logger.warning(f"[FALLBACK] {symbol}: used {ex} (previous exchange(s) out of expected range)")
+                return price
+        except Exception as e:
+            logger.debug(f"[{symbol}] Exchange {ex} failed: {e}")
+            continue
+    
+    # All exchanges failed or returned out-of-range prices
+    if out_of_range_exchanges:
+        logger.error(f"[{symbol}] All configured exchanges returned prices outside Fib range:")
+        for ex, price in out_of_range_exchanges:
+            logger.error(f"  - {ex}: {format_price(price)}")
+        logger.error(f"  Expected range: {format_price(fib_range[0])}-{format_price(fib_range[1])}")
+        logger.error(f"  This may indicate symbol collision (same symbol, different tokens).")
+        logger.error(f"  Try specifying different exchanges with --follower-ex or --leader-ex")
+    elif len(exchanges) > 1:
+        logger.warning(f"[{symbol}] All exchanges failed: {', '.join(exchanges)}")
+    return None
+
+
+def parse_exchange_list(exchange_arg: str) -> List[str]:
+    """Parse comma-separated exchange list into validated list.
+    
+    Args:
+        exchange_arg: Comma-separated exchange names (e.g., "coingecko,cmc")
+    
+    Returns:
+        List of validated exchange names.
+    """
+    exchanges = [e.strip().lower() for e in exchange_arg.split(',') if e.strip()]
+    valid = []
+    for ex in exchanges:
+        # Normalize aliases
+        if ex == 'coinmarketcap':
+            ex = 'cmc'
+        if ex in ('coingecko', 'jupiter', 'coinbase', 'cmc'):
+            valid.append(ex)
+        else:
+            logger.warning(f"Unknown exchange '{ex}' ignored")
+    return valid
+
+
+def format_exchange_list(exchanges: str) -> str:
+    """Format exchange list for display.
+    
+    Args:
+        exchanges: Comma-separated exchange string.
+    
+    Returns:
+        Formatted string like "coingecko (fallback: cmc)"
+    """
+    parts = parse_exchange_list(exchanges)
+    if len(parts) == 0:
+        return "none"
+    elif len(parts) == 1:
+        return parts[0]
+    else:
+        return f"{parts[0]} (fallback: {', '.join(parts[1:])})"
 
 
 @dataclass
@@ -826,9 +982,9 @@ class FibTradeFilter:
         tolerance = (high - low) * (self.tolerance_pct / 100)
         
         if current_price > high + tolerance:
-            return False, f"Price ${current_price:.4f} above Fib high ${high:.4f} + tolerance"
+            return False, f"Price {format_price(current_price)} above Fib high {format_price(high)} + tolerance"
         if current_price < low - tolerance:
-            return False, f"Price ${current_price:.4f} below Fib low ${low:.4f} - tolerance"
+            return False, f"Price {format_price(current_price)} below Fib low {format_price(low)} - tolerance"
         
         return True, "Price within Fib range"
     
@@ -875,7 +1031,7 @@ class FibTradeFilter:
         if self._is_near_level(current_price, self.report.low_price):
             return FibFilterResult(
                 can_execute=True,
-                reason=f"BUY valid: Price near Fib low (${self.report.low_price:.4f})",
+                reason=f"BUY valid: Price near Fib low ({format_price(self.report.low_price)})",
                 trend_direction='up',
                 nearest_level='100.0%',
                 level_price=self.report.low_price
@@ -891,7 +1047,7 @@ class FibTradeFilter:
             key, level = nearest
             return FibFilterResult(
                 can_execute=True,
-                reason=f"BUY valid: Price near {key} support (${level.price:.4f}, {level.effectiveness:.1f}% effective)",
+                reason=f"BUY valid: Price near {key} support ({format_price(level.price)}, {level.effectiveness:.1f}% effective)",
                 trend_direction='up',
                 nearest_level=key,
                 level_price=level.price,
@@ -900,7 +1056,7 @@ class FibTradeFilter:
         
         return FibFilterResult(
             can_execute=False,
-            reason=f"BUY blocked: Price ${current_price:.4f} not near any effective support level",
+            reason=f"BUY blocked: Price {format_price(current_price)} not near any effective support level",
             trend_direction='up'
         )
     
@@ -925,7 +1081,7 @@ class FibTradeFilter:
         if self._is_near_level(current_price, self.report.high_price):
             return FibFilterResult(
                 can_execute=True,
-                reason=f"SELL valid: Price near Fib high (${self.report.high_price:.4f})",
+                reason=f"SELL valid: Price near Fib high ({format_price(self.report.high_price)})",
                 trend_direction='down',
                 nearest_level='0.0%',
                 level_price=self.report.high_price
@@ -941,7 +1097,7 @@ class FibTradeFilter:
             key, level = nearest
             return FibFilterResult(
                 can_execute=True,
-                reason=f"SELL valid: Price near {key} resistance (${level.price:.4f}, {level.effectiveness:.1f}% effective)",
+                reason=f"SELL valid: Price near {key} resistance ({format_price(level.price)}, {level.effectiveness:.1f}% effective)",
                 trend_direction='down',
                 nearest_level=key,
                 level_price=level.price,
@@ -950,7 +1106,7 @@ class FibTradeFilter:
         
         return FibFilterResult(
             can_execute=False,
-            reason=f"SELL blocked: Price ${current_price:.4f} not near any effective resistance level",
+            reason=f"SELL blocked: Price {format_price(current_price)} not near any effective resistance level",
             trend_direction='down'
         )
     
@@ -1030,7 +1186,9 @@ class AutoSelectOrchestrator:
         verbose: bool = False,
         command_line: str = '',
         skip_recheck: bool = False,
-        wallet_type: str = 'trustwallet'
+        wallet_type: str = 'trustwallet',
+        leader_exchange: str = 'coingecko,cmc',
+        follower_exchange: str = 'jupiter,coingecko'
     ):
         self.coins = [c.upper() for c in coins]
         self.data_dir = data_dir
@@ -1048,6 +1206,8 @@ class AutoSelectOrchestrator:
         self.command_line = command_line
         self.skip_recheck = skip_recheck
         self.wallet_type = wallet_type
+        self.leader_exchange = leader_exchange
+        self.follower_exchange = follower_exchange
         
         self.candidates: List[CandidatePair] = []
         self.selected_pair: Optional[CandidatePair] = None
@@ -1186,21 +1346,16 @@ class AutoSelectOrchestrator:
         # Cache tradeability results to avoid redundant Jupiter API calls
         tradeability_cache: Dict[str, bool] = {}
         
-        # Pre-check all unique leaders for CoinGecko availability
+        # Pre-check all unique leaders for price availability (with fallback)
         unique_leaders = set(pair.get('leader', '') for pair in pairs)
         leader_cache: Dict[str, bool] = {}
-        print(f"\nPre-validating {len(unique_leaders)} unique leader(s) on CoinGecko...")
+        leader_exchanges = self.leader_exchange if hasattr(self, 'leader_exchange') else 'coingecko,cmc'
+        print(f"\nPre-validating {len(unique_leaders)} unique leader(s) on {format_exchange_list(leader_exchanges)}...")
         
-        from coingeckoutil import get_coingecko_price, auto_resolve_symbol
         for leader in unique_leaders:
             try:
-                # First try auto-resolve (uses same logic as data collection)
-                resolved = auto_resolve_symbol(leader)
-                if resolved:
-                    price = get_coingecko_price(leader)
-                    leader_cache[leader] = price is not None
-                else:
-                    leader_cache[leader] = False
+                price = get_price_from_exchange(leader, leader_exchanges)
+                leader_cache[leader] = price is not None
                 status = "✓" if leader_cache[leader] else "✗"
                 print(f"  {status} {leader}")
             except Exception as e:
@@ -1600,6 +1755,18 @@ class AutoSelectOrchestrator:
             if not profitability_viable:
                 reasons.append("profitability not viable")
             
+            # Check Fib trend vs direction compatibility
+            # If only UP moves are viable but Fib trend is DOWN, we can never BUY
+            # If only DOWN moves are viable but Fib trend is UP, we can never SELL
+            fib_trend = pair.get('fib_trend_direction', 'unknown')
+            up_viable = pair.get('up_viable', False)
+            down_viable = pair.get('down_viable', False)
+            
+            if fib_trend == 'down' and up_viable and not down_viable:
+                reasons.append("Fib trend DOWN (SELL only) conflicts with UP-only direction")
+            elif fib_trend == 'up' and down_viable and not up_viable:
+                reasons.append("Fib trend UP (BUY only) conflicts with DOWN-only direction")
+            
             if reasons:
                 candidate.eligible = False
                 candidate.ineligibility_reason = "; ".join(reasons)
@@ -1614,7 +1781,7 @@ class AutoSelectOrchestrator:
         
         print(f"\nEligible pairs: {len(eligible)}")
         for c in eligible:
-            direction = "UP" if c.up_viable else "DOWN" if c.down_viable else "BOTH"
+            direction = "BOTH" if (c.up_viable and c.down_viable) else "UP" if c.up_viable else "DOWN" if c.down_viable else "NONE"
             print(f"  ✓ {c.leader}:{c.follower} - confidence={c.correlation_confidence:.2f}, "
                   f"fib={c.fib_effectiveness:.1f}%, direction={direction}")
         
@@ -1675,7 +1842,7 @@ class AutoSelectOrchestrator:
         print(f"\n{len(eligible_sorted)} eligible pairs found. Please select:")
         print("")
         for i, c in enumerate(eligible_sorted, 1):
-            direction = "UP" if c.up_viable else "DOWN" if c.down_viable else "BOTH"
+            direction = "BOTH" if (c.up_viable and c.down_viable) else "UP" if c.up_viable else "DOWN" if c.down_viable else "NONE"
             print(f"  [{i}] {c.leader}:{c.follower}")
             print(f"      At original lag={c.optimal_lag_seconds}s: corr={c.original_correlation:.4f}, conf={c.correlation_confidence:.4f}")
             if c.recheck_confidence is not None and c.preflight_interval_seconds:
@@ -3109,7 +3276,12 @@ class LeadingIndicatorTester:
         return f"pt_{timestamp}_{self.trade_counter:03d}"
     
     def _get_prices(self) -> Optional[Dict[str, float]]:
-        """Fetch current prices for leader and follower from configured exchanges."""
+        """Fetch current prices for leader and follower from configured exchanges.
+        
+        Uses Fib report price range (if available) for follower price sanity check.
+        This catches symbol collisions where different exchanges have different tokens
+        with the same symbol.
+        """
         try:
             # Fetch leader price from leader exchange
             leader_price = get_price_from_exchange(
@@ -3117,10 +3289,17 @@ class LeadingIndicatorTester:
                 self.config.leader_exchange
             )
             
-            # Fetch follower price from follower exchange
+            # Get Fib range for follower (if available) for sanity check
+            fib_range = None
+            if self.config.fib_filter and self.config.fib_filter.report:
+                fib = self.config.fib_filter.report
+                fib_range = (fib.low_price, fib.high_price)
+            
+            # Fetch follower price from follower exchange (with range sanity check)
             follower_price = get_price_from_exchange(
                 self.pair_config.follower,
-                self.config.follower_exchange
+                self.config.follower_exchange,
+                fib_range=fib_range
             )
             
             if leader_price is None or follower_price is None:
@@ -3352,8 +3531,8 @@ class LeadingIndicatorTester:
         print(f"Age Check Interval: {cfg.age_check_interval_hours}h")
         
         print(f"\n--- Price Sources ---")
-        print(f"Leader ({pair.leader}): {cfg.leader_exchange}")
-        print(f"Follower ({pair.follower}): {cfg.follower_exchange}")
+        print(f"Leader ({pair.leader}): {format_exchange_list(cfg.leader_exchange)}")
+        print(f"Follower ({pair.follower}): {format_exchange_list(cfg.follower_exchange)}")
         
         if cfg.duration_seconds:
             print(f"Duration: {format_duration(cfg.duration_seconds)}")
@@ -4268,6 +4447,12 @@ Examples:
   
   # Mixed exchange: TAO from CoinGecko, WTAO from Jupiter
   python leading_indicator_tester.py --pair TAO:WTAO --leader-exchange coingecko --follower-exchange jupiter
+  
+  # With fallback: try CoinGecko first, fall back to CMC on rate limit
+  python leading_indicator_tester.py --pair BTC:ETH --leader-exchange coingecko,cmc
+  
+  # Solana follower with non-Solana fallback (Jupiter primary, CoinGecko for non-Solana)
+  python leading_indicator_tester.py --pair BTC:BONK --leader-ex cmc,coingecko --follower-ex jupiter,coingecko
         """
     )
     
@@ -4307,13 +4492,13 @@ Examples:
     parser.add_argument('--max-trades', type=int, default=None,
                         help='Stop after this many trades (for testing). Default: unlimited')
     
-    # Exchange selection
-    parser.add_argument('--leader-exchange', type=str, default='coingecko',
-                        choices=SUPPORTED_EXCHANGES,
-                        help='Exchange for leader price data (default: coingecko)')
-    parser.add_argument('--follower-exchange', type=str, default='jupiter',
-                        choices=SUPPORTED_EXCHANGES,
-                        help='Exchange for follower price data and trading (default: jupiter for Solana MVP)')
+    # Exchange selection (supports comma-separated primary,fallback)
+    parser.add_argument('--leader-exchange', '--leader-ex', type=str, default='coingecko,cmc',
+                        help='Exchange(s) for leader price data. Comma-separated for fallback. '
+                             'Options: coingecko, cmc, jupiter, coinbase. (default: coingecko,cmc)')
+    parser.add_argument('--follower-exchange', '--follower-ex', type=str, default='jupiter,coingecko',
+                        help='Exchange(s) for follower price data. Comma-separated for fallback. '
+                             'Jupiter is Solana-only; fallback used for non-Solana coins. (default: jupiter,coingecko)')
     
     # Flags
     parser.add_argument('--dry-run', action='store_true',
@@ -4582,7 +4767,9 @@ Examples:
             verbose=args.verbose,
             command_line=command_line,
             skip_recheck=args.skip_recheck,
-            wallet_type=args.wallet_type
+            wallet_type=args.wallet_type,
+            leader_exchange=args.leader_exchange,
+            follower_exchange=args.follower_exchange
         )
         
         selected = orchestrator.run()
@@ -4724,7 +4911,7 @@ Examples:
         
         print(f"\nFib report loaded for {follower}:")
         print(f"  Trend direction: {fib_report.trend_direction.upper()}")
-        print(f"  Price range: ${fib_report.low_price:.4f} - ${fib_report.high_price:.4f}")
+        print(f"  Price range: {format_price(fib_report.low_price)} - {format_price(fib_report.high_price)}")
         print(f"  Window: {fib_report.analysis_window}")
         print(f"  Effective levels: {len(fib_filter.effective_support_levels)}")
         
@@ -4732,11 +4919,17 @@ Examples:
         if fib_filter.effective_support_levels:
             print(f"\n  Effective Fib levels (>={args.fib_min_effectiveness}% bounce rate):")
             for key, level in sorted(fib_filter.effective_support_levels, key=lambda x: x[1].price, reverse=True):
-                print(f"    • {key}: ${level.price:.4f} ({level.effectiveness:.1f}%)")
+                print(f"    • {key}: {format_price(level.price)} ({level.effectiveness:.1f}%)")
         
         # Trading direction based on Fib trend
         fib_direction = 'BUY only' if fib_report.trend_direction == 'up' else 'SELL only'
         print(f"\n  Trade direction: {fib_direction}")
+        
+        # When using Fib, disable legacy honor_directionality to avoid conflicts
+        # Fib filter will handle directional enforcement based on trend
+        if args.honor_directionality == 'yes':
+            args.honor_directionality = 'no'
+            print(f"\n  Note: Disabled legacy --honor-directionality (Fib controls direction)")
         
         # Check for conflict with --directional-filter
         if args.directional_filter:
