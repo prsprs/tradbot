@@ -231,6 +231,17 @@ Performance Monitoring:
                             (default: 10)
   --auto-refresh            Auto re-run analyzer when win rate drops
                             (default: no, choices: yes/no)
+
+Fibonacci Trade Filtering:
+  --use-fib                 Enable Fibonacci-based trade filtering
+  --fib-range LOW:HIGH      Override auto-calculated Fib range (e.g., 0.02:0.025)
+                            Requires --pair or --follower-coin to specify the token
+  --follower-coin SYMBOL    Follower token symbol for --fib-range or --auto-select
+                            With --auto-select, filters to pairs with this follower
+  --fib-min-effectiveness   Minimum bounce rate % for Fib level to be effective
+                            (default: 20.0)
+  --fib-touch-tolerance     Tolerance % for price touching a Fib level
+                            (default: 0.5)
 ```
 
 ---
@@ -794,6 +805,72 @@ python leading_indicator_tester.py --pair BTC:ETH --verbose
 ```bash
 # Let tester calculate optimal intervals from lag
 python leading_indicator_tester.py --pair BTC:ETH --auto-interval
+```
+
+### With Fibonacci Filtering
+
+```bash
+# Use Fib levels to control trade direction
+python leading_indicator_tester.py --pair BTC:PERP --use-fib
+
+# Override auto-calculated Fib range with custom values
+python leading_indicator_tester.py --pair BTC:PERP --use-fib --fib-range 0.02:0.025
+
+# Combine with live trading
+python leading_indicator_tester.py --auto-select --use-fib --fib-range 0.018:0.024 \
+    --trading-mode live --max-trade-usd 10
+```
+
+---
+
+## Fibonacci Trade Filtering
+
+The `--use-fib` flag enables Fibonacci-based trade direction filtering, where trades are only allowed in the direction consistent with the current Fib trend.
+
+### Custom Fib Range Override (`--fib-range`)
+
+The `--fib-range LOW:HIGH` parameter allows manual specification of the price range used for Fibonacci level calculations, overriding the auto-calculated range from historical data.
+
+**Use cases:**
+- Auto-calculated range is stale or based on insufficient data
+- User has domain knowledge about expected price bounds
+- Testing specific price scenarios
+- Working with tokens that have limited historical data
+
+**Format:** `--fib-range 0.02:0.025` (colon-separated low:high)
+
+**Behavior when specified:**
+- Skips historical low/high calculation
+- Fib levels (23.6%, 38.2%, 50%, 61.8%, 78.6%) calculated from custom range
+- Trend direction still auto-detected from recent price action
+- Effectiveness data unavailable (shows "N/A" since historical bounces weren't analyzed)
+- Display shows `[CUSTOM]` indicator
+
+**Example output:**
+```
+Fib report loaded for PERP:
+  Trend direction: DOWN
+  Price range: $0.0200 - $0.0250 [CUSTOM]
+  Window: N/A (custom range)
+  Effective levels: 5
+
+  Note: Using custom Fib range - effectiveness data unavailable
+```
+
+### Symbol Collision Detection
+
+When `--fib-range` (or auto-calculated range) is available, it also serves as a **sanity check for price source validation**. If the follower price from the primary exchange is outside the Fib range, this may indicate a symbol collision (same symbol, different tokens on different chains).
+
+**Automatic fallback behavior:**
+1. Primary exchange returns price outside Fib range
+2. System logs warning and tries fallback exchange
+3. If fallback returns price within range, uses fallback
+4. If all exchanges fail range check, logs error with suggestions
+
+```
+[RANGE CHECK] PERP on jupiter: $3.3400 outside Fib range $0.0200-$0.0250
+  May be symbol collision (different token) - trying coingecko...
+[FALLBACK] PERP: used coingecko (previous exchange(s) out of expected range)
 ```
 
 ---

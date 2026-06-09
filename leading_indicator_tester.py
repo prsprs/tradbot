@@ -541,6 +541,107 @@ def format_exchange_list(exchanges: str) -> str:
         return f"{parts[0]} (fallback: {', '.join(parts[1:])})"
 
 
+def parse_fib_range(fib_range_str: str) -> Optional[Tuple[float, float]]:
+    """Parse --fib-range argument into (low, high) tuple.
+    
+    Args:
+        fib_range_str: String in format "low:high" (e.g., "0.02:0.025")
+    
+    Returns:
+        Tuple of (low_price, high_price) or None if invalid.
+    
+    Raises:
+        ValueError: If format is invalid or low >= high.
+    """
+    if not fib_range_str:
+        return None
+    
+    parts = fib_range_str.strip().split(':')
+    if len(parts) != 2:
+        raise ValueError(f"Invalid --fib-range format: '{fib_range_str}'. Use: low:high (e.g., 0.02:0.025)")
+    
+    try:
+        low = float(parts[0].strip())
+        high = float(parts[1].strip())
+    except ValueError:
+        raise ValueError(f"Invalid --fib-range values: '{fib_range_str}'. Both low and high must be numbers.")
+    
+    if low <= 0 or high <= 0:
+        raise ValueError(f"Invalid --fib-range: both low ({low}) and high ({high}) must be positive.")
+    
+    if low >= high:
+        raise ValueError(f"Invalid --fib-range: low ({low}) must be less than high ({high}).")
+    
+    return (low, high)
+
+
+def create_custom_fib_report(symbol: str, low_price: float, high_price: float) -> 'FibonacciReport':
+    """Create a FibonacciReport with custom price range.
+    
+    This is used when --fib-range is specified to override auto-calculated range.
+    Fib levels are calculated but effectiveness data is unavailable (N/A).
+    
+    Args:
+        symbol: Token symbol.
+        low_price: Custom low price.
+        high_price: Custom high price.
+    
+    Returns:
+        FibonacciReport with custom range and calculated Fib levels.
+    """
+    from fibonacci_analyzer import FibonacciReport, FibonacciLevel
+    
+    now = datetime.now(timezone.utc)
+    price_range = high_price - low_price
+    
+    # Standard Fibonacci ratios
+    fib_ratios = {
+        '23.6%': 0.236,
+        '38.2%': 0.382,
+        '50.0%': 0.500,
+        '61.8%': 0.618,
+        '78.6%': 0.786,
+    }
+    
+    # Calculate Fib levels (assume downtrend: levels are retracements from high)
+    levels = {}
+    for key, ratio in fib_ratios.items():
+        level_price = high_price - (price_range * ratio)
+        levels[key] = FibonacciLevel(
+            ratio=ratio,
+            price=level_price,
+            touch_count=0,
+            bounce_count=0,
+            breakthrough_count=0,
+            avg_bounce_magnitude=0.0,
+        )
+    
+    # Determine trend direction based on which price is more recent
+    # For custom range, default to 'down' (most common use case for Fib retracements)
+    trend_direction = 'down'
+    
+    return FibonacciReport(
+        symbol=symbol.upper(),
+        analysis_window='custom',
+        window_start=now,
+        window_end=now,
+        high_price=high_price,
+        high_timestamp=now,
+        low_price=low_price,
+        low_timestamp=now,
+        trend_direction=trend_direction,
+        levels=levels,
+        most_respected_level=None,
+        overall_effectiveness=0.0,
+        total_touches=0,
+        total_bounces=0,
+        touch_tolerance_pct=0.5,
+        confirmation_periods=3,
+        min_touches=2,
+        data_points_analyzed=0,
+    )
+
+
 @dataclass
 class TradeSignal:
     """A detected trading signal."""
@@ -1188,7 +1289,9 @@ class AutoSelectOrchestrator:
         skip_recheck: bool = False,
         wallet_type: str = 'trustwallet',
         leader_exchange: str = 'coingecko,cmc',
-        follower_exchange: str = 'jupiter,coingecko'
+        follower_exchange: str = 'jupiter,coingecko',
+        follower_filter: Optional[str] = None,
+        fib_range_override: Optional[Tuple[float, float]] = None
     ):
         self.coins = [c.upper() for c in coins]
         self.data_dir = data_dir
@@ -1208,6 +1311,8 @@ class AutoSelectOrchestrator:
         self.wallet_type = wallet_type
         self.leader_exchange = leader_exchange
         self.follower_exchange = follower_exchange
+        self.follower_filter = follower_filter
+        self.fib_range_override = fib_range_override
         
         self.candidates: List[CandidatePair] = []
         self.selected_pair: Optional[CandidatePair] = None
@@ -1274,7 +1379,12 @@ class AutoSelectOrchestrator:
         if self.coins:
             coins_str = ','.join(self.coins)
             cmd.extend(['--leader-candidates', coins_str])
-            cmd.extend(['--follower-candidates', coins_str])
+            # If follower_filter is set, only analyze that specific follower
+            if self.follower_filter:
+                cmd.extend(['--follower-candidates', self.follower_filter])
+                print(f"Filtering to follower: {self.follower_filter}")
+            else:
+                cmd.extend(['--follower-candidates', coins_str])
         
         print(f"Analyzing pairs with min_confidence={self.min_confidence}, min_samples={self.min_samples}")
         print(f"Command: {' '.join(cmd)}")
@@ -1330,6 +1440,14 @@ class AutoSelectOrchestrator:
                 print(f"\nFound {len(pairs)} pair(s), deduplicated to {len(unique_pairs)}")
             else:
                 print(f"\nFound {len(unique_pairs)} significant pair(s) meeting confidence threshold")
+            
+            # Apply follower filter if specified (safety check - should already be filtered upstream)
+            if self.follower_filter:
+                filtered = [p for p in unique_pairs if p.get('follower', '').upper() == self.follower_filter]
+                if len(filtered) < len(unique_pairs):
+                    print(f"Post-filter: {len(filtered)} pair(s) with follower: {self.follower_filter}")
+                unique_pairs = filtered
+            
             return unique_pairs
         except Exception as e:
             print(f"[ERROR] Failed to load discovery report: {e}")
@@ -1676,6 +1794,23 @@ class AutoSelectOrchestrator:
             print(f"\nAnalyzing Fib levels for {follower}...")
             
             try:
+                # Check for custom Fib range override
+                if self.fib_range_override and self.follower_filter and follower.upper() == self.follower_filter:
+                    low_price, high_price = self.fib_range_override
+                    report = create_custom_fib_report(follower, low_price, high_price)
+                    print(f"  Using custom Fib range: {format_price(low_price)} - {format_price(high_price)} [CUSTOM]")
+                    
+                    # Save to cache for trading phase
+                    save_fib_report(report, self.data_dir)
+                    
+                    fib_results[follower] = {
+                        'effectiveness': 0,  # N/A for custom
+                        'trend_direction': report.trend_direction,
+                        'report': report
+                    }
+                    print(f"  ✓ Trend: {report.trend_direction.upper()}, Effectiveness: N/A (custom range)")
+                    continue
+                
                 # Run analysis - analyzer loads data internally
                 report = analyzer.analyze(follower, window_seconds=fib_window_seconds)
                 if report is None:
@@ -1881,6 +2016,8 @@ class AutoSelectOrchestrator:
         print("                    AUTO-SELECT MODE")
         print("="*70)
         print(f"Coins: {', '.join(self.coins)}")
+        if self.follower_filter:
+            print(f"Follower Filter: {self.follower_filter} (only analyzing pairs with this follower)")
         print(f"Min Confidence: {self.min_confidence}")
         print(f"Min Fib Effectiveness: {self.fib_min_effectiveness}%")
         print(f"Data Directory: {self.data_dir}")
@@ -4431,6 +4568,143 @@ class MultiPairTester:
 
 
 # ============================================================================
+# BYPASS-LEADER TRADING
+# ============================================================================
+
+def run_bypass_leader_loop(config):
+    """
+    Run Fibonacci-only trading loop without leader correlation.
+    
+    Monitors price at regular intervals and generates signals based on
+    Fib level proximity and bounces.
+    """
+    import time
+    from datetime import datetime, timezone
+    
+    follower = config.follower
+    fib_filter = config.fib_filter
+    interval = config.sample_interval
+    fib_report = fib_filter.report
+    
+    # Get Fib range for price sanity check
+    fib_range = (fib_report.low_price, fib_report.high_price)
+    
+    # State tracking
+    last_price = None
+    last_signal = None
+    last_signal_time = None
+    cycle_count = 0
+    signal_cooldown = interval * 3  # Minimum time between signals
+    
+    # Get sorted levels for proximity checking
+    sorted_levels = sorted(fib_report.levels.items(), key=lambda x: x[1].price)
+    
+    # Directional constraint based on trend
+    trade_direction = "BUY only" if fib_report.trend_direction == 'up' else "SELL only"
+    
+    print(f"[BYPASS-LEADER] Starting monitor loop (interval: {interval}s)")
+    print(f"[BYPASS-LEADER] Trend direction: {fib_report.trend_direction.upper()}")
+    print(f"[BYPASS-LEADER] Trade constraint: {trade_direction} (respecting trend)")
+    print(f"[BYPASS-LEADER] Trading mode: {config.trading_mode}")
+    if config.dry_run:
+        print(f"[BYPASS-LEADER] DRY RUN - no trades will be executed")
+    print("")
+    
+    try:
+        while True:
+            cycle_count += 1
+            now = datetime.now(timezone.utc)
+            
+            # Fetch current price
+            price = get_price_from_exchange(
+                follower, 
+                config.follower_exchange,
+                fib_range=fib_range
+            )
+            
+            if price is None:
+                print(f"[{now.strftime('%H:%M:%S')}] ✗ Could not fetch {follower} price")
+                time.sleep(interval)
+                continue
+            
+            # Find nearest Fib level
+            nearest_level = None
+            nearest_distance_pct = float('inf')
+            for key, level in sorted_levels:
+                distance_pct = abs(price - level.price) / level.price * 100
+                if distance_pct < nearest_distance_pct:
+                    nearest_distance_pct = distance_pct
+                    nearest_level = (key, level)
+            
+            # Determine if at a Fib level (within tolerance)
+            at_fib_level = nearest_distance_pct <= fib_filter.tolerance_pct
+            
+            # Calculate price change since last check
+            price_change_pct = 0
+            direction = "→"
+            if last_price is not None:
+                price_change_pct = (price - last_price) / last_price * 100
+                direction = "↑" if price_change_pct > 0 else "↓" if price_change_pct < 0 else "→"
+            
+            # Status line
+            level_info = f"near {nearest_level[0]} ({nearest_distance_pct:.2f}%)" if nearest_level else "no level"
+            status = f"[{now.strftime('%H:%M:%S')}] {follower}: {format_price(price)} {direction} {abs(price_change_pct):.2f}% | {level_info}"
+            
+            # Check for signal
+            signal = None
+            signal_reason = None
+            
+            # Simple signal logic based on trend and level proximity
+            if at_fib_level and last_price is not None:
+                # Check cooldown
+                can_signal = True
+                if last_signal_time is not None:
+                    elapsed = (now - last_signal_time).total_seconds()
+                    if elapsed < signal_cooldown:
+                        can_signal = False
+                
+                if can_signal:
+                    # Enforce directional trading based on trend
+                    # Uptrend = BUY only (buy dips at support)
+                    # Downtrend = SELL only (sell rallies at resistance)
+                    if fib_report.trend_direction == 'down':
+                        # Downtrend: SELL only - look for rejection at resistance
+                        if price_change_pct < -0.1:  # Bouncing down from resistance
+                            signal = "SELL"
+                            signal_reason = f"rejection at {nearest_level[0]} resistance (downtrend)"
+                        # Do NOT generate BUY signals in downtrend
+                    else:  # uptrend
+                        # Uptrend: BUY only - look for bounce from support
+                        if price_change_pct > 0.1:  # Bouncing up from support
+                            signal = "BUY"
+                            signal_reason = f"bounce from {nearest_level[0]} support (uptrend)"
+                        # Do NOT generate SELL signals in uptrend
+            
+            # Print status
+            if signal:
+                print(f"{status} | ★ {signal} SIGNAL: {signal_reason}")
+                last_signal = signal
+                last_signal_time = now
+                
+                # Execute trade in paper/live mode
+                if config.trading_mode == 'paper' and not config.dry_run:
+                    print(f"  [PAPER] Would {signal} {follower} at {format_price(price)}")
+                elif config.trading_mode == 'live' and not config.dry_run:
+                    print(f"  [LIVE] Trade execution not yet implemented for fib-only mode")
+            elif at_fib_level:
+                print(f"{status} | AT LEVEL (watching for bounce)")
+            else:
+                print(status)
+            
+            last_price = price
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        print(f"\n\n[BYPASS-LEADER] Stopped after {cycle_count} cycles")
+        print(f"[BYPASS-LEADER] Signals generated: {1 if last_signal else 0}")
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 
@@ -4463,6 +4737,17 @@ Examples:
     pair_group.add_argument('--pairs',
                         help='Multiple pairs to test (comma-separated, e.g., BTC:TAO,ETH:SOL). '
                              'Requires --sample-interval. Paper mode only.')
+    
+    # Standalone follower argument (for --fib-range, --bypass-leader, or filtering --auto-select)
+    parser.add_argument('--follower-coin', type=str, default=None,
+                        help='Follower token symbol. Required with --fib-range or --bypass-leader. '
+                             'With --auto-select, filters to pairs with this follower.')
+    
+    # Bypass leader mode (use Fib logic without leader correlation)
+    parser.add_argument('--bypass-leader', action='store_true',
+                        help='Trade using Fibonacci levels without leader correlation. '
+                             'Requires --follower-coin and --use-fib. All Fib logic applies '
+                             '(trend direction, levels, etc.) but no leader price monitoring.')
     
     # Optional arguments
     parser.add_argument('--report', default='./correlation_data/discovery_report.json',
@@ -4557,6 +4842,9 @@ Examples:
                         help='Enable Fibonacci-based trade filtering (requires cached Fib report)')
     parser.add_argument('--fib-min-effectiveness', type=float, default=60.0,
                         help='Minimum bounce rate %% to consider a Fib level effective (default: 60)')
+    parser.add_argument('--fib-range', type=str, default=None,
+                        help='Override Fib price range with custom low:high (e.g., 0.02:0.025). '
+                             'Skips historical range calculation when specified.')
     
     # Auto-select mode options
     parser.add_argument('--auto-select', action='store_true',
@@ -4622,6 +4910,32 @@ Examples:
     except ValueError as e:
         parser.error(f"Invalid --max-data-age: {e}")
     
+    # Validate --fib-range requires follower to be specified
+    if args.fib_range:
+        # Determine follower from --pair or --follower
+        fib_range_follower = None
+        if args.pair and ':' in args.pair:
+            fib_range_follower = args.pair.split(':', 1)[1].upper()
+        elif args.follower_coin:
+            fib_range_follower = args.follower_coin.upper()
+        
+        if not fib_range_follower and not args.auto_select:
+            parser.error("--fib-range requires a follower to be specified via --pair or --follower-coin")
+    
+    # Validate --bypass-leader mode
+    if args.bypass_leader:
+        if not args.follower_coin:
+            parser.error("--bypass-leader requires --follower-coin to specify the coin to trade")
+        if not args.use_fib:
+            parser.error("--bypass-leader requires --use-fib")
+        if args.pair or args.pairs:
+            parser.error("--bypass-leader cannot be used with --pair or --pairs (no leader needed)")
+        if args.auto_select:
+            parser.error("--bypass-leader cannot be used with --auto-select")
+        if args.sample_interval is None:
+            args.sample_interval = 30  # Default 30s interval for bypass-leader
+            print(f"[BYPASS-LEADER] Using default sample interval: {args.sample_interval}s")
+    
     # Validate auto-select mode
     if args.auto_select:
         if not args.use_fib:
@@ -4632,10 +4946,13 @@ Examples:
             parser.error("--auto-select cannot be used with --pair (pair is auto-selected)")
         if args.pairs:
             parser.error("--auto-select cannot be used with --pairs (pair is auto-selected)")
-    else:
-        # Not auto-select mode - require --pair or --pairs
+        # With --follower-coin, filter candidates to only this follower
+        if args.follower_coin:
+            print(f"[AUTO-SELECT] Will filter candidates to pairs with follower: {args.follower_coin.upper()}")
+    elif not args.bypass_leader:
+        # Not auto-select or bypass-leader mode - require --pair or --pairs
         if not args.pair and not args.pairs:
-            parser.error("Either --pair, --pairs, or --auto-select is required")
+            parser.error("Either --pair, --pairs, --auto-select, or --bypass-leader is required")
     
     # Handle multi-pair mode
     if args.pairs:
@@ -4769,7 +5086,9 @@ Examples:
             skip_recheck=args.skip_recheck,
             wallet_type=args.wallet_type,
             leader_exchange=args.leader_exchange,
-            follower_exchange=args.follower_exchange
+            follower_exchange=args.follower_exchange,
+            follower_filter=args.follower_coin.upper() if args.follower_coin else None,
+            fib_range_override=parse_fib_range(args.fib_range) if args.fib_range else None
         )
         
         selected = orchestrator.run()
@@ -4792,6 +5111,98 @@ Examples:
         
         print(f"\n[AUTO-SELECT] Proceeding to trade {args.pair} with lag={args.lag}s")
         print("")
+    
+    # ==================== BYPASS-LEADER MODE ====================
+    if args.bypass_leader:
+        follower = args.follower_coin.upper()
+        print("\n" + "="*70)
+        print("                    BYPASS-LEADER MODE")
+        print("="*70)
+        print(f"Coin: {follower}")
+        print(f"Sample interval: {args.sample_interval}s")
+        print(f"Trading mode: {args.trading_mode}")
+        print("Signal source: Fibonacci levels (bypassing leader correlation)")
+        print("")
+        
+        # Load or create Fib report
+        fib_report = None
+        is_custom_fib_range = False
+        
+        if args.fib_range:
+            try:
+                custom_range = parse_fib_range(args.fib_range)
+                low_price, high_price = custom_range
+                fib_report = create_custom_fib_report(follower, low_price, high_price)
+                is_custom_fib_range = True
+                print(f"Using custom Fib range: {format_price(low_price)} - {format_price(high_price)} [CUSTOM]")
+            except ValueError as e:
+                print(f"\n✗ ERROR: {e}")
+                sys.exit(1)
+        else:
+            # Try to load cached Fib report
+            fib_report = load_fib_report(follower, args.data_dir)
+            if fib_report is None:
+                print(f"\n✗ No Fib report found for {follower}")
+                print(f"  Either specify --fib-range or run Fib analysis first:")
+                print(f"  python correlation_tracker.py --collect --coins {follower} --duration 1hr")
+                print(f"  Then re-run with --use-fib to generate Fib levels")
+                sys.exit(1)
+        
+        # Create Fib filter
+        fib_filter = FibTradeFilter(
+            fib_report=fib_report,
+            min_effectiveness=args.fib_min_effectiveness,
+            tolerance_pct=args.fib_touch_tolerance
+        )
+        
+        # Display Fib info
+        custom_indicator = " [CUSTOM]" if is_custom_fib_range else ""
+        print(f"\nFib report for {follower}:")
+        print(f"  Price range: {format_price(fib_report.low_price)} - {format_price(fib_report.high_price)}{custom_indicator}")
+        print(f"  Trend: {fib_report.trend_direction.upper()}")
+        print(f"  Levels: {len(fib_report.levels)}")
+        
+        # Show levels
+        print(f"\n  Fib levels:")
+        for key, level in sorted(fib_report.levels.items(), key=lambda x: x[1].price, reverse=True):
+            print(f"    • {key}: {format_price(level.price)}")
+        
+        # Create minimal config for fib-only trading
+        from dataclasses import dataclass
+        
+        @dataclass
+        class FibOnlyConfig:
+            follower: str
+            sample_interval: int
+            fib_filter: FibTradeFilter
+            trading_mode: str
+            position_size_usd: float
+            follower_exchange: str
+            dry_run: bool
+            max_trade_usd: Optional[float]
+            wallet_type: str
+        
+        fib_config = FibOnlyConfig(
+            follower=follower,
+            sample_interval=args.sample_interval,
+            fib_filter=fib_filter,
+            trading_mode=args.trading_mode,
+            position_size_usd=args.position_size,
+            follower_exchange=args.follower_exchange,
+            dry_run=args.dry_run,
+            max_trade_usd=args.max_trade_usd,
+            wallet_type=args.wallet_type
+        )
+        
+        # Run bypass-leader trading loop
+        print(f"\n" + "="*70)
+        print("                    STARTING BYPASS-LEADER MONITOR")
+        print("="*70)
+        print(f"Monitoring {follower} for Fib level signals...")
+        print(f"Press Ctrl+C to stop\n")
+        
+        run_bypass_leader_loop(fib_config)
+        sys.exit(0)
     
     # Single pair mode
     if ':' not in args.pair:
@@ -4885,21 +5296,34 @@ Examples:
     
     # ==================== FIBONACCI TRADE FILTERING (--use-fib) ====================
     fib_filter = None
+    is_custom_fib_range = False
     if args.use_fib:
         print("\n" + "=" * 70)
         print("                    FIBONACCI TRADE FILTERING")
         print("=" * 70)
         
-        # Try to load cached Fib report
-        fib_report = load_fib_report(follower, './correlation_data')
-        
-        if not fib_report:
-            print(f"\n✗ ERROR: No cached Fib report found for {follower}")
-            print(f"  Run one of these commands first:")
-            print(f"    python fibonacci_analyzer.py --symbol {follower} --window 7d --save-report")
-            print(f"    python leading_indicator_tester.py --pair {args.pair} --fibonacci-analysis")
-            print("\nCannot proceed with --use-fib without a cached Fib report.")
-            sys.exit(1)
+        # Check for custom --fib-range override
+        if args.fib_range:
+            try:
+                custom_range = parse_fib_range(args.fib_range)
+                low_price, high_price = custom_range
+                fib_report = create_custom_fib_report(follower, low_price, high_price)
+                is_custom_fib_range = True
+            except ValueError as e:
+                print(f"\n✗ ERROR: {e}")
+                sys.exit(1)
+        else:
+            # Try to load cached Fib report
+            fib_report = load_fib_report(follower, './correlation_data')
+            
+            if not fib_report:
+                print(f"\n✗ ERROR: No cached Fib report found for {follower}")
+                print(f"  Run one of these commands first:")
+                print(f"    python fibonacci_analyzer.py --symbol {follower} --window 7d --save-report")
+                print(f"    python leading_indicator_tester.py --pair {args.pair} --fibonacci-analysis")
+                print(f"  Or specify a custom range: --fib-range low:high (e.g., --fib-range 0.02:0.025)")
+                print("\nCannot proceed with --use-fib without a Fib report or custom range.")
+                sys.exit(1)
         
         # Create Fib filter
         fib_filter = FibTradeFilter(
@@ -4909,17 +5333,26 @@ Examples:
             min_touches=args.fib_min_touches,
         )
         
+        # Display Fib report info
+        custom_indicator = " [CUSTOM]" if is_custom_fib_range else ""
         print(f"\nFib report loaded for {follower}:")
         print(f"  Trend direction: {fib_report.trend_direction.upper()}")
-        print(f"  Price range: {format_price(fib_report.low_price)} - {format_price(fib_report.high_price)}")
+        print(f"  Price range: {format_price(fib_report.low_price)} - {format_price(fib_report.high_price)}{custom_indicator}")
         print(f"  Window: {fib_report.analysis_window}")
-        print(f"  Effective levels: {len(fib_filter.effective_support_levels)}")
         
-        # Show effective levels
-        if fib_filter.effective_support_levels:
-            print(f"\n  Effective Fib levels (>={args.fib_min_effectiveness}% bounce rate):")
-            for key, level in sorted(fib_filter.effective_support_levels, key=lambda x: x[1].price, reverse=True):
-                print(f"    • {key}: {format_price(level.price)} ({level.effectiveness:.1f}%)")
+        if is_custom_fib_range:
+            # For custom range, show all Fib levels (no effectiveness data)
+            print(f"\n  Fib levels (custom range - effectiveness N/A):")
+            for key, level in sorted(fib_report.levels.items(), key=lambda x: x[1].price, reverse=True):
+                print(f"    • {key}: {format_price(level.price)}")
+            print(f"\n  Note: Using custom Fib range - effectiveness data unavailable")
+        else:
+            print(f"  Effective levels: {len(fib_filter.effective_support_levels)}")
+            # Show effective levels
+            if fib_filter.effective_support_levels:
+                print(f"\n  Effective Fib levels (>={args.fib_min_effectiveness}% bounce rate):")
+                for key, level in sorted(fib_filter.effective_support_levels, key=lambda x: x[1].price, reverse=True):
+                    print(f"    • {key}: {format_price(level.price)} ({level.effectiveness:.1f}%)")
         
         # Trading direction based on Fib trend
         fib_direction = 'BUY only' if fib_report.trend_direction == 'up' else 'SELL only'

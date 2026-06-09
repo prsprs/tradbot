@@ -22,5 +22,14 @@
     "action": "BUY",
     "reason": "Jupiter Error 6024: InsufficientFunds - Not enough tokens in wallet to complete swap",
     "details": {}
+  },
+  {
+    "timestamp": "2026-06-03T23:27:39.851343+00:00",
+    "pair": "SOL:SHIB",
+    "action": "SELL",
+    "reason": "Could not get token price",
+    "details": {
+      "token": "SHIB"
+    }
   }
 ]
