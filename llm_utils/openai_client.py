@@ -17,7 +17,7 @@ class OpenAIClient(LLMClient):
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-4o"
+        self.model = "gpt-5.5"
     
     @property
     def name(self) -> str:
@@ -28,7 +28,7 @@ class OpenAIClient(LLMClient):
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 messages=[
                     {"role": "user", "content": prompt}
                 ]
@@ -69,7 +69,7 @@ Provide your updated analysis with reasoning."""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 messages=[
                     {"role": "user", "content": integration_prompt}
                 ]

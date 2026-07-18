@@ -8,7 +8,7 @@ class ClaudeTrader:
         if not api_key:
             raise ValueError("CLAUDE_API_KEY environment variable not set")
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = "claude-sonnet-4-20250514"
+        self.model = "claude-opus-4-8"
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
@@ -30,7 +30,7 @@ class ClaudeTrader:
                 }
             ]
         )
-        return message.content[0].text
+        return next((b.text for b in message.content if b.type == "text"), "")
     
     def send_coin_check_request(self, coin_symbol):
         """Check if a specific coin should be bought, sold, or held."""
@@ -46,7 +46,7 @@ class ClaudeTrader:
                 }
             ]
         )
-        return message.content[0].text
+        return next((b.text for b in message.content if b.type == "text"), "")
     
     def send_trend_check_request(self, coin_symbol, trends_data=None):
         """Check coin recommendation based on Google Trends analysis."""
@@ -76,7 +76,7 @@ Use this data in your analysis. """
                 }
             ]
         )
-        return message.content[0].text
+        return next((b.text for b in message.content if b.type == "text"), "")
 
     def send_integrated_coin_check(self, coin_symbol, peer_analysis):
         """Round 2: Check coin with peer LLM analysis as additional context."""
@@ -102,7 +102,7 @@ Conclude your analysis with a left angle bracket, followed by two asterisks, fol
                 }
             ]
         )
-        return message.content[0].text
+        return next((b.text for b in message.content if b.type == "text"), "")
 
     def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None):
         """Round 2: Check coin with Google Trends + peer LLM analysis."""
@@ -141,7 +141,7 @@ Conclude your analysis with a left angle bracket, followed by two asterisks, fol
                 }
             ]
         )
-        return message.content[0].text
+        return next((b.text for b in message.content if b.type == "text"), "")
 
 
 def compare_recommendations(gemini_rec, claude_rec):

@@ -8,7 +8,7 @@ class OpenAITrader:
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-4o"
+        self.model = "gpt-5.5"
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
@@ -22,7 +22,7 @@ class OpenAITrader:
         
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=[
                 {
                     "role": "user",
@@ -38,7 +38,7 @@ class OpenAITrader:
             return None
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=[
                 {
                     "role": "user",
@@ -68,7 +68,7 @@ Use this data in your analysis. """
         
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=[
                 {
                     "role": "user",
@@ -84,7 +84,7 @@ Use this data in your analysis. """
             return None
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=[
                 {
                     "role": "user",
@@ -123,7 +123,7 @@ Here is the actual Google Trends data we collected:
         
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             messages=[
                 {
                     "role": "user",

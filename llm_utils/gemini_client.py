@@ -18,7 +18,7 @@ class GeminiClient(LLMClient):
         if not api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set")
         self.client = genai.Client()
-        self.model = "models/gemini-2.5-pro"
+        self.model = "gemini-3.1-pro-preview"
         self.config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
         )

@@ -366,7 +366,7 @@ def sendRecommendationRequest():
     
     try:
         response = client.models.generate_content(
-            model="models/gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             contents=prompt,
             config=config,
         )
@@ -383,7 +383,7 @@ def sendCoinCheckRequest(coin):
     
     try:
         followUpResponse = client.models.generate_content(
-            model="models/gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             contents=f'Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket',
             config=config,
         )
@@ -415,7 +415,7 @@ Use this data in your analysis. """
     
     try:
         followUpResponse = client.models.generate_content(
-            model="models/gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             contents=f'Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now?{trends_section}Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket',
             config=config,
         )
@@ -445,7 +445,7 @@ Conclude your analysis with a left angle bracket, followed by two asterisks, fol
     
     try:
         followUpResponse = client.models.generate_content(
-            model="models/gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             contents=prompt,
             config=config,
         )
@@ -488,7 +488,7 @@ Conclude your analysis with a left angle bracket, followed by two asterisks, fol
     
     try:
         followUpResponse = client.models.generate_content(
-            model="models/gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             contents=prompt,
             config=config,
         )

@@ -17,7 +17,7 @@ class ClaudeClient(LLMClient):
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable not set")
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = "claude-sonnet-4-20250514"
+        self.model = "claude-opus-4-8"
     
     @property
     def name(self) -> str:
@@ -33,7 +33,7 @@ class ClaudeClient(LLMClient):
                     {"role": "user", "content": prompt}
                 ]
             )
-            return message.content[0].text
+            return next((b.text for b in message.content if b.type == "text"), "")
         except Exception as e:
             print(f"[ERROR] Claude API error: {e}")
             return None
@@ -74,7 +74,7 @@ Provide your updated analysis with reasoning."""
                     {"role": "user", "content": integration_prompt}
                 ]
             )
-            return message.content[0].text
+            return next((b.text for b in message.content if b.type == "text"), "")
         except Exception as e:
             print(f"[ERROR] Claude API error in integration: {e}")
             return None
