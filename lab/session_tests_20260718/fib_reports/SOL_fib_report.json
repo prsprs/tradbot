@@ -1,0 +1,85 @@
+{
+  "symbol": "SOL",
+  "generated_at": "2026-07-18T18:19:35.271382+00:00",
+  "analysis_window": "6d 23h",
+  "window_start": "2026-07-11T19:00:00+00:00",
+  "window_end": "2026-07-18T18:00:00+00:00",
+  "high_price": 78.22,
+  "high_timestamp": "2026-07-15T12:00:00+00:00",
+  "low_price": 74.25,
+  "low_timestamp": "2026-07-17T13:00:00+00:00",
+  "trend_direction": "down",
+  "levels": {
+    "0.0%": {
+      "ratio": 0.0,
+      "price": 78.22,
+      "touch_count": 0,
+      "bounce_count": 0,
+      "breakthrough_count": 0,
+      "effectiveness_pct": null,
+      "avg_bounce_magnitude": 0.0
+    },
+    "23.6%": {
+      "ratio": 0.236,
+      "price": 77.28308,
+      "touch_count": 10,
+      "bounce_count": 8,
+      "breakthrough_count": 2,
+      "effectiveness_pct": 80.0,
+      "avg_bounce_magnitude": 0.9364921791419274
+    },
+    "38.2%": {
+      "ratio": 0.382,
+      "price": 76.70345999999999,
+      "touch_count": 10,
+      "bounce_count": 6,
+      "breakthrough_count": 4,
+      "effectiveness_pct": 60.0,
+      "avg_bounce_magnitude": 0.9149435153685735
+    },
+    "50.0%": {
+      "ratio": 0.5,
+      "price": 76.235,
+      "touch_count": 8,
+      "bounce_count": 4,
+      "breakthrough_count": 4,
+      "effectiveness_pct": 50.0,
+      "avg_bounce_magnitude": 1.2231914474978651
+    },
+    "61.8%": {
+      "ratio": 0.618,
+      "price": 75.76654,
+      "touch_count": 8,
+      "bounce_count": 6,
+      "breakthrough_count": 2,
+      "effectiveness_pct": 75.0,
+      "avg_bounce_magnitude": 0.9122144594874363
+    },
+    "78.6%": {
+      "ratio": 0.786,
+      "price": 75.09958,
+      "touch_count": 8,
+      "bounce_count": 5,
+      "breakthrough_count": 3,
+      "effectiveness_pct": 62.5,
+      "avg_bounce_magnitude": 0.32479009869296027
+    },
+    "100.0%": {
+      "ratio": 1.0,
+      "price": 74.25,
+      "touch_count": 0,
+      "bounce_count": 0,
+      "breakthrough_count": 0,
+      "effectiveness_pct": null,
+      "avg_bounce_magnitude": 0.0
+    }
+  },
+  "most_respected_level": "23.6%",
+  "overall_effectiveness": 65.9090909090909,
+  "total_touches": 44,
+  "total_bounces": 29,
+  "touch_tolerance_pct": 0.5,
+  "confirmation_periods": 3,
+  "min_touches": 2,
+  "data_points_analyzed": 168
+}
