@@ -55,6 +55,7 @@ class BlobbyTrader:
                 quote_size=quote_size
             )
             print(f"Market buy order placed: {product_id} for ${quote_size}")
+            self._log_order_result(order)
             return order
         except Exception as e:
             print(f"Error placing market buy order for {product_id}: {e}")
@@ -69,11 +70,35 @@ class BlobbyTrader:
                 base_size=base_size
             )
             print(f"Market sell order placed: {product_id} for {base_size}")
+            self._log_order_result(order)
             return order
         except Exception as e:
             print(f"Error placing market sell order for {product_id}: {e}")
             return None
     
+    def _log_order_result(self, order):
+        """Log key fields from a Coinbase order response to confirm fill status."""
+        if order is None:
+            print("[ORDER] No order response received")
+            return
+        try:
+            order_dict = order.to_dict() if hasattr(order, 'to_dict') else vars(order)
+            order_id = order_dict.get('order_id') or order_dict.get('id', 'N/A')
+            status = order_dict.get('status', 'N/A')
+            success = order_dict.get('success', 'N/A')
+            failure_reason = order_dict.get('failure_reason', None)
+            order_config = order_dict.get('order_configuration', {})
+            filled_size = order_dict.get('filled_size', 'N/A')
+            filled_value = order_dict.get('filled_value', 'N/A')
+            avg_price = order_dict.get('average_filled_price', 'N/A')
+            print(f"[ORDER] ID: {order_id} | Status: {status} | Success: {success}")
+            print(f"[ORDER] Filled size: {filled_size} | Filled value: {filled_value} | Avg price: {avg_price}")
+            if failure_reason:
+                print(f"[ORDER] Failure reason: {failure_reason}")
+        except Exception as e:
+            print(f"[ORDER] Could not parse order response: {e}")
+            print(f"[ORDER] Raw response: {order}")
+
     def _generate_order_id(self):
         """Generate a unique order ID."""
         import uuid

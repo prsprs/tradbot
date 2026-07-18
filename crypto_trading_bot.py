@@ -945,11 +945,11 @@ def buy_something(coinToBuy):
 
         # Execute buy order (DEX mode handles whatif internally)
         if DEX_MODE:
-            result = trader.market_order_buy(coinToBuy+'-USD', '25.00', whatif=WHATIF_MODE)
+            result = trader.market_order_buy(coinToBuy+'-USD', '5.00', whatif=WHATIF_MODE)
             if result and result.get('executed'):
                 print(f"[DEX] Trade executed: {result.get('tx_url', 'no tx')}")
         else:
-            trader.market_order_buy(coinToBuy+'-USD', '25.00')
+            trader.market_order_buy(coinToBuy+'-USD', '5.00')
 
         print("\n--- Getting coin Product Details AFTER for: ",(coinToBuy+"-USD") )
 
