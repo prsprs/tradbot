@@ -608,6 +608,24 @@ def get_text_between_strings(main_string, start_string, end_string):
     return main_string[start_of_content:end_index]
 
 
+def extract_recommendation(response_text):
+    """Extract a BUY/SELL/HOLD recommendation from an LLM response.
+
+    Hardened against false positives: only exact keywords count, the LAST
+    occurrence wins (the prompt asks models to conclude with the tag), and
+    matches quoted in backticks are ignored — a refusal that cites the format
+    as an example (e.g. "(`<**ETH-PRS-BUY**>`, etc.)") must not parse as a
+    real recommendation.
+    """
+    import re
+    if not response_text:
+        return None
+    # Drop backtick-quoted code spans so cited examples can't parse as real
+    cleaned = re.sub(r'`[^`\n]*`', '', response_text)
+    matches = re.findall(r'-PRS-(BUY|SELL|HOLD)\*\*>', cleaned)
+    return matches[-1] if matches else None
+
+
 
 def get_text_after_delimiter(text_string, delimiter):
 
@@ -724,7 +742,7 @@ def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None,
         print(f"Error getting {llm_name} response: {e}")
         return None, None
     
-    rec = get_text_between_strings(response_text, "-PRS-", "**>") if response_text else None
+    rec = extract_recommendation(response_text) if response_text else None
     return response_text, rec
 
 
@@ -746,7 +764,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
         return None, None
     
     # Parse PRIMARY_LLM's Round 1 recommendation
-    primary_rec = get_text_between_strings(primary_response_text, "-PRS-", "**>") if primary_response_text else None
+    primary_rec = extract_recommendation(primary_response_text) if primary_response_text else None
     
     # Single LLM modes - use the single LLM exclusively (consensus=None for single LLM)
     if LLM_MODE == 'gemini':
@@ -1364,7 +1382,7 @@ if not USE_COIN_DISCOVERY:
         
         # Parse recommendation
         followUp_coin = get_text_between_strings(followUpResponseText, "<**", "-PRS-") if followUpResponseText else None
-        followUp_rec = get_text_between_strings(followUpResponseText, "-PRS-", "**>") if followUpResponseText else None
+        followUp_rec = extract_recommendation(followUpResponseText) if followUpResponseText else None
         print(f"Coin and rec: {followUp_coin}, {followUp_rec}")
         
         # Apply comparison/integration if enabled (pass trends_data for integrate mode)
@@ -1484,7 +1502,7 @@ else:
         
         # Parse recommendation
         followUp_coin = get_text_between_strings(followUpResponseText, "<**", "-PRS-") if followUpResponseText else None
-        followUp_rec = get_text_between_strings(followUpResponseText, "-PRS-", "**>") if followUpResponseText else None
+        followUp_rec = extract_recommendation(followUpResponseText) if followUpResponseText else None
         print(f"Coin and rec: {followUp_coin}, {followUp_rec}")
         
         # Apply comparison/integration if enabled
