@@ -8,6 +8,9 @@ import json
 import os
 import sys
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from coinbase.rest import RESTClient
 
 from coinbaseutil2 import BlobbyTrader 

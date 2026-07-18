@@ -9,10 +9,12 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+.pytest_cache/
 
 # Environment variables (API keys)
 .env
 .env.local
+!.env.example
 
 # IDE
 .idea/

@@ -20,7 +20,7 @@ This repository contains multiple interconnected projects for cryptocurrency tra
 
 ```bash
 # Install dependencies
-pip install -r requirements_llm_compare.txt
+pip install -r requirements.txt
 
 # Set API keys
 export GOOGLE_API_KEY=...     # Gemini
@@ -30,6 +30,10 @@ export COINBASE_API_KEY=...   # Coinbase trading
 # Run main trading bot
 python crypto_trading_bot.py --trading-mode whatif --llm-mode compare
 ```
+
+Alternatively, instead of `export`, copy `.env.example` to `.env` and fill in
+your keys — the bot loads it automatically at startup. Shell `export`s still
+work and take precedence over `.env` values.
 
 See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 

@@ -1,0 +1,26 @@
+# Requirements for the main crypto trading bot (crypto_trading_bot.py)
+#
+# Install with: pip install -r requirements.txt
+#
+# Optional feature modules have their own requirements files:
+#   requirements_llm_compare.txt         - llm_compare.py
+#   requirements_correlation_tracker.txt - correlation_tracker.py
+#   requirements_dex.txt                 - Solana DEX trading (dex/)
+
+# Coinbase Advanced Trade API
+coinbase-advanced-py>=1.2.0
+
+# LLM providers
+google-genai>=1.0.0
+anthropic>=0.18.0
+openai>=1.0.0
+
+# Data / analysis
+pandas>=1.3.0
+requests>=2.25.0
+
+# Google Trends integration
+pytrends>=4.9.0
+
+# .env file support (optional alternative to exporting env vars)
+python-dotenv>=1.0.0
