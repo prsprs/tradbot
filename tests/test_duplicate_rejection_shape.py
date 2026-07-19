@@ -41,3 +41,56 @@ def test_looks_like_duplicate_cannot_fire_on_real_duplicate_shape():
     # It still recognizes textual duplicate errors should Coinbase ever
     # return one (e.g. from a different endpoint or API version).
     assert BlobbyTrader._looks_like_duplicate("DUPLICATE_CLIENT_ORDER_ID") is True
+
+
+# ============================================================================
+# MP-1 (audit 2026-07-19): the ledger now ACTS on the real duplicate signal.
+# The fixture pins the exact live-captured shape; these tests pin what the
+# execution ledger does when that shape reaches record_fill: the repeat row is
+# marked duplicate_of the original and excluded from positions and cap sums.
+# ============================================================================
+import pytest
+
+import executionledger as led
+
+
+@pytest.fixture
+def ledger_file(tmp_path, monkeypatch):
+    f = tmp_path / "executions.json"
+    monkeypatch.setattr(led, "EXECUTIONS_FILE", str(f))
+    return f
+
+
+def test_ledger_marks_real_duplicate_shape_and_counts_position_once(ledger_file):
+    """End-to-end with the fixture's REAL values: run 1 fills; run 2 resubmits
+    the same client_order_id and gets back the ORIGINAL order_id
+    (success:true, no error). The second fill row is marked duplicate_of and
+    the position/cap tallies count the one real order exactly once."""
+    fx = _load()
+    original = fx["_original_fill"]
+    dup_resp = fx["duplicate_resubmit_response"]["success_response"]
+
+    # Run 1: the real fill.
+    l1 = led.append_intent(run_id="run_1", trading_mode="live", coin="ETH",
+                           intended_notional_usd=5.0,
+                           client_order_id=original["client_order_id"])
+    led.record_fill(l1, status="filled", order_id=original["order_id"],
+                    filled_size=original["filled_size"],
+                    avg_fill_price=original["avg_price"])
+
+    # Run 2: resubmit -> Coinbase returns the ORIGINAL order_id (the fixture
+    # shape) -- this is the ONLY duplicate signal (no error text exists).
+    assert dup_resp["order_id"] == original["order_id"]
+    l2 = led.append_intent(run_id="run_2", trading_mode="live", coin="ETH",
+                           intended_notional_usd=5.0,
+                           client_order_id=dup_resp["client_order_id"])
+    dup_row = led.record_fill(l2, status="filled", order_id=dup_resp["order_id"],
+                              filled_size=original["filled_size"],
+                              avg_fill_price=original["avg_price"])
+
+    assert dup_row["duplicate_of"] == l1
+    # One real order -> one position, once.
+    assert led.positions(trading_mode="live") == pytest.approx(
+        {"ETH": float(original["filled_size"])})
+    # ...and the duplicate attempt does not consume the daily cap twice.
+    assert led.live_spend_today() == pytest.approx(5.0)

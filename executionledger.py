@@ -31,6 +31,22 @@ The ledger is a flat list of ROWS, each of one of two shapes distinguished by
 A fill row is joined back to its intent row by `ledger_id` to recover coin /
 trading_mode / side (fill rows deliberately don't duplicate those).
 
+Two OPTIONAL fill-row fields (added 2026-07-19, MP-1/MP-6):
+
+  duplicate_of: <ledger_id>  -- this fill's (truthy) order_id already belongs
+      to an earlier ledger row: Coinbase's idempotent duplicate shape (same
+      client_order_id resubmitted -> success:true + the ORIGINAL order_id).
+      No new money moved, so these rows are EXCLUDED from positions and from
+      the daily-cap intent sum. Same-ledger_id order_id reuse is a reconcile
+      repair, never marked duplicate. Falsy order_ids ('' / None) are never
+      treated as an identity. Duplicate rows are *expected* in ledgers after
+      same-client_order_id resubmits -- not corruption.
+
+  fees_estimated: true  -- fees_usd is a 1.2%-of-notional estimate on a
+      simulated (whatif) fill. Omitted (not false) on real fills, so live row
+      shapes are unchanged. Any future analyzer/SELL-sizing work must consume
+      both fields or it will re-introduce double-counting.
+
 What-if runs use the same two-row shape: an intent row with
 trading_mode='whatif' and a synthetic fill row {status:'simulated',
 avg_fill_price: <current ask>}. The ledger is therefore the uniform record of
@@ -41,8 +57,12 @@ each append must survive a crash -- a stronger guarantee than historyutil's
 in-place rewrite, on purpose.
 """
 
+import fcntl
+import glob
 import json
 import os
+import shutil
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -76,17 +96,189 @@ def ensure_history_dir():
     os.makedirs(os.path.dirname(EXECUTIONS_FILE) or '.', exist_ok=True)
 
 
+# ============================================================================
+# Cross-process file locking (MP-3, audit 2026-07-19)
+# ============================================================================
+# The whatif-cadence runbook schedules cron runs against the same HISTORY_DIR
+# and runs take minutes, so overlap is realistic. Without a lock, two
+# overlapping load->modify->replace writers silently drop the loser's rows --
+# including the intent rows the daily cap counts -- and the daily-cap
+# check-then-append in maybe_execute_buy is a TOCTOU race (two runs both read
+# under-cap, both order). fcntl.flock on a sibling '.lock' file serializes
+# both, and the helper is REENTRANT (per thread, depth-counted) so
+# maybe_execute_buy can hold the ledger lock across its cap-check ->
+# append_intent span without deadlocking when append_intent re-acquires it.
+#
+# RULE (deadlock avoidance): never hold the ledger lock and the history
+# (recommendations) lock at the same time. Current call sites don't --
+# record_recommendation runs before gate_and_maybe_buy, never inside it.
+
+class _FileLock:
+    """Reentrant (per-thread) exclusive lock backed by fcntl.flock on `path`.
+
+    Reentrancy is depth-counted in a threading.local: the same thread may
+    nest `with` blocks freely; the flock is taken on first entry and released
+    on last exit. Distinct threads/processes serialize on the OS lock.
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._local = threading.local()
+
+    def __enter__(self):
+        depth = getattr(self._local, 'depth', 0)
+        if depth == 0:
+            os.makedirs(os.path.dirname(self._path) or '.', exist_ok=True)
+            fh = open(self._path, 'a+')
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            self._local.fh = fh
+        self._local.depth = depth + 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._local.depth -= 1
+        if self._local.depth == 0:
+            fh = self._local.fh
+            self._local.fh = None
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+        return False
+
+
+_LOCKS: Dict[str, _FileLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def file_lock(path: str) -> _FileLock:
+    """The process-wide _FileLock for `path` (one instance per path, so
+    reentrancy works across call sites that name the same file). Shared with
+    historyutil for its own sibling lock file."""
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(path)
+        if lock is None:
+            lock = _LOCKS[path] = _FileLock(path)
+        return lock
+
+
+def ledger_lock() -> _FileLock:
+    """The lock guarding EXECUTIONS_FILE (sibling executions.json.lock).
+
+    Resolved at CALL time (not import time) so tests and HISTORY_DIR
+    overrides that repoint EXECUTIONS_FILE get a matching lock file.
+    """
+    return file_lock(EXECUTIONS_FILE + '.lock')
+
+
+class LedgerError(Exception):
+    """The execution ledger exists but cannot be read (corrupt JSON /
+    unreadable file). MP-2 (audit 2026-07-19): this must FAIL CLOSED -- the
+    old behavior (return [] and let the next append silently rewrite the
+    file) wiped the money record AND reset the daily spend cap to $0.
+    Callers on the live buy path must treat this as a refused buy unless
+    recovery succeeds (see crypto_trading_bot.maybe_execute_buy)."""
+
+
 def load_executions() -> List[Dict]:
-    """Load all ledger rows. Returns [] if the file doesn't exist yet."""
+    """Load all ledger rows.
+
+    Returns [] ONLY when the file does not exist (a normal first run).
+    A file that exists but cannot be parsed/read raises LedgerError -- it is
+    NEVER silently treated as empty (that fail-open path erased real ledgers
+    and reset the cross-run daily cap; MP-2)."""
     if not os.path.exists(EXECUTIONS_FILE):
         return []
     try:
         with open(EXECUTIONS_FILE, 'r') as f:
             data = json.load(f)
-        return data.get('executions', [])
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"Warning: Could not load execution ledger: {e}")
-        return []
+    except (json.JSONDecodeError, IOError, OSError, UnicodeDecodeError) as e:
+        raise LedgerError(
+            f"execution ledger {EXECUTIONS_FILE} is unreadable: {e}") from e
+    # Shape validation (review MAJOR 1): valid JSON of the WRONG shape ({},
+    # a bare list, a missing/odd 'executions' key) must fail closed too --
+    # silently yielding [] here is the same cap-reset fail-open as a decode
+    # error, and the manual-repair recovery workflow makes wrong-shape files
+    # a realistic input. A legitimately empty ledger is always
+    # {'executions': []} (or an absent file), so this is strictly tightening.
+    if not isinstance(data, dict) or not isinstance(data.get('executions'), list):
+        raise LedgerError(
+            f"execution ledger {EXECUTIONS_FILE} has the wrong shape "
+            f"(expected an object with an 'executions' list, got "
+            f"{type(data).__name__})")
+    return data['executions']
+
+
+def quarantine_corrupt_ledger() -> Optional[str]:
+    """Rename the (corrupt) ledger file aside as executions.json.corrupt-<ts>.
+
+    NEVER deletes anything -- the bad file is preserved for manual repair.
+    (This is local per-user runtime data, gitignored, never committed.)
+    Returns the quarantine path, or None when the file doesn't exist.
+    """
+    if not os.path.exists(EXECUTIONS_FILE):
+        return None
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    dest = f'{EXECUTIONS_FILE}.corrupt-{stamp}'
+    while os.path.exists(dest):  # never overwrite an earlier quarantine
+        dest = f'{EXECUTIONS_FILE}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}'
+    os.rename(EXECUTIONS_FILE, dest)
+    return dest
+
+
+def snapshot_ledger() -> Optional[str]:
+    """Run-start snapshot (DI-4): copy executions.json to
+    executions.json.bak-<YYYY-MM-DD> (UTC date).
+
+    Idempotent per day (no-op if today's snapshot exists) and skipped when the
+    current ledger is itself unreadable (never let a corrupt file shadow an
+    older good snapshot as 'newest'). This snapshot is the auto-recovery
+    source for MP-2's corrupt-ledger handling. Callers should treat failures
+    as non-fatal. Returns the snapshot path or None when skipped/absent.
+    """
+    if not os.path.exists(EXECUTIONS_FILE):
+        return None
+    dest = f"{EXECUTIONS_FILE}.bak-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    if os.path.exists(dest):
+        return dest
+    load_executions()   # raises LedgerError if corrupt -> caller skips snapshot
+    shutil.copyfile(EXECUTIONS_FILE, dest)
+    return dest
+
+
+def newest_snapshot() -> Optional[str]:
+    """Path of the newest executions.json.bak-* snapshot, or None.
+
+    'Newest' by the date embedded in the name (lexicographic == chronological
+    for .bak-YYYY-MM-DD), which is deterministic across copies/restores.
+    """
+    snaps = sorted(glob.glob(f'{EXECUTIONS_FILE}.bak-*'))
+    return snaps[-1] if snaps else None
+
+
+def restore_from_snapshot() -> Optional[str]:
+    """Restore the ledger from the newest .bak- snapshot (MP-2 recovery).
+
+    Copies the snapshot over EXECUTIONS_FILE atomically (tmp + os.replace).
+    The snapshot itself is left in place. Returns the snapshot path used, or
+    None when no snapshot exists. The caller must re-validate by loading
+    (a restored file could itself be bad; that path stays fail-closed).
+    """
+    snap = newest_snapshot()
+    if snap is None:
+        return None
+    ensure_history_dir()
+    directory = os.path.dirname(EXECUTIONS_FILE) or '.'
+    tmp = os.path.join(directory, f'.executions.restore.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+    shutil.copyfile(snap, tmp)
+    os.replace(tmp, EXECUTIONS_FILE)
+    return snap
+
+
+def recovery_command() -> str:
+    """The exact copy-paste command to manually restore the ledger from a
+    quarantined (or repaired) file. Shown verbatim in the no-snapshot refusal
+    message and documented in OPERATIONS_MANUAL.md ('Ledger recovery')."""
+    return (f"cp '{EXECUTIONS_FILE}.corrupt-<ts>' '{EXECUTIONS_FILE}'"
+            "   # after repairing the JSON in the quarantined file")
 
 
 def _save_executions(rows: List[Dict]):
@@ -107,10 +299,16 @@ def _save_executions(rows: List[Dict]):
 
 
 def _append_row(row: Dict) -> Dict:
-    """Append a single row and persist. Returns the row for convenience."""
-    rows = load_executions()
-    rows.append(row)
-    _save_executions(rows)
+    """Append a single row and persist. Returns the row for convenience.
+
+    MP-3: the whole load->append->replace runs under the cross-process ledger
+    lock so overlapping runs never drop each other's rows. Reentrant: callers
+    (maybe_execute_buy) may already hold the lock across a wider span.
+    """
+    with ledger_lock():
+        rows = load_executions()
+        rows.append(row)
+        _save_executions(rows)
     return row
 
 
@@ -179,6 +377,7 @@ def record_fill(
     fees_usd: Optional[float] = None,
     completed_at: Optional[str] = None,
     repaired_via: Optional[str] = None,
+    fees_estimated: Optional[bool] = None,
 ) -> Dict:
     """Write a FILL row carrying the intent's ledger_id.
 
@@ -193,6 +392,12 @@ def record_fill(
     NEVER rewritten; the repaired row is a NEW row with the SAME ledger_id and
     this provenance field so the correction is auditable. Omitted entirely on
     the normal write path so those rows keep their exact prior shape.
+
+    `fees_estimated` (MP-6c): True marks fees_usd as an ESTIMATE (whatif
+    simulated fills estimate ~1.2%/side, the measured Coinbase small-notional
+    rate) rather than an exchange-reported figure. Omitted (not False) on
+    real fills so live rows keep their exact prior shape -- simulated data
+    stays visibly simulated, never dressed as real.
     """
     if status not in FILL_STATUSES:
         raise ValueError(
@@ -209,7 +414,35 @@ def record_fill(
     }
     if repaired_via is not None:
         row['repaired_via'] = repaired_via
-    _append_row(row)
+    if fees_estimated:
+        row['fees_estimated'] = True
+    # MP-1d: the REAL Coinbase duplicate signal (validated live 2026-07-19,
+    # runbook §7) is the returned order_id matching a ledger row -- a
+    # duplicate client_order_id resubmit returns success:true with the
+    # ORIGINAL order_id, no error text. When the order_id already exists
+    # under a DIFFERENT ledger_id (same-ledger_id rows are reconcile-repair
+    # corrections, not duplicates), the new row is marked duplicate_of so
+    # positions/cap sums count the real order exactly once. Checked and
+    # appended under one lock hold so a concurrent writer can't slip between.
+    with ledger_lock():
+        rows = load_executions()
+        # Truthy guard (review MAJOR 2): '' is not a real exchange identity --
+        # two ''-order_id rows must NOT mark each other duplicates (that would
+        # wrongly free their intents from the daily-cap sum: cap-loosening).
+        # Only a truthy order_id on BOTH rows can signal a duplicate.
+        if order_id:
+            for existing in rows:
+                if (existing.get('status') in FILL_STATUSES
+                        and existing.get('order_id') == order_id
+                        and existing.get('ledger_id') != ledger_id
+                        and not existing.get('duplicate_of')):
+                    row['duplicate_of'] = existing.get('ledger_id')
+                    print(f"[LEDGER] duplicate order_id {order_id}: fill row for "
+                          f"{ledger_id} marked duplicate_of {existing.get('ledger_id')} "
+                          "(no second real fill; excluded from positions/cap sums)")
+                    break
+        rows.append(row)
+        _save_executions(rows)
     return row
 
 
@@ -244,15 +477,32 @@ def positions_from_rows(rows: List[Dict], trading_mode: str = 'live') -> Dict[st
     IMPORTANT: this is the bot's *attributed* position -- it is NOT account
     truth. Legacy holdings the bot never bought are invisible here; see
     scripts/reconcile_positions.py.
+
+    MP-1c/d: each distinct real order_id is counted ONCE -- a duplicate
+    client_order_id resubmit records a second fill row carrying the SAME
+    order_id (and a duplicate_of marker), but only one real fill happened.
+    Rows with a falsy order_id (None or '') keep the old per-row behavior --
+    '' is not a real exchange identity, so it never dedupes (review MAJOR 2).
+    An order_id enters the seen-set only when its row is actually COUNTED
+    (passes the intent/mode join), so an orphan or wrong-mode row can never
+    shadow a later countable row with the same id (review MINOR 4).
     """
     intents = _intents_by_id(rows)
     pos: Dict[str, float] = {}
+    seen_order_ids = set()
     for r in rows:
         if r.get('status') not in _POSITION_STATUSES:
             continue
+        if r.get('duplicate_of'):
+            continue  # marked duplicate: the original row carries the fill
+        oid = r.get('order_id')
+        if oid and oid in seen_order_ids:
+            continue  # same real order already counted once
         intent = intents.get(r.get('ledger_id'))
         if not intent or intent.get('trading_mode') != trading_mode:
             continue
+        if oid:
+            seen_order_ids.add(oid)  # counted -> now (and only now) dedupable
         coin = intent.get('coin')
         size = _as_float(r.get('filled_size')) or 0.0
         side = (intent.get('side') or 'BUY').upper()
@@ -328,12 +578,21 @@ def intended_spend_on_date(rows: List[Dict], date_str: str, trading_mode: str = 
     timestamp starts with that date. This is the daily-spend-cap summation --
     isolated as a pure function so the cap logic is unit-testable without
     files, a clock, or the network.
+
+    MP-1d: an attempt whose fill row was marked duplicate_of moved NO money
+    (Coinbase's idempotent dedupe returned the ORIGINAL order, no second
+    fill), so its intent is excluded from the cap sum -- the original
+    attempt's intent already counted it.
     """
+    duplicate_lids = {r.get('ledger_id') for r in rows
+                      if r.get('status') in FILL_STATUSES and r.get('duplicate_of')}
     total = 0.0
     for r in rows:
         if r.get('status') != INTENT:
             continue
         if r.get('trading_mode') != trading_mode:
+            continue
+        if r.get('ledger_id') in duplicate_lids:
             continue
         ts = r.get('timestamp') or ''
         if ts[:10] == date_str:
@@ -350,18 +609,31 @@ def positions(trading_mode: str = 'live') -> Dict[str, float]:
     return positions_from_rows(load_executions(), trading_mode=trading_mode)
 
 
+def spend_today(trading_mode: str = 'live', now: Optional[datetime] = None) -> float:
+    """Today's (UTC) committed intended spend for ONE mode, from the ledger.
+
+    MP-6b: parameterized by trading_mode so whatif runs can enforce the same
+    daily cap against their own (simulated) intent rows -- the modes never
+    share a tally (whatif intents never count against the live cap and vice
+    versa).
+    """
+    now = now or datetime.now(timezone.utc)
+    return intended_spend_on_date(load_executions(), now.strftime('%Y-%m-%d'),
+                                  trading_mode=trading_mode)
+
+
 def live_spend_today(now: Optional[datetime] = None) -> float:
     """Today's (UTC) committed LIVE intended spend, summed from the ledger.
 
-    Used by the daily-spend-cap gate before each live buy. What-if intent rows
-    are excluded -- what-if spend is limited by the per-run cap, not the daily
-    cap.
+    Used by the daily-spend-cap gate before each live buy.
     """
-    now = now or datetime.now(timezone.utc)
-    return intended_spend_on_date(load_executions(), now.strftime('%Y-%m-%d'), trading_mode='live')
+    return spend_today('live', now)
 
 
-def daily_cap_would_exceed(amount: float, cap: float, now: Optional[datetime] = None) -> bool:
-    """True iff committing `amount` today would push live spend strictly past
-    `cap` (the exact-cap boundary is ALLOWED, matching SpendTracker)."""
-    return live_spend_today(now) + float(amount) > float(cap)
+def daily_cap_would_exceed(amount: float, cap: float,
+                           now: Optional[datetime] = None,
+                           trading_mode: str = 'live') -> bool:
+    """True iff committing `amount` today would push `trading_mode` spend
+    strictly past `cap` (the exact-cap boundary is ALLOWED, matching
+    SpendTracker). Defaults to the live tally (the original contract)."""
+    return spend_today(trading_mode, now) + float(amount) > float(cap)

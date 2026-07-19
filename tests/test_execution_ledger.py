@@ -782,3 +782,363 @@ def test_repair_leaves_still_open_and_unresolved(ledger_file):
     assert actions[l1] == 'still_open'
     assert actions[l2] == 'unresolved'
     assert len(led.load_executions()) == before   # nothing appended
+
+
+# ============================================================================
+# MP-2 + DI-4 (audit 2026-07-19): fail-closed load, quarantine, snapshot,
+# restore, atomic-write crash safety, and the reconcile refusal.
+# ============================================================================
+
+import json as _json
+
+
+def test_corrupt_ledger_raises_ledger_error_not_empty_list(ledger_file):
+    """The old fail-open behavior (corrupt -> [] -> next append rewrites the
+    file, wiping the money record and resetting the daily cap) is gone."""
+    ledger_file.write_text('{"executions": [')   # truncated JSON
+    with pytest.raises(led.LedgerError):
+        led.load_executions()
+    # ...and the cap check reading through it fails closed too.
+    with pytest.raises(led.LedgerError):
+        led.daily_cap_would_exceed(5.0, 15.0)
+
+
+def test_absent_ledger_still_returns_empty_list(ledger_file):
+    """A missing file is a normal first run, not an error."""
+    assert not ledger_file.exists()
+    assert led.load_executions() == []
+
+
+def test_quarantine_renames_and_preserves_bytes(ledger_file):
+    ledger_file.write_text('NOT JSON AT ALL')
+    q = led.quarantine_corrupt_ledger()
+    assert q is not None
+    qp = Path(q)
+    assert qp.exists() and qp.read_text() == 'NOT JSON AT ALL'   # preserved
+    assert not ledger_file.exists()                              # renamed, not copied
+    assert qp.name.startswith('executions.json.corrupt-')
+
+
+def test_quarantine_absent_file_returns_none(ledger_file):
+    assert led.quarantine_corrupt_ledger() is None
+
+
+def test_snapshot_created_once_per_day_and_idempotent(ledger_file):
+    led.append_intent(run_id='r', trading_mode='live', coin='SOL',
+                      intended_notional_usd=5.0, client_order_id='c1')
+    snap = led.snapshot_ledger()
+    assert snap is not None and Path(snap).exists()
+    first_content = Path(snap).read_text()
+    # Ledger grows; same-day snapshot must NOT be overwritten (idempotent).
+    led.append_intent(run_id='r', trading_mode='live', coin='ETH',
+                      intended_notional_usd=5.0, client_order_id='c2')
+    assert led.snapshot_ledger() == snap
+    assert Path(snap).read_text() == first_content
+
+
+def test_snapshot_refuses_to_copy_a_corrupt_ledger(ledger_file):
+    """A corrupt current file must never shadow an older good snapshot."""
+    ledger_file.write_text('CORRUPT')
+    with pytest.raises(led.LedgerError):
+        led.snapshot_ledger()
+    assert list(ledger_file.parent.glob('executions.json.bak-*')) == []
+
+
+def test_snapshot_absent_ledger_is_noop(ledger_file):
+    assert led.snapshot_ledger() is None
+
+
+def _bak(ledger_file, date_str, rows):
+    p = Path(str(ledger_file) + f'.bak-{date_str}')
+    p.write_text(_json.dumps({'executions': rows}))
+    return p
+
+
+def test_restore_uses_newest_snapshot(ledger_file):
+    old_row = {'status': 'intent', 'ledger_id': 'OLD', 'trading_mode': 'live',
+               'intended_notional_usd': 1.0, 'timestamp': '2026-07-17T01:00:00Z'}
+    new_row = dict(old_row, ledger_id='NEW')
+    _bak(ledger_file, '2026-07-17', [old_row])
+    _bak(ledger_file, '2026-07-18', [new_row])
+    ledger_file.write_text('CORRUPT')
+    led.quarantine_corrupt_ledger()
+    snap = led.restore_from_snapshot()
+    assert snap.endswith('.bak-2026-07-18')
+    assert [r['ledger_id'] for r in led.load_executions()] == ['NEW']
+    # The snapshot file itself is left in place (restore copies, never moves).
+    assert Path(snap).exists()
+
+
+def test_restore_without_any_snapshot_returns_none(ledger_file):
+    assert led.restore_from_snapshot() is None
+
+
+def test_atomic_append_survives_simulated_write_failure(ledger_file):
+    """A crash mid-write must leave the previous ledger intact (tmp +
+    os.replace): simulate the serializer dying and check the file survives.
+
+    Uses a NESTED MonkeyPatch context for the json.dump patch (undoing the
+    test-wide monkeypatch here would also undo the ledger_file redirect and
+    point subsequent asserts at the real ./history/ ledger)."""
+    led.append_intent(run_id='r', trading_mode='live', coin='SOL',
+                      intended_notional_usd=5.0, client_order_id='c1')
+    before = ledger_file.read_text()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('simulated disk-full mid-serialization')
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(led.json, 'dump', boom)
+        with pytest.raises(RuntimeError):
+            led.append_intent(run_id='r', trading_mode='live', coin='ETH',
+                              intended_notional_usd=5.0, client_order_id='c2')
+    assert ledger_file.read_text() == before          # previous file intact
+    assert len(led.load_executions()) == 1            # still parseable
+
+
+def test_reconcile_refuses_to_run_on_corrupt_ledger(ledger_file, capsys):
+    """scripts/reconcile_positions.py must never reconcile/repair against a
+    corrupt money record: non-zero exit + recovery guidance (MP-2)."""
+    ledger_file.write_text('{definitely: not json')
+    rc = reconcile_positions.main(['--no-accounts'])
+    assert rc != 0
+    out = capsys.readouterr().out
+    assert '[LEDGER ERROR]' in out
+    assert 'cp ' in out                    # copy-paste recovery guidance
+    assert 'Ledger recovery' in out        # points at the manual section
+
+
+def test_reconcile_repair_also_refused_on_corrupt_ledger(ledger_file, capsys):
+    ledger_file.write_text('{bad json')
+    rc = reconcile_positions.main(['--repair', '--no-accounts'])
+    assert rc != 0
+    assert '[LEDGER ERROR]' in capsys.readouterr().out
+
+
+# ============================================================================
+# MP-3: cross-process file locking -- concurrent appends lose no rows
+# ============================================================================
+
+import os as _os
+import subprocess as _subprocess
+
+
+def test_concurrent_appends_lose_no_rows(tmp_path):
+    """Two real OS processes hammer append_intent against the same
+    HISTORY_DIR concurrently; with flock in _append_row every row survives
+    (before MP-3, load->modify->replace meant last-writer-wins row loss).
+    Subprocesses are used deliberately: flock semantics are per open file
+    description, so in-process threads would not prove cross-process safety."""
+    n = 25
+    script = (
+        "import sys\n"
+        "import executionledger as led\n"
+        "name = sys.argv[1]\n"
+        f"for i in range({n}):\n"
+        "    led.append_intent(run_id=name, trading_mode='whatif', coin='BTC',\n"
+        "                      intended_notional_usd=1.0,\n"
+        "                      client_order_id=f'{name}-{i}')\n"
+    )
+    env = dict(_os.environ, HISTORY_DIR=str(tmp_path))
+    procs = [
+        _subprocess.Popen([sys.executable, '-c', script, name],
+                          env=env, cwd=str(REPO_ROOT))
+        for name in ('writerA', 'writerB')
+    ]
+    for p in procs:
+        assert p.wait(timeout=60) == 0
+    rows = _json.loads((tmp_path / 'executions.json').read_text())['executions']
+    assert len(rows) == 2 * n
+    by_writer = {}
+    for r in rows:
+        by_writer.setdefault(r['run_id'], set()).add(r['client_order_id'])
+    assert len(by_writer['writerA']) == n     # no writerA row lost
+    assert len(by_writer['writerB']) == n     # no writerB row lost
+
+
+def test_ledger_lock_is_reentrant_in_one_thread(ledger_file):
+    """maybe_execute_buy holds the ledger lock across buy_something, whose
+    append_intent re-acquires it -- nested acquisition must not deadlock."""
+    with led.ledger_lock():
+        with led.ledger_lock():   # nested (as append_intent does)
+            led.append_intent(run_id='r', trading_mode='whatif', coin='BTC',
+                              intended_notional_usd=1.0, client_order_id='c')
+    assert len(led.load_executions()) == 1
+
+
+def test_lock_file_is_a_sibling_of_the_ledger(ledger_file):
+    with led.ledger_lock():
+        pass
+    assert (ledger_file.parent / 'executions.json.lock').exists()
+
+
+# ============================================================================
+# MP-1 (audit 2026-07-19): duplicate-order protection. The real Coinbase
+# duplicate shape (validated live, runbook §7) is success:true + the ORIGINAL
+# order_id -- so the ledger keys duplicate detection on order_id identity.
+# ============================================================================
+
+def _live_buy(coin, client_order_id, notional=5.0, run_id='r'):
+    return led.append_intent(run_id=run_id, trading_mode='live', coin=coin,
+                             intended_notional_usd=notional,
+                             client_order_id=client_order_id)
+
+
+def test_record_fill_marks_duplicate_order_id(ledger_file, capsys):
+    """A second fill row carrying an order_id the ledger already has (under a
+    DIFFERENT ledger_id) is marked duplicate_of the first row's ledger_id."""
+    l1 = _live_buy('SOL', 'runA-SOL-buy')
+    led.record_fill(l1, status='filled', order_id='ORDER-1',
+                    filled_size=0.065, avg_fill_price=75.0)
+    l2 = _live_buy('SOL', 'runA-SOL-buy')       # same-second rerun, same coid
+    row = led.record_fill(l2, status='filled', order_id='ORDER-1',
+                          filled_size=0.065, avg_fill_price=75.0)
+    assert row['duplicate_of'] == l1
+    assert led.load_executions()[-1]['duplicate_of'] == l1
+    assert 'duplicate order_id' in capsys.readouterr().out
+
+
+def test_record_fill_unique_order_id_not_marked(ledger_file):
+    l1 = _live_buy('SOL', 'c1')
+    led.record_fill(l1, status='filled', order_id='ORDER-1', filled_size=0.06)
+    l2 = _live_buy('ETH', 'c2')
+    row = led.record_fill(l2, status='filled', order_id='ORDER-2', filled_size=0.06)
+    assert 'duplicate_of' not in row
+
+
+def test_record_fill_none_order_id_never_marked(ledger_file):
+    """Rows with order_id=None (simulated fills, clean failures) keep the
+    old behavior -- nothing to dedupe on."""
+    l1 = _live_buy('SOL', 'c1')
+    led.record_fill(l1, status='failed')
+    l2 = _live_buy('SOL', 'c2')
+    row = led.record_fill(l2, status='failed')
+    assert 'duplicate_of' not in row
+
+
+def test_repair_row_same_ledger_id_is_not_marked_duplicate(ledger_file):
+    """reconcile --repair appends a corrected row with the SAME ledger_id and
+    the same order_id -- that is a correction, not a duplicate order."""
+    l1 = _live_buy('SOL', 'c1')
+    led.record_fill(l1, status='unconfirmed', order_id='ORDER-1')
+    repaired = led.record_fill(l1, status='filled', order_id='ORDER-1',
+                               filled_size=0.065, avg_fill_price=75.0,
+                               repaired_via='get_order')
+    assert 'duplicate_of' not in repaired
+    assert led.positions(trading_mode='live') == pytest.approx({'SOL': 0.065})
+
+
+def test_positions_count_each_distinct_order_id_once(ledger_file):
+    """Two confirmed fill rows for ONE real order (the duplicate double-count
+    bug) yield ONE position -- even for legacy rows without duplicate_of."""
+    rows = [
+        {'status': 'intent', 'ledger_id': 'a', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY', 'client_order_id': 'c'},
+        {'status': 'filled', 'ledger_id': 'a', 'order_id': 'ORDER-1',
+         'filled_size': 0.065},
+        {'status': 'intent', 'ledger_id': 'b', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY', 'client_order_id': 'c'},
+        {'status': 'filled', 'ledger_id': 'b', 'order_id': 'ORDER-1',  # same order!
+         'filled_size': 0.065},
+    ]
+    assert led.positions_from_rows(rows) == pytest.approx({'SOL': 0.065})
+
+
+def test_positions_none_order_id_rows_keep_per_row_behavior(ledger_file):
+    """order_id=None fill rows (no real-exchange identity) are still counted
+    per row -- unchanged legacy behavior."""
+    rows = [
+        {'status': 'intent', 'ledger_id': 'a', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY'},
+        {'status': 'filled', 'ledger_id': 'a', 'order_id': None, 'filled_size': 0.1},
+        {'status': 'intent', 'ledger_id': 'b', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY'},
+        {'status': 'filled', 'ledger_id': 'b', 'order_id': None, 'filled_size': 0.1},
+    ]
+    assert led.positions_from_rows(rows) == pytest.approx({'SOL': 0.2})
+
+
+def test_duplicate_attempt_excluded_from_daily_cap_sum(ledger_file):
+    """MP-1d: the duplicate attempt moved no money, so its intent must not
+    consume the daily cap (the original attempt already counted)."""
+    l1 = _live_buy('SOL', 'c-dup', notional=5.0)
+    led.record_fill(l1, status='filled', order_id='ORDER-1', filled_size=0.065)
+    l2 = _live_buy('SOL', 'c-dup', notional=5.0)
+    led.record_fill(l2, status='filled', order_id='ORDER-1', filled_size=0.065)
+    assert led.live_spend_today() == pytest.approx(5.0)   # not 10.0
+
+
+# ============================================================================
+# Review-gate fixes (Phase 0 adversarial review): wrong-shape ledgers fail
+# closed; '' order_id is never a duplicate identity; seen-set only counts
+# countable rows.
+# ============================================================================
+
+def test_wrong_shape_empty_object_raises_ledger_error(ledger_file):
+    """Valid JSON of the wrong shape ({}) must fail closed like a decode
+    error -- silently yielding [] would reset the daily cap (MAJOR 1)."""
+    ledger_file.write_text('{}')
+    with pytest.raises(led.LedgerError):
+        led.load_executions()
+
+
+def test_wrong_shape_list_file_raises_ledger_error_not_attribute_error(ledger_file):
+    """A list-shaped file used to raise AttributeError, BYPASSING the
+    quarantine/auto-restore path entirely (MAJOR 1)."""
+    ledger_file.write_text('[1, 2, 3]')
+    with pytest.raises(led.LedgerError):
+        led.load_executions()
+
+
+def test_wrong_shape_executions_not_a_list_raises(ledger_file):
+    ledger_file.write_text('{"executions": "oops"}')
+    with pytest.raises(led.LedgerError):
+        led.load_executions()
+
+
+def test_proper_empty_ledger_shape_still_loads(ledger_file):
+    """Strictly tightening: the legitimate empty shape is untouched."""
+    ledger_file.write_text('{"executions": []}')
+    assert led.load_executions() == []
+
+
+def test_empty_string_order_id_rows_not_marked_duplicate(ledger_file):
+    """'' is not a real exchange identity: two ''-order_id fill rows under
+    different ledger_ids must NOT mark each other duplicates (that would
+    wrongly exclude the second intent from the daily-cap sum) (MAJOR 2)."""
+    l1 = _live_buy('SOL', 'c1')
+    led.record_fill(l1, status='filled', order_id='', filled_size=0.06)
+    l2 = _live_buy('SOL', 'c2')
+    row = led.record_fill(l2, status='filled', order_id='', filled_size=0.06)
+    assert 'duplicate_of' not in row
+    assert led.live_spend_today() == pytest.approx(10.0)   # both intents count
+
+
+def test_positions_empty_string_order_id_rows_keep_per_row_behavior():
+    """''-order_id rows are never deduped in positions (MAJOR 2)."""
+    rows = [
+        {'status': 'intent', 'ledger_id': 'a', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY'},
+        {'status': 'filled', 'ledger_id': 'a', 'order_id': '', 'filled_size': 0.1},
+        {'status': 'intent', 'ledger_id': 'b', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY'},
+        {'status': 'filled', 'ledger_id': 'b', 'order_id': '', 'filled_size': 0.1},
+    ]
+    assert led.positions_from_rows(rows) == pytest.approx({'SOL': 0.2})
+
+
+def test_uncountable_row_does_not_shadow_countable_same_order_id(ledger_file):
+    """MINOR 4: an orphan fill (no intent) or wrong-mode row sharing an
+    order_id must not consume the seen-set slot and shadow the later row
+    that actually joins to a live intent."""
+    rows = [
+        # Orphan fill: no intent row -> not countable, must not claim ORDER-1.
+        {'status': 'filled', 'ledger_id': 'orphan', 'order_id': 'ORDER-1',
+         'filled_size': 0.5},
+        # Countable live fill with the same order_id.
+        {'status': 'intent', 'ledger_id': 'a', 'trading_mode': 'live',
+         'coin': 'SOL', 'side': 'BUY'},
+        {'status': 'filled', 'ledger_id': 'a', 'order_id': 'ORDER-1',
+         'filled_size': 0.065},
+    ]
+    assert led.positions_from_rows(rows) == pytest.approx({'SOL': 0.065})

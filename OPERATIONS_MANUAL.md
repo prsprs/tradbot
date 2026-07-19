@@ -23,14 +23,15 @@ python crypto_trading_bot.py [OPTIONS]
 | `--llm-mode` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, `integrate` | `compare` | LLM mode for recommendations |
 | `--primary-llm` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | Primary LLM for discovery |
 | `--compare-llms` | comma-separated | `gemini,claude` | LLMs for compare/integrate mode |
-| `--coins` | comma-separated | *(empty)* | Specific coins to analyze (max 6), or empty for discovery mode |
+| `--coins` | comma-separated | *(empty)* | Specific coins to analyze (max 5), or empty for discovery mode |
 | `--discovery` | comma-separated | `llm` | Discovery method(s): `llm`, `santiment`, or both (e.g., `llm,santiment`) |
 | `--chains` | comma-separated | *(empty)* | Filter coins by blockchain (e.g., `solana,base`). Requires cache file |
 | `--categories` | comma-separated | *(empty)* | Filter coins by category (e.g., `meme-coins,defi`). Requires cache file |
 | `--polymarket-filter` | `true`, `false` | `false` | Only analyze coins with active Polymarket prediction markets |
 | `--require-consensus` | `true`, `false` | `true` | Require LLM consensus for action |
 | `--tiebreaker` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `none` | `gemini` | Tiebreaker LLM when no consensus |
-| `--log-rounds` | `true`, `false` | `true` | Log integration round details |
+| `--log-rounds` | `true`, `false` | `true` | Capture the full panelist responses to a per-run log file at `<HISTORY_DIR>/panel_responses/<run_id>.log` (env: `LOG_INTEGRATION_ROUNDS`). The console shows concise `[PANEL]` lines plus one `[PANEL LOG]` pointer to that file; set `false` to skip the capture entirely |
+| `--show-responses` | flag | *(off)* | Also echo the full panelist responses inline on the console (the legacy behavior), in addition to writing the `panel_responses/` log. Env: `SHOW_PANEL_RESPONSES=true` |
 
 **Configuration Precedence:**
 CLI arguments take precedence over environment variables. If neither is set, the default value is used.
@@ -45,7 +46,9 @@ The startup banner shows the source of each configuration value (e.g., `[--tradi
 6. Executes trades on Coinbase (only when the live double interlock is fully armed) or simulates them (`whatif`)
 
 **Output:**
-- Console output with LLM responses and recommendations
+- Console output with concise per-panelist `[PANEL]` lines and recommendations. Full panelist responses are **not** printed inline by default; they go to `<HISTORY_DIR>/panel_responses/<run_id>.log` (gated by `--log-rounds`/`LOG_INTEGRATION_ROUNDS`), and the console prints one `[PANEL LOG]` pointer to that file. Use `--show-responses` / `SHOW_PANEL_RESPONSES=true` to restore the inline essays.
+- A startup banner and end-of-run summary line: `Daily spend cap: $X ($Y spent today [UTC])` (shown regardless of the vote, since a HOLD/SELL short-circuits the buy path).
+- A per-coin `Votes:` line in the run summary, e.g. `Votes: BTC HOLD | ETH BUY->ordered | SOL BUY->gate-blocked | ...` (labels: `HOLD`, `SELL`, `BUY->ordered`, `BUY->gate-blocked`, `BLOCKED`).
 - Trade executions on Coinbase (fully armed live mode only), with fill confirmation recorded to the execution ledger (`history/executions.json`)
 - History records saved to `./history/recommendations.json`
 - What-if summary showing simulated trades (whatif mode only)
@@ -140,6 +143,18 @@ python tradeanalyzer.py
 - Console report with accuracy statistics
 - CSV files, split by mode: `./history/analysis_live_YYYYMMDD.csv`, `./history/analysis_whatif_YYYYMMDD.csv` (benchmark-relative columns; see the analyzer section below)
 
+**What today's evidence does / does not show:** a successful live acceptance
+run (order placed, filled, ledgered, reconciled) validates the **execution
+path** — it says nothing about whether the panel's calls are actually good.
+Only run this analyzer's output as the source of truth for strategy
+performance, never "it placed a real trade and nothing broke" — as of
+2026-07-19 only 6 mature directional records exist, nowhere near enough
+sample to conclude anything. Also account for the fee floor when reading
+results: round-trip fees run ≈1.2% of notional per side (≈$0.059 observed on
+a $5 live fill), so at small notional a recommendation needs **more than
+≈2.4% edge round-trip** before it counts as a real win rather than noise
+below the fee floor.
+
 ---
 
 ## Environment Variables
@@ -157,8 +172,9 @@ python tradeanalyzer.py
 | `COMPARE_LLMS` | `gemini,claude` | Comma-separated list of LLMs to use in compare/integrate modes |
 | `REQUIRE_CONSENSUS` | `true` | If `true`, only act when all LLMs agree (compare/integrate modes) |
 | `INTEGRATION_TIEBREAKER` | `gemini` | LLM to use as tiebreaker when no consensus: `gemini`, `claude`, `openai`, `grok`, `perplexity`, or `none` |
-| `LOG_INTEGRATION_ROUNDS` | `true` | If `true`, log detailed Round 1/2 responses in integrate mode |
-| `ANALYZE_COINS` | *(empty)* | Comma-separated list of coins to analyze (max 6). If empty, uses discovery mode |
+| `LOG_INTEGRATION_ROUNDS` | `true` | If `true`, capture full panelist responses to `<HISTORY_DIR>/panel_responses/<run_id>.log` (console shows concise `[PANEL]` lines + a `[PANEL LOG]` pointer). Same as `--log-rounds` |
+| `SHOW_PANEL_RESPONSES` | `false` | If `true`, also echo the full panelist responses inline on the console (legacy behavior). Same as `--show-responses` |
+| `ANALYZE_COINS` | *(empty)* | Comma-separated list of coins to analyze (max 5). If empty, uses discovery mode |
 | `DISCOVERY` | `llm` | Discovery method(s): `llm`, `santiment`, or both comma-separated |
 | `CHAINS` | *(empty)* | Filter by blockchain networks (e.g., `solana,base`). Requires cache file |
 | `CATEGORIES` | *(empty)* | Filter by categories (e.g., `meme-coins,defi`). Requires cache file |
@@ -353,6 +369,58 @@ tradingbot/
 
 ---
 
+## Ledger recovery
+
+The execution ledger (`history/executions.json`) is the money record: it backs
+the cross-run daily spend cap. Two kinds of sibling files appear next to it at
+runtime (both per-user local data, gitignored, never committed):
+
+- **`executions.json.bak-<YYYY-MM-DD>`** — an automatic run-start snapshot,
+  written once per UTC day by the bot. This is the auto-recovery source.
+- **`executions.json.corrupt-<ts>`** — a quarantined corrupt ledger. When the
+  ledger file exists but cannot be parsed, the bot *renames* it aside (nothing
+  is ever deleted) so it can be inspected/repaired.
+
+**Automatic behavior on a corrupt ledger** (tagged `[LEDGER ERROR]` in logs):
+
+- **Live mode:** the corrupt file is quarantined and the ledger is
+  auto-restored from the newest `.bak-` snapshot — the snapshot carries the
+  real spend data, so the daily cap keeps working and trading continues. If
+  **no** snapshot exists, the buy is **refused** (fail-closed: an empty ledger
+  would silently reset the daily cap to $0) and the log prints the exact
+  recovery command.
+- **What-if mode:** quarantine-and-continue with a fresh ledger (no money is
+  gated; the learning-loop stream keeps flowing).
+- **`scripts/reconcile_positions.py`** refuses to run (non-zero exit) against
+  a corrupt ledger and prints the same guidance.
+
+**Manual recovery** (when there was no snapshot, or to prefer the quarantined
+data): repair the JSON in the quarantined file, then copy it back:
+
+```bash
+cp 'history/executions.json.corrupt-<ts>' 'history/executions.json'
+# or restore a snapshot instead:
+cp 'history/executions.json.bak-<date>' 'history/executions.json'
+```
+
+A hand-repaired file must have the exact shape `{"executions": [...]}` —
+anything else (an empty `{}`, a bare list) is treated as corrupt again and
+re-quarantined. Two known bounds of the design, on record:
+
+- If the newest `.bak-` snapshot is itself corrupt, every run quarantines it,
+  refuses the buy, and prints guidance — fail-closed but repetitive until you
+  replace or delete-by-renaming the bad snapshot manually.
+- The snapshot is taken at *run start*, so an auto-restore loses any rows
+  written later the same day — the daily cap can be **under**-counted by up to
+  one day's post-snapshot spend after a recovery. Accepted at $5/$15 cap
+  scale; revisit if caps grow.
+
+The corrupt-history case for `recommendations.json` is softer: it is
+quarantined the same way (`recommendations.json.corrupt-<ts>`, tagged
+`[HISTORY ERROR]`) but the run continues — recommendations don't gate money.
+
+---
+
 ## Quick Start Examples
 
 ### Run in What-If Mode (safe testing, no real trades)
@@ -403,12 +471,32 @@ python crypto_trading_bot.py
 python tradeanalyzer.py
 ```
 
+> **The `ANALYZE_COINS` trap (filters vs explicit coins).** Filters
+> (`--chains`, `--categories`, `--polymarket-filter`) and discovery
+> (`--discovery`) only take effect in **discovery mode** — i.e. when NO explicit
+> coins are set. Explicit coins force *coin choice mode*, which does not apply
+> any filter or discovery flag. Because `ANALYZE_COINS` in `.env` counts as
+> explicit coins, a persistent `ANALYZE_COINS=BTC,ETH,...` would otherwise make
+> filters silently do nothing. The bot now refuses to run silently in this case:
+> - `ANALYZE_COINS` set in `.env` **+** filter/discovery flags on the CLI →
+>   the bot prints `[CONFIG] ... ignoring ANALYZE_COINS env (...)` and proceeds
+>   in discovery/filter mode (CLI intent wins).
+> - `--coins=...` **and** a filter/discovery flag **both on the CLI** →
+>   the bot exits with `[CONFIG ERROR]` (ambiguous — one side would be
+>   discarded). Drop the filter flags, or pass `--coins=` (empty) to filter.
+>
+> To run a filtered/discovery pass while `ANALYZE_COINS` is set in `.env`, just
+> pass the filter flags on the CLI (they override the env coins), or unset
+> `ANALYZE_COINS`. The startup banner now prints filter lines only when they are
+> actually in effect.
+
 ### Filter by category (e.g., meme coins only)
 ```bash
 # First, ensure cache exists (one-time setup)
 LUNARCRUSH_API_KEY=your_key python refresh_coin_cache.py
 
-# Then run with category filter
+# Then run with category filter (works from a clean env, or overrides
+# ANALYZE_COINS if it is set in .env)
 python crypto_trading_bot.py --categories=meme-coins
 ```
 
@@ -801,6 +889,12 @@ python crypto_trading_bot.py --trading-mode=whatif --coins=BONK,WIF,PEPE --expor
 | `--export-recommendations` | `EXPORT_RECOMMENDATIONS` | `ALL` | Filter: `ALL`, `BUY`, or `BUY,HOLD` |
 
 ### Step 2: Collect Correlation Data
+
+> **Install the tracker's dependencies first:**
+> `pip install -r requirements_correlation_tracker.txt`. They are not part of
+> the main `requirements.txt`. In particular, without `statsmodels` the
+> Granger causality test is skipped (analysis still runs, with a caveat in
+> the report).
 
 Run the correlation tracker to collect price data for candidate coins:
 

@@ -26,8 +26,10 @@ Usage:
     ./venv/bin/python scripts/reconcile_positions.py --repair
     HISTORY_DIR=/path/to/scratch ./venv/bin/python scripts/reconcile_positions.py
 
-Exit code is always 0 (a reconciliation report is informational, not a
-pass/fail gate).
+Exit code is 0 for a report (informational, not a pass/fail gate), and
+non-zero when the execution ledger is corrupt -- reconciling or repairing
+against an unreadable money record would be meaningless at best (MP-2; see
+OPERATIONS_MANUAL.md, 'Ledger recovery').
 """
 import argparse
 import os
@@ -204,6 +206,24 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     print(f"[reconcile] execution ledger: {executionledger.EXECUTIONS_FILE}")
+
+    # MP-2: refuse to reconcile or repair against a corrupt ledger. Repairing
+    # from garbage rows could append garbage "corrections"; fail closed with
+    # recovery guidance instead.
+    try:
+        executionledger.load_executions()
+    except executionledger.LedgerError as e:
+        print(f"[LEDGER ERROR] {e}")
+        print("[LEDGER ERROR] Refusing to reconcile/repair against a corrupt "
+              "ledger (fail-closed).")
+        print("[LEDGER ERROR] Recover first -- either restore the newest "
+              "snapshot:")
+        print(f"[LEDGER ERROR]   cp '{executionledger.EXECUTIONS_FILE}.bak-<date>' "
+              f"'{executionledger.EXECUTIONS_FILE}'")
+        print("[LEDGER ERROR] or repair the corrupt file's JSON and copy it back:")
+        print(f"[LEDGER ERROR]   {executionledger.recovery_command()}")
+        print("[LEDGER ERROR] (see OPERATIONS_MANUAL.md, 'Ledger recovery')")
+        return 2
 
     # --repair runs FIRST so the position report below reflects any corrections.
     if args.repair:

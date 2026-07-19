@@ -5,10 +5,15 @@ This module provides functions to:
 - Create and save recommendation records
 - Load historical recommendations
 - Manage the history directory structure
+
+Note: this is the LIVE BOT's history writer (used by crypto_trading_bot.py),
+distinct from the history/ package (history/recorder.py's HistoryRecorder),
+which is llm_compare.py's recorder. See AGENTS.md's "check both stacks" rule.
 """
 
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, List
 
@@ -42,11 +47,30 @@ def ensure_history_dir():
     os.makedirs(HISTORY_DIR, exist_ok=True)
 
 
+def _quarantine_corrupt_recommendations() -> Optional[str]:
+    """Rename a corrupt recommendations file aside as
+    recommendations.json.corrupt-<ts>. NEVER deletes; returns the quarantine
+    path (or None when the file doesn't exist)."""
+    if not os.path.exists(RECOMMENDATIONS_FILE):
+        return None
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    dest = f'{RECOMMENDATIONS_FILE}.corrupt-{stamp}'
+    while os.path.exists(dest):  # never overwrite an earlier quarantine
+        dest = f'{RECOMMENDATIONS_FILE}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}'
+    os.rename(RECOMMENDATIONS_FILE, dest)
+    return dest
+
+
 def load_recommendations() -> List[Dict]:
     """Load all recommendations from JSON file.
-    
-    Returns:
-        List of recommendation records, or empty list if file doesn't exist.
+
+    Returns [] when the file doesn't exist. A file that exists but cannot be
+    parsed is QUARANTINED (renamed to recommendations.json.corrupt-<ts>) and
+    [] is returned -- recommendations don't gate money, so a corrupt history
+    must not stop the run (fail-open-with-quarantine, audit MP-2 companion),
+    but the corrupt file is never silently overwritten by the next save.
+    Contrast executionledger.load_executions, which FAILS CLOSED (raises
+    LedgerError) because the ledger backs the daily spend cap.
     """
     if not os.path.exists(RECOMMENDATIONS_FILE):
         return []
@@ -54,22 +78,46 @@ def load_recommendations() -> List[Dict]:
         with open(RECOMMENDATIONS_FILE, 'r') as f:
             data = json.load(f)
         return data.get('recommendations', [])
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"Warning: Could not load recommendations: {e}")
+    except (json.JSONDecodeError, IOError, OSError, UnicodeDecodeError) as e:
+        print(f"[HISTORY ERROR] could not load {RECOMMENDATIONS_FILE}: {e}")
+        quarantined = _quarantine_corrupt_recommendations()
+        if quarantined:
+            print(f"[HISTORY ERROR] corrupt file preserved at {quarantined} "
+                  "(nothing deleted); continuing with an empty history.")
         return []
 
 
 def save_recommendation(rec: Dict):
     """Append a recommendation to the history file.
-    
+
+    Atomic (temp file in the same dir + os.replace, mirroring
+    executionledger._save_executions) so a crash mid-write never leaves a
+    truncated file -- the previous file or the new one, never a mix (MP-2).
+
+    MP-3: the load->append->replace runs under a cross-process flock on a
+    sibling recommendations.json.lock (helper shared from executionledger)
+    so overlapping cron runs never drop each other's records. Deadlock rule:
+    this lock is never held together with the ledger lock -- no call path
+    nests record_recommendation inside maybe_execute_buy or vice versa.
+
     Args:
         rec: Recommendation record dictionary to save.
     """
+    # Imported here (not at module top) to keep the module dependency
+    # one-directional and lazy; executionledger imports nothing from us.
+    from executionledger import file_lock
     ensure_history_dir()
-    recs = load_recommendations()
-    recs.append(rec)
-    with open(RECOMMENDATIONS_FILE, 'w') as f:
-        json.dump({'recommendations': recs}, f, indent=2)
+    with file_lock(RECOMMENDATIONS_FILE + '.lock'):
+        recs = load_recommendations()
+        recs.append(rec)
+        directory = os.path.dirname(RECOMMENDATIONS_FILE) or '.'
+        tmp = os.path.join(directory,
+                           f'.recommendations.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+        with open(tmp, 'w') as f:
+            json.dump({'recommendations': recs}, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, RECOMMENDATIONS_FILE)
 
 
 def create_recommendation_record(
@@ -225,65 +273,94 @@ def record_recommendation(
         run_id: Process-run identifier (T2), passed through.
 
     Returns:
-        The saved recommendation record, or None if price fetch failed.
+        The saved recommendation record (None only when `recommendation` is
+        empty). DI-3 (audit 2026-07-19): a failed price fetch NO LONGER drops
+        the record -- it is written with price/bid/ask = None. The analyzer
+        already classifies missing rec_price honestly (EXPIRED_UNSCORABLE,
+        reason no_rec_price), and exactly the interesting runs (blocked
+        decisions, discovery tickers not listed on Coinbase) used to leave no
+        history at all despite the call sites' "ALWAYS recorded" promise.
+        Bid/ask are also never fabricated as copies of the last price anymore:
+        real values or None.
     """
     if not recommendation:
         return None
-    
+
+    def _maybe_float(value):
+        if value in (None, ''):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    price = bid = ask = None
     try:
         product = trader.get_product_details(f"{coin_symbol}-USD")
         if product:
-            price = float(product.price) if hasattr(product, 'price') else 0.0
-            # Coinbase product may have quote_increment/price but not bid/ask directly
-            # Use price as fallback for bid/ask
-            bid = float(product.bid) if hasattr(product, 'bid') and product.bid else price
-            ask = float(product.ask) if hasattr(product, 'ask') and product.ask else price
-            
-            rec_record = create_recommendation_record(
-                coin_symbol=coin_symbol,
-                recommendation=recommendation,
-                price=price,
-                bid_price=bid,
-                ask_price=ask,
-                llm_source=llm_source,
-                mode=mode,
-                consensus=consensus,
-                discovery_llm=discovery_llm,
-                exchange=exchange,
-                consensus_state=consensus_state,
-                deciding_llms=deciding_llms,
-                votes=votes,
-                block_reason=block_reason,
-                majority_action=majority_action,
-                trading_mode=trading_mode,
-                run_id=run_id
-            )
-            save_recommendation(rec_record)
-            timestamp_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-            print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ {format_price(price)} at {timestamp_str}")
-            
-            # Export to candidate_coins.csv if enabled
-            if export_candidate:
-                rec_upper = recommendation.upper().strip()
-                export_list = [r.strip().upper() for r in export_recommendations.split(',')]
-                # Blocked decisions (NONE) are history-only; never export them
-                # as candidate coins
-                should_export = rec_upper != 'NONE' and (('ALL' in export_list) or (rec_upper in export_list))
-                
-                if should_export:
-                    from candidate_util import upsert_candidate_coin
-                    source = f"llm_recommendation_{mode}"
-                    upsert_candidate_coin(
-                        symbol=coin_symbol,
-                        blockchain=candidate_blockchain,
-                        source=source,
-                        data_dir=candidate_dir
-                    )
-            
-            return rec_record
+            price = _maybe_float(getattr(product, 'price', None))
+            # DI-3: only REAL bid/ask values are stored -- never price copied
+            # into bid/ask (the analyzer must see honest spread data or None).
+            bid = _maybe_float(getattr(product, 'bid', None))
+            ask = _maybe_float(getattr(product, 'ask', None))
         else:
-            print(f"[HISTORY] Could not get price for {coin_symbol}, skipping record")
-            return None
+            print(f"[HISTORY] Could not get price for {coin_symbol}; "
+                  "recording with price=None (DI-3)")
     except Exception as e:
-        print(f"[HISTORY] Error recording recommendation for {coin_symbol}: {e}")
+        print(f"[HISTORY] Error fetching price for {coin_symbol}: {e}; "
+              "recording with price=None (DI-3)")
+
+    rec_record = create_recommendation_record(
+        coin_symbol=coin_symbol,
+        recommendation=recommendation,
+        price=price,
+        bid_price=bid,
+        ask_price=ask,
+        llm_source=llm_source,
+        mode=mode,
+        consensus=consensus,
+        discovery_llm=discovery_llm,
+        exchange=exchange,
+        consensus_state=consensus_state,
+        deciding_llms=deciding_llms,
+        votes=votes,
+        block_reason=block_reason,
+        majority_action=majority_action,
+        trading_mode=trading_mode,
+        run_id=run_id
+    )
+    try:
+        save_recommendation(rec_record)
+    except Exception as e:
+        # A history-save failure must never crash the trading run (the old
+        # catch-all had this property; keep it), but it is loud and honest:
+        # None means NOT saved.
+        print(f"[HISTORY ERROR] could not save recommendation for {coin_symbol}: {e}")
         return None
+    timestamp_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    price_str = format_price(price) if price is not None else 'price unavailable'
+    print(f"[HISTORY] Recorded: {coin_symbol} {recommendation} @ {price_str} at {timestamp_str}")
+
+    # Export to candidate_coins.csv if enabled. Guarded separately: an export
+    # failure must never lose (or misreport) the already-saved record.
+    try:
+        if export_candidate:
+            rec_upper = recommendation.upper().strip()
+            export_list = [r.strip().upper() for r in export_recommendations.split(',')]
+            # Blocked decisions (NONE) are history-only; never export them
+            # as candidate coins
+            should_export = rec_upper != 'NONE' and (('ALL' in export_list) or (rec_upper in export_list))
+
+            if should_export:
+                from candidate_util import upsert_candidate_coin
+                source = f"llm_recommendation_{mode}"
+                upsert_candidate_coin(
+                    symbol=coin_symbol,
+                    blockchain=candidate_blockchain,
+                    source=source,
+                    data_dir=candidate_dir
+                )
+    except Exception as e:
+        print(f"[HISTORY] candidate export failed (record already saved): {e}")
+
+    return rec_record

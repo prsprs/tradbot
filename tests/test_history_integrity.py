@@ -385,3 +385,190 @@ def test_production_mapping_covers_every_2026_07_18_record_in_real_history():
     july18_ids = {r['id'] for r in records if r['timestamp'].startswith('2026-07-18')}
     missing = july18_ids - set(backfill.MAPPING.keys())
     assert not missing, f"2026-07-18 records with no explicit MAPPING entry: {sorted(missing)}"
+
+
+# ============================================================================
+# MP-2 companion (audit 2026-07-19): corrupt recommendations are quarantined
+# (never silently overwritten) and the run continues; writes are atomic.
+# ============================================================================
+
+def test_corrupt_recommendations_quarantined_and_run_continues(tmp_path, monkeypatch, capsys):
+    """Recommendations don't gate money -> fail-open-with-quarantine: [] is
+    returned so the run continues, but the corrupt file is renamed aside
+    (recommendations.json.corrupt-<ts>), never left to be silently rewritten."""
+    bad = tmp_path / 'recommendations.json'
+    bad.write_text('{"recommendations": [')      # truncated JSON
+    monkeypatch.setattr(historyutil, 'RECOMMENDATIONS_FILE', str(bad))
+
+    assert historyutil.load_recommendations() == []
+    out = capsys.readouterr().out
+    assert '[HISTORY ERROR]' in out
+    assert not bad.exists()                      # renamed aside...
+    quarantines = list(tmp_path.glob('recommendations.json.corrupt-*'))
+    assert len(quarantines) == 1                 # ...and preserved
+    assert quarantines[0].read_text() == '{"recommendations": ['
+
+
+def test_save_after_corrupt_load_does_not_overwrite_quarantine(tmp_path, monkeypatch):
+    """The next save after a corrupt load starts a FRESH file; the corrupt
+    bytes stay intact in the quarantine file."""
+    bad = tmp_path / 'recommendations.json'
+    bad.write_text('CORRUPT BYTES')
+    monkeypatch.setattr(historyutil, 'RECOMMENDATIONS_FILE', str(bad))
+    monkeypatch.setattr(historyutil, 'HISTORY_DIR', str(tmp_path))
+
+    rec = historyutil.create_recommendation_record(trading_mode='whatif', **_BASE)
+    historyutil.save_recommendation(rec)
+
+    assert len(historyutil.load_recommendations()) == 1
+    quarantines = list(tmp_path.glob('recommendations.json.corrupt-*'))
+    assert len(quarantines) == 1
+    assert quarantines[0].read_text() == 'CORRUPT BYTES'
+
+
+def test_save_recommendation_is_atomic_under_simulated_failure(tmp_path, monkeypatch):
+    """A crash mid-serialization leaves the previous file intact (tmp +
+    os.replace -- the executionledger._save_executions pattern)."""
+    target = tmp_path / 'recommendations.json'
+    monkeypatch.setattr(historyutil, 'RECOMMENDATIONS_FILE', str(target))
+    monkeypatch.setattr(historyutil, 'HISTORY_DIR', str(tmp_path))
+    rec = historyutil.create_recommendation_record(trading_mode='whatif', **_BASE)
+    historyutil.save_recommendation(rec)
+    before = target.read_text()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError('simulated disk-full mid-serialization')
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(historyutil.json, 'dump', boom)
+        with pytest.raises(RuntimeError):
+            historyutil.save_recommendation(rec)
+    assert target.read_text() == before
+    assert len(historyutil.load_recommendations()) == 1
+
+
+# ============================================================================
+# DI-3 (audit 2026-07-19): decisions are recorded even when the price fetch
+# fails, and bid/ask are never fabricated from the last price.
+# ============================================================================
+
+class _NoProductTrader:
+    """Price fetch 'succeeds' but finds no product (e.g. a discovery ticker
+    not listed on Coinbase) -- previously the record was silently dropped."""
+    def get_product_details(self, symbol):
+        return None
+
+
+class _RaisingTrader:
+    def get_product_details(self, symbol):
+        raise RuntimeError('simulated exchange outage')
+
+
+def _record_with(trader, tmp_path, monkeypatch, **overrides):
+    monkeypatch.setattr(historyutil, 'RECOMMENDATIONS_FILE',
+                        str(tmp_path / 'recommendations.json'))
+    monkeypatch.setattr(historyutil, 'HISTORY_DIR', str(tmp_path))
+    kwargs = dict(coin_symbol='FAKECOIN', recommendation='NONE', trader=trader,
+                  llm_source='none', mode='compare', block_reason='no_quorum: 1 of 3',
+                  trading_mode='whatif', run_id='run_20260719T000000Z_test01')
+    kwargs.update(overrides)
+    return historyutil.record_recommendation(**kwargs)
+
+
+def test_price_fetch_no_product_still_records_with_none_prices(tmp_path, monkeypatch):
+    rec = _record_with(_NoProductTrader(), tmp_path, monkeypatch)
+    assert rec is not None
+    assert rec['price_at_recommendation'] is None
+    assert rec['bid_price'] is None
+    assert rec['ask_price'] is None
+    saved = historyutil.load_recommendations()
+    assert len(saved) == 1                       # ...and it reached disk
+    assert saved[0]['coin_symbol'] == 'FAKECOIN'
+    assert saved[0]['block_reason'] == 'no_quorum: 1 of 3'
+
+
+def test_price_fetch_exception_still_records_with_none_prices(tmp_path, monkeypatch):
+    rec = _record_with(_RaisingTrader(), tmp_path, monkeypatch,
+                       recommendation='BUY', trading_mode='live')
+    assert rec is not None
+    assert rec['price_at_recommendation'] is None
+    assert len(historyutil.load_recommendations()) == 1
+
+
+def test_none_price_record_scores_as_unscorable_not_crash(tmp_path, monkeypatch):
+    """The analyzer classifies price=None records honestly -- the contract
+    DI-3 relies on: an actionable record with no price is EXPIRED_UNSCORABLE
+    (no_rec_price); a blocked decision (NONE) stays on the panel-behavior
+    BLOCKED track. Neither crashes."""
+    import tradeanalyzer
+    from datetime import datetime, timedelta
+    late = datetime.utcnow() + timedelta(hours=100)
+
+    buy_rec = _record_with(_NoProductTrader(), tmp_path, monkeypatch,
+                           recommendation='BUY')
+    scored = tradeanalyzer.score_record(
+        buy_rec, now=late, maturity_hours=4.0, fee_floor_pct=2.4,
+        benchmark='BTC', provider=None, ledger_rows=[])
+    assert scored.category == tradeanalyzer.EXPIRED_UNSCORABLE
+    assert scored.reason == 'no_rec_price'
+
+    blocked_rec = _record_with(_NoProductTrader(), tmp_path, monkeypatch)
+    scored_blocked = tradeanalyzer.score_record(
+        blocked_rec, now=late, maturity_hours=4.0, fee_floor_pct=2.4,
+        benchmark='BTC', provider=None, ledger_rows=[])
+    assert scored_blocked.category == tradeanalyzer.BLOCKED
+
+
+def test_bid_ask_never_fabricated_from_price(tmp_path, monkeypatch):
+    """A product with a price but NO bid/ask fields stores bid/ask = None --
+    the old code silently copied price into both, faking a zero spread."""
+    class PriceOnlyProduct:
+        price = '123.45'
+    class PriceOnlyTrader:
+        def get_product_details(self, symbol):
+            return PriceOnlyProduct()
+
+    rec = _record_with(PriceOnlyTrader(), tmp_path, monkeypatch,
+                       recommendation='HOLD')
+    assert rec['price_at_recommendation'] == 123.45
+    assert rec['bid_price'] is None              # not 123.45
+    assert rec['ask_price'] is None              # not 123.45
+
+
+def test_real_bid_ask_still_recorded(tmp_path, monkeypatch):
+    class FullProduct:
+        price = '100.0'
+        bid = '99.5'
+        ask = '100.5'
+    class FullTrader:
+        def get_product_details(self, symbol):
+            return FullProduct()
+
+    rec = _record_with(FullTrader(), tmp_path, monkeypatch, recommendation='BUY')
+    assert rec['bid_price'] == 99.5
+    assert rec['ask_price'] == 100.5
+
+
+def test_save_failure_returns_none_but_does_not_raise(tmp_path, monkeypatch, capsys):
+    """A history-save failure must never crash the trading run; it is loud
+    ([HISTORY ERROR]) and returns None (honest: not saved)."""
+    class FullProduct:
+        price = '100.0'
+    class FullTrader:
+        def get_product_details(self, symbol):
+            return FullProduct()
+
+    monkeypatch.setattr(historyutil, 'RECOMMENDATIONS_FILE',
+                        str(tmp_path / 'recommendations.json'))
+    monkeypatch.setattr(historyutil, 'HISTORY_DIR', str(tmp_path))
+
+    def boom(rec):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(historyutil, 'save_recommendation', boom)
+    rec = historyutil.record_recommendation(
+        coin_symbol='ETH', recommendation='BUY', trader=FullTrader(),
+        llm_source='gemini', mode='compare', trading_mode='whatif',
+        run_id='r')
+    assert rec is None
+    assert '[HISTORY ERROR]' in capsys.readouterr().out
