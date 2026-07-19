@@ -11,6 +11,26 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+# TS-3 pattern (see crypto_trading_bot.py's main() and AGENTS.md's
+# "Env-snapshot convention"): .env must be loaded in main(), never at
+# module scope, so importing this module has no side effects on
+# os.environ. Before TS-3 landed here, llm_compare.py never called
+# load_dotenv() at all, so users whose API keys live only in .env (not
+# shell-exported) got "Could not initialize gemini/claude/openai: ...
+# environment variable not set" for every provider (2026-07-19).
+#
+# Unlike crypto_trading_bot.py's import graph, none of llm_compare.py's
+# imports (config, context.trends, history.recorder, prompts.templates,
+# llm_utils.base and the lazily-imported llm_utils.*_client modules)
+# snapshot env-derived values at import time -- every os.environ read
+# reachable from here happens inside a function body or __init__
+# (config.parse_args()'s argparse defaults, the llm_utils client
+# __init__s/is_available(), history.recorder.HistoryRecorder.__init__,
+# modelregistry.get_model()'s override lookup). So, unlike the bot, no
+# _refresh_env_snapshots() companion is needed: calling load_dotenv() once
+# at the top of main(), before parse_args(), is sufficient.
+from dotenv import load_dotenv
+
 from config import Config, parse_args, estimate_cost, validate_config
 from context.trends import get_trends_context
 from history.recorder import HistoryRecorder
@@ -284,13 +304,15 @@ def run_compare_mode(config: Config, context: str, file_context: str) -> Dict[st
     
     responses = {}
     parsed_responses = {}
-    
+    available_llms = 0
+
     for llm_name in config.compare_llms:
         client = get_llm_client(llm_name)
         if not client:
             print(f"  Skipping {llm_name} (not available)")
             continue
-        
+        available_llms += 1
+
         print(f"\nQuerying {llm_name}...")
         response = client.send_request(prompt)
         
@@ -310,7 +332,26 @@ def run_compare_mode(config: Config, context: str, file_context: str) -> Dict[st
             if config.log_integration_rounds:
                 print(f"\n--- {llm_name.capitalize()} Response ---")
                 print(response)
-    
+
+    # Zero-availability guard: if NONE of the requested LLMs could even be
+    # constructed (bad/missing API keys, unset env vars), stop here with an
+    # error rather than falling through to an empty "[COMPARISON]" section
+    # and a junk history record with no responses in it (observed live,
+    # 2026-07-19: rec_20260719_211510 in history/recommendations.json).
+    # Partial availability (>=1 LLM initialized) is unaffected and keeps
+    # the existing behavior below.
+    if available_llms == 0:
+        return {
+            "error": (
+                "None of the requested LLMs could be initialized "
+                f"({', '.join(config.compare_llms)}). Check that the "
+                "corresponding API key env vars are set (GOOGLE_API_KEY, "
+                "ANTHROPIC_API_KEY/CLAUDE_API_KEY, OPENAI_API_KEY, "
+                "XAI_API_KEY, PERPLEXITY_API_KEY as applicable) -- either "
+                "exported in the shell or in a .env file at the repo root."
+            )
+        }
+
     # Check consensus
     consensus, majority, count = check_consensus(parsed_responses, config.yes_no_eval)
     
@@ -618,6 +659,12 @@ def format_output(result: Dict[str, Any], config: Config) -> str:
 
 def main():
     """Main entry point."""
+    # TS-3: .env is loaded HERE, as main()'s first action -- never at import
+    # time -- and must precede parse_args(), whose argparse defaults read
+    # os.environ directly (PROMPT, MODE, PRIMARY_LLM, COMPARE_LLMS, the
+    # provider API keys consumed later by get_llm_client(), etc.).
+    load_dotenv()
+
     config = parse_args()
     
     # Validate configuration
