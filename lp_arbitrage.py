@@ -1394,7 +1394,25 @@ def print_banner(config: LPConfig):
 def main():
     """Main entry point."""
     config = parse_args()
-    
+
+    # T1-style double lock (mirrors crypto_trading_bot.py's LIVE_TRADING_CONFIRMED
+    # gate): --trading-mode=live alone is not enough to place real Jupiter swaps.
+    # Without the env confirmation, downgrade to whatif and print a loud notice
+    # rather than exiting -- this tool stays usable for research either way, and
+    # whatif forces the no-wallet branch below.
+    if config.trading_mode == "live" and os.environ.get('LIVE_TRADING_CONFIRMED') != '1':
+        live_lock_notice = (
+            "Live mode requested (--trading-mode=live) but LIVE_TRADING_CONFIRMED=1 "
+            "is not set in the environment.\n"
+            "Downgrading to whatif mode. To arm live trading, run:\n"
+            "  export LIVE_TRADING_CONFIRMED=1"
+        )
+        print("\n" + "!" * 66)
+        for line in live_lock_notice.splitlines():
+            print("[LIVE LOCK] " + line)
+        print("!" * 66 + "\n")
+        config.trading_mode = "whatif"
+
     # Print banner
     print_banner(config)
     

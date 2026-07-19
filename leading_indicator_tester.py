@@ -2175,7 +2175,7 @@ class LiveTrader:
     def _initialize_trustwallet(self) -> bool:
         """Initialize wallet via direct key input + Jupiter (recommended).
         
-        This uses the same approach as test_trustwallet_swap.py Option 2:
+        This uses the same approach as probe_trustwallet_swap.py Option 2:
         - Prompts for private key or mnemonic at runtime
         - Uses LocalWallet for key management
         - Uses JupiterClient for swaps
@@ -4886,7 +4886,25 @@ Examples:
                         help='Minimum raw correlation threshold for viability verdict (default: 0.3)')
     
     args = parser.parse_args()
-    
+
+    # T1-style double lock (mirrors crypto_trading_bot.py's LIVE_TRADING_CONFIRMED
+    # gate): --trading-mode=live alone is not enough to place real Jupiter swaps.
+    # Without the env confirmation, downgrade to paper and print a loud notice
+    # rather than silently proceeding or hard-exiting (this tool stays usable
+    # for research either way).
+    if args.trading_mode == 'live' and os.environ.get('LIVE_TRADING_CONFIRMED') != '1':
+        live_lock_notice = (
+            "Live mode requested (--trading-mode=live) but LIVE_TRADING_CONFIRMED=1 "
+            "is not set in the environment.\n"
+            "Downgrading to paper mode. To arm live trading, run:\n"
+            "  export LIVE_TRADING_CONFIRMED=1"
+        )
+        print("\n" + "!" * 66)
+        for line in live_lock_notice.splitlines():
+            print("[LIVE LOCK] " + line)
+        print("!" * 66 + "\n")
+        args.trading_mode = 'paper'
+
     # Set logging level early
     if args.verbose:
         # Scope DEBUG to this tool's own logger only — setting it on the
