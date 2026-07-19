@@ -5,12 +5,14 @@ from typing import Optional
 
 import openai
 
+from modelregistry import get_model
+
 from .base import LLMClient
 
 
 class PerplexityClient(LLMClient):
     """Perplexity AI LLM client with live web search."""
-    
+
     def __init__(self):
         """Initialize the Perplexity client."""
         api_key = os.environ.get('PERPLEXITY_API_KEY')
@@ -20,7 +22,7 @@ class PerplexityClient(LLMClient):
             api_key=api_key,
             base_url="https://api.perplexity.ai"
         )
-        self.model = "sonar-pro"
+        self.model = get_model('perplexity')
     
     @property
     def name(self) -> str:

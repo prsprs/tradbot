@@ -6,19 +6,21 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
+from modelregistry import get_model
+
 from .base import LLMClient
 
 
 class GeminiClient(LLMClient):
     """Google Gemini LLM client."""
-    
+
     def __init__(self):
         """Initialize the Gemini client."""
         api_key = os.environ.get('GOOGLE_API_KEY')
         if not api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set")
         self.client = genai.Client()
-        self.model = "gemini-3.1-pro-preview"
+        self.model = get_model('gemini')
         self.config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
         )

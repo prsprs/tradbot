@@ -5,19 +5,21 @@ from typing import Optional
 
 import openai
 
+from modelregistry import get_model
+
 from .base import LLMClient
 
 
 class OpenAIClient(LLMClient):
     """OpenAI GPT LLM client."""
-    
+
     def __init__(self):
         """Initialize the OpenAI client."""
         api_key = os.environ.get('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-5.5"
+        self.model = get_model('openai')
     
     @property
     def name(self) -> str:

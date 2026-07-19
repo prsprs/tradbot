@@ -5,12 +5,14 @@ from typing import Optional
 
 import openai
 
+from modelregistry import get_model
+
 from .base import LLMClient
 
 
 class GrokClient(LLMClient):
     """xAI Grok LLM client."""
-    
+
     def __init__(self):
         """Initialize the Grok client."""
         api_key = os.environ.get('XAI_API_KEY')
@@ -20,7 +22,7 @@ class GrokClient(LLMClient):
             api_key=api_key,
             base_url="https://api.x.ai/v1"
         )
-        self.model = "grok-4"
+        self.model = get_model('grok')
         self.tools = [{"type": "web_search"}]
     
     @property

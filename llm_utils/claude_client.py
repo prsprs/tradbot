@@ -5,19 +5,21 @@ from typing import Optional
 
 import anthropic
 
+from modelregistry import get_model
+
 from .base import LLMClient
 
 
 class ClaudeClient(LLMClient):
     """Anthropic Claude LLM client."""
-    
+
     def __init__(self):
         """Initialize the Claude client."""
         api_key = os.environ.get('ANTHROPIC_API_KEY') or os.environ.get('CLAUDE_API_KEY')
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY or CLAUDE_API_KEY environment variable not set")
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = "claude-opus-4-8"
+        self.model = get_model('claude')
     
     @property
     def name(self) -> str:
