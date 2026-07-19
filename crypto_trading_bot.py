@@ -2670,7 +2670,7 @@ def main():
 
     # Discovery methods: llm, santiment, or both
     # DEX mode defaults to santiment (Solana tokens), CEX defaults to llm
-    discovery_default_used = (args.discovery == os.environ.get('DISCOVERY', 'llm') and 
+    discovery_default_used = (args.discovery == os.environ.get('DISCOVERY', 'llm') and
                               not os.environ.get('DISCOVERY'))
     if DEX_MODE and discovery_default_used:
         DISCOVERY_RAW = 'santiment'
@@ -2782,7 +2782,7 @@ def main():
 
 
 
-    # Define the grounding tool, gives us realtime searches 
+    # Define the grounding tool, gives us realtime searches
 
     grounding_tool = types.Tool(
 

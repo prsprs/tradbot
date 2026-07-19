@@ -1,5 +1,22 @@
 # Trading Bot Repository Guide
 
+> **⚠️ Breaking change (2026-07-19): live trading is no longer the default.**
+> A bare run now executes in **what-if** (simulation). To trade live you must
+> arm **both** locks — `--live` on the command line **and**
+> `LIVE_TRADING_CONFIRMED=1` in the shell environment (a `.env` copy is
+> ignored on purpose). Existing cron entries that relied on the old live
+> default will silently run in what-if until updated:
+>
+> ```bash
+> LIVE_TRADING_CONFIRMED=1 ./venv/bin/python crypto_trading_bot.py --live --coins=BTC,ETH
+> ```
+>
+> Also run `pip install -r requirements.txt` — dependency floors were raised
+> (old versions crash 2 of the 5 LLM panelists). The same interlock now
+> guards `leading_indicator_tester.py` and `lp_arbitrage.py`. Full
+> migration notes: [docs/SUPERSEDED.md](docs/SUPERSEDED.md) and
+> [docs/MERGE_PROPOSAL_josh_to_main.md](docs/MERGE_PROPOSAL_josh_to_main.md) §2.
+
 A comprehensive cryptocurrency trading system combining AI-powered analysis, multi-exchange support, correlation-based strategies, and arbitrage detection.
 
 ---

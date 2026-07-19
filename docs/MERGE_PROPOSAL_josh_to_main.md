@@ -3,7 +3,9 @@
 **Prepared for Josh. Agents never push or merge — this is a briefing to
 execute and time the merge yourself.** Nothing here has been pushed.
 
-`josh` is **13 commits / 100 files / +18k−4k lines** ahead of `origin/main`
+`josh` is **25 commits / 174 files / +26k−15k lines** ahead of `origin/main`
+(re-verified 2026-07-19 evening after the full backlog landed; `main` has
+**zero** divergent commits, so this is a clean fast-forward candidate)
 (`github.com/prsprs/tradbot`). `main` — the branch other users run against
 their own Coinbase accounts — is a **live-by-default bot with none of the
 safety machinery** (no double lock, no fail-closed panel, no execution
@@ -74,8 +76,10 @@ Ordered by how likely they are to bite. Full detail per row in
 
 ## 3. Suite status
 
-`./venv/bin/python -m pytest tests/ -q` → **723 passed** (0 failures, run
-against the current working tree). `import crypto_trading_bot` is
+`./venv/bin/python -m pytest tests/ -q` → **798 passed** (0 failures,
+re-verified 2026-07-19 evening at `josh` HEAD after all commits landed;
+the 723 figure elsewhere in same-day docs is an earlier point-in-time
+count). `import crypto_trading_bot` is
 side-effect-free; bare `pytest --collect-only` no longer touches the exchange
 (scoped by `pytest.ini`, real-swap scripts renamed `probe_*`).
 
@@ -108,9 +112,46 @@ Verified at prep time: those files are still on disk and now git-ignored.
    README currently states "private, all rights reserved" (README.md:268).
    Decide whether that line suffices or a formal `LICENSE` file should land
    with the merge.
-5. **Merge shape.** `josh` is 13 clean commits ahead; decide fast-forward /
-   merge-commit / (not recommended) squash — a merge commit preserves the
-   money-path/infra commit separation that the commit plan built.
+5. **Merge shape.** `josh` is 25 clean commits ahead with no divergent
+   `main` commits; decide fast-forward / merge-commit / (not recommended)
+   squash — a merge commit preserves the money-path/infra commit separation
+   that the commit plan built.
+
+## 6. Pre-merge checklist (added 2026-07-19 evening, post-landing review)
+
+An independent pre-merge review confirmed the branch is a net improvement
+and merge-ready, with these items to settle **before** pushing:
+
+1. **Notify every live `main` user first (blocking).** §2.1 is a silent
+   behavior change for them: their cron/launch commands keep "working" but
+   stop trading live. Nobody should discover this from a quiet bot. The
+   merged README now carries a breaking-change banner at the top, but the
+   banner only helps people who look — send the §2 migration directly to
+   the user roster before the merge, not after.
+2. **Real order details in `docs/ACCEPTANCE_RESULTS_2026-07-19.md` (owner
+   decision).** The acceptance record contains a real order id, fill
+   qty/price, and fees from the owner's account (its `run_id` also appears
+   in `tests/fixtures/coinbase/duplicate_rejection.json`, kept deliberately
+   per AGENTS.md). This is the owner's own data, committed knowingly as
+   live-acceptance evidence, and it is already in `josh`'s committed
+   history — which is never rewritten (GV-1) — so redacting the file now
+   would remove nothing from history while destroying the evidentiary
+   record. Recommendation: **keep it**, acknowledged here as intentional.
+   If the owner prefers not to propagate it to the shared remote at all,
+   the only real option is deciding that *before* the first push of these
+   commits, since redaction-after-push is cosmetic.
+3. **Whitespace: settled.** The two trailing-whitespace lines in
+   `crypto_trading_bot.py` are fixed; the remaining `git diff --check`
+   noise is entirely frozen lab/CSV session artifacts, which stay as-is
+   (stamped records are never retouched).
+4. **Deliberately uncommitted leftovers are not merge blockers.** The
+   working tree's `EVALUATION_LESSONS_LEARNED_2026-07-18.md` edit (owner's)
+   and `scripts/backfill_trading_mode.*` (GV-5, run/track/discard decision
+   pending) are intentionally outside the 25 commits — they ride on no one's
+   merge and can be decided any time.
+5. **At merge time, re-verify fresh** rather than trusting this document's
+   numbers: `git rev-list --count main..josh`, the suite count, and a last
+   `git status` — same-day counts have already drifted twice (723→790→798).
 
 ---
 
