@@ -19,21 +19,32 @@ This repository contains multiple interconnected projects for cryptocurrency tra
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Create a virtualenv and install dependencies
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+./venv/bin/pip install -r requirements_dev.txt   # only needed to run tests
+# Feature extras (install if you use the feature):
+#   requirements_correlation_tracker.txt -- correlation_tracker.py; without it
+#     the Granger causality test is skipped (statsmodels)
+#   requirements_dex.txt                 -- DEX / Solana trading
+#   requirements_llm_compare.txt         -- standalone llm_compare.py
 
-# Set API keys
-export GOOGLE_API_KEY=...     # Gemini
-export CLAUDE_API_KEY=...     # Claude
-export COINBASE_API_KEY=...   # Coinbase trading
+# Set API keys: copy .env.example to .env and fill in your keys
+cp .env.example .env
+# .env loads automatically at startup; shell `export`s still work and take
+# precedence over .env values.
 
-# Run main trading bot (defaults to what-if / simulation — no real trades)
-python crypto_trading_bot.py --llm-mode compare
+# Coinbase credentials file (required even for what-if runs -- the bot
+# constructs the Coinbase client unconditionally on startup). Download this
+# from the Coinbase Developer Platform and place it at the repo root:
+#   cdp_api_key.json
+
+# Run main trading bot in what-if / simulation mode -- no real trades.
+# HISTORY_DIR redirects history output away from the repo's history/ dir,
+# which is recommended for first runs. --llm-mode=gemini uses a single LLM
+# (one API key); drop it to use the full 5-model consensus panel.
+HISTORY_DIR=/tmp/tradbot_scratch ./venv/bin/python crypto_trading_bot.py --trading-mode=whatif --llm-mode=gemini --coins=BTC
 ```
-
-Alternatively, instead of `export`, copy `.env.example` to `.env` and fill in
-your keys — the bot loads it automatically at startup. Shell `export`s still
-work and take precedence over `.env` values.
 
 ### Trading mode & the live-trading double lock
 
@@ -47,6 +58,10 @@ double-locked and requires **both**:
 # Live trading (executes REAL orders): BOTH locks required
 LIVE_TRADING_CONFIRMED=1 python crypto_trading_bot.py --live --llm-mode compare
 ```
+
+`LIVE_TRADING_CONFIRMED` **must be set in the shell per invocation** (as above).
+If it appears in `.env` it is stripped and ignored, and the bot prints a
+`[LIVE LOCK]` notice — a checked-in config file can never arm live trading.
 
 Any live request that is missing either lock is automatically downgraded to
 what-if, and the bot prints a loud notice explaining what was missing. Trade
@@ -120,15 +135,15 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 
 | Project | Description | Design Doc | Operations Manual | Status | Main Module | Comments |
 |---------|-------------|------------|-------------------|--------|-------------|----------|
-| **Crypto Trading Bot** | AI-powered trading using multi-LLM consensus | [CRYPTO_TRADING_BOT.md](CRYPTO_TRADING_BOT.md) | [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) | ✅ Implemented | `crypto_trading_bot.py` | Core system - Gemini, Claude, OpenAI, Grok, Perplexity |
-| **LLM Compare** | Multi-LLM comparison and integration framework | [LLMCompareFeature.md](LLMCompareFeature.md) | [LLM_COMPARE_OPERATIONS_MANUAL.md](LLM_COMPARE_OPERATIONS_MANUAL.md) | ✅ Implemented | `llm_compare.py` | General-purpose LLM comparison tool |
+| **Crypto Trading Bot** | AI-powered trading using multi-LLM consensus | [AGENTS.md](AGENTS.md) / [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) (current) — [design doc, superseded](docs/design/CRYPTO_TRADING_BOT.md) | [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) | ✅ Implemented | `crypto_trading_bot.py` | Core system - Gemini, Claude, OpenAI, Grok, Perplexity |
+| **LLM Compare** | Multi-LLM comparison and integration framework | [README_LLM_COMPARE.md](README_LLM_COMPARE.md) (current) — [design doc, superseded](docs/design/LLMCompareFeature.md) | [LLM_COMPARE_OPERATIONS_MANUAL.md](LLM_COMPARE_OPERATIONS_MANUAL.md) | ✅ Implemented | `llm_compare.py` | General-purpose LLM comparison tool |
 | **Correlation Tracker** | Intraday price collection and leading indicator discovery | [CORRELATION_HISTORY_TRACKER.md](CORRELATION_HISTORY_TRACKER.md) | [CORRELATION_HISTORY_OPERATIONS_MANUAL.md](CORRELATION_HISTORY_OPERATIONS_MANUAL.md) | ✅ Implemented | `correlation_tracker.py` | Collect mode + Analyze mode |
 | **Leading Indicator Tester** | Paper trading simulation for correlation pairs | [LEADING_INDICATOR_PERFORMANCE_TESTER.md](LEADING_INDICATOR_PERFORMANCE_TESTER.md) | — | ✅ Implemented | `leading_indicator_tester.py` | Cross-exchange arbitrage investigation |
 | **DEX Trading** | Solana DEX trading via Jupiter aggregator | [DEX_TRADING_FEATURE.md](DEX_TRADING_FEATURE.md) | — | ✅ Implemented | `dex/jupiterutil.py` | Wallet connect, token swaps, price API |
 | **Liquidity Pool Arbitrage** | JLP premium/discount arbitrage on Jupiter | [LIQUIDITY_POOL_FEATURE.md](LIQUIDITY_POOL_FEATURE.md) | [LIQUIDITY_POOL_OPERATIONS_MANUAL.md](LIQUIDITY_POOL_OPERATIONS_MANUAL.md) | ✅ Implemented | `lp_arbitrage.py` | Also supports HyperLiquid, Drift |
-| **Correlated Pair Trading** | Cross-exchange arbitrage for wrapped tokens | [CORRELATED_PAIR_FEATURE.md](CORRELATED_PAIR_FEATURE.md) | — | 📋 Design Only | — | TAO/WTAO, BTC/WBTC strategies |
-| **Flash Loan Arbitrage** | Atomic arbitrage using flash loans | [FLASH_LOAN_FEATURE.md](FLASH_LOAN_FEATURE.md) | — | 📋 Design Only | — | Zero-capital atomic trades |
-| **Meteora Arbitrage** | DLMM bin arbitrage on Meteora | [METEORA_ARBITRAGE_FEATURE.md](METEORA_ARBITRAGE_FEATURE.md) | — | 📋 Design Only | — | Solana concentrated liquidity |
+| **Correlated Pair Trading** | Cross-exchange arbitrage for wrapped tokens | [CORRELATED_PAIR_FEATURE.md](docs/design/CORRELATED_PAIR_FEATURE.md) | — | 📋 Design Only | — | TAO/WTAO, BTC/WBTC strategies |
+| **Flash Loan Arbitrage** | Atomic arbitrage using flash loans | [FLASH_LOAN_FEATURE.md](docs/design/FLASH_LOAN_FEATURE.md) | — | 📋 Design Only | — | Zero-capital atomic trades |
+| **Meteora Arbitrage** | DLMM bin arbitrage on Meteora | [METEORA_ARBITRAGE_FEATURE.md](docs/design/METEORA_ARBITRAGE_FEATURE.md) | — | 📋 Design Only | — | Solana concentrated liquidity |
 
 ---
 
@@ -138,12 +153,12 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 |---------|-------------|------------|--------|--------|----------|
 | **Coin Categorization** | Filter coins by category (meme, DeFi, AI) | [COIN_CATEGORIZATION_FEATURE.md](COIN_CATEGORIZATION_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Uses LunarCrush API |
 | **Coin Choice** | Analyze specific coins directly | [COIN_CHOICE_FEATURE.md](COIN_CHOICE_FEATURE.md) | ✅ Implemented | `crypto_trading_bot.py` | `--coins` flag or `ANALYZE_COINS` env |
-| **Compare with Bitcoin** | Evaluate altcoin alpha vs BTC | [COMPARE_WITH_BITCOIN_FEATURE.md](COMPARE_WITH_BITCOIN_FEATURE.md) | 📋 Design Only | — | Risk-adjusted comparison |
+| **Compare with Bitcoin** | Evaluate altcoin alpha vs BTC | [COMPARE_WITH_BITCOIN_FEATURE.md](docs/design/COMPARE_WITH_BITCOIN_FEATURE.md) | 📋 Design Only | — | Risk-adjusted comparison |
 | **History Analysis** | Track and analyze recommendation accuracy | [HISTORY_ANALYSIS_FEATURE.md](HISTORY_ANALYSIS_FEATURE.md) | ✅ Implemented | `historyutil.py` | Performance metrics by LLM |
 | **LunarCrush Integration** | Social intelligence data for coins | [LUNAR_CRUSH_FEATURE.md](LUNAR_CRUSH_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Categories, blockchains, sentiment |
 | **Polymarket Integration** | Prediction market sentiment data | [POLYMARKET_FEATURE.md](POLYMARKET_FEATURE.md) | ✅ Implemented | `polymarketutil.py` | Market-validated coin selection |
-| **Stock Trading** | Extend bot to Coinbase stock trading | [STOCK_TRADING_FEATURE.md](STOCK_TRADING_FEATURE.md) | 📋 Design Only | — | US equities via Coinbase |
-| **Whale Alert** | Large transaction tracking | [WHALE_ALERT_INTEGRATION_FEATURE.md](WHALE_ALERT_INTEGRATION_FEATURE.md) | 📋 Design Only | — | Exchange inflow/outflow signals |
+| **Stock Trading** | Extend bot to Coinbase stock trading | [STOCK_TRADING_FEATURE.md](docs/design/STOCK_TRADING_FEATURE.md) | 📋 Design Only | — | US equities via Coinbase |
+| **Whale Alert** | Large transaction tracking | [WHALE_ALERT_INTEGRATION_FEATURE.md](docs/design/WHALE_ALERT_INTEGRATION_FEATURE.md) | 📋 Design Only | — | Exchange inflow/outflow signals |
 | **What-If Mode** | Paper trading / simulation mode | [WHAT_IF_MODE_FEATURE.md](WHAT_IF_MODE_FEATURE.md) | ✅ Implemented | `crypto_trading_bot.py` | `--trading-mode whatif` |
 
 ---
@@ -156,17 +171,17 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 | [MODELS.md](MODELS.md) | LLM model registry, migration history, per-provider request/response shapes |
 | [docs/RUNBOOK_whatif_cadence.md](docs/RUNBOOK_whatif_cadence.md) | Scheduled what-if runs that feed `tradeanalyzer.py`'s benchmark-relative scoring |
 | [docs/RUNBOOK_live_acceptance.md](docs/RUNBOOK_live_acceptance.md) | Owner-executed live acceptance test (the one supervised real trade) |
-| [INSTRUCTIONS_FOR_IMPLEMENTATION.md](INSTRUCTIONS_FOR_IMPLEMENTATION.md) | Guidelines for implementing features |
+| [docs/archive/INSTRUCTIONS_FOR_IMPLEMENTATION.md](docs/archive/INSTRUCTIONS_FOR_IMPLEMENTATION.md) | Guidelines for implementing features (historical) |
 | [METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md](METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md) | CLI vs env var configuration patterns |
 | [PARSING_OPTIONS_FOR_VARIABLE_INPUT.md](PARSING_OPTIONS_FOR_VARIABLE_INPUT.md) | Handling variable LLM output formats |
-| [GENERAL_PURPOSE_LLM_COMPARE_AND_INTEGRATE_FEATURE.md](GENERAL_PURPOSE_LLM_COMPARE_AND_INTEGRATE_FEATURE.md) | Abstracted multi-LLM framework design |
+| [docs/design/GENERAL_PURPOSE_LLM_COMPARE_AND_INTEGRATE_FEATURE.md](docs/design/GENERAL_PURPOSE_LLM_COMPARE_AND_INTEGRATE_FEATURE.md) | Abstracted multi-LLM framework design (superseded — see [README_LLM_COMPARE.md](README_LLM_COMPARE.md)) |
 
 ---
 
 ## Directory Structure
 
 ```
-tradingbot/
+tradbot/
 ├── crypto_trading_bot.py      # Main trading bot
 ├── llm_compare.py            # General-purpose LLM comparison
 ├── correlation_tracker.py    # Price collection & correlation analysis
@@ -187,12 +202,27 @@ tradingbot/
 │   ├── grok_client.py
 │   └── perplexity_client.py
 │
-├── history/                  # Recommendation history tracking
+├── history/                  # Recommendation history tracking (gitignored allowlist; per-user data written at runtime)
+├── live_trades/               # Live trade fill logs (gitignored, per-user, created at runtime)
 ├── context/                  # Google Trends integration
 ├── prompts/                  # LLM prompt templates
-├── correlation_data/         # Price history storage
-├── paper_trades/             # Paper trading logs
+├── correlation_data/         # Price history storage (gitignored, created at runtime)
 └── lab/                      # Experimental scripts
+```
+
+### Runtime path
+
+The diagram below restates the prose architecture map in
+[AGENTS.md](AGENTS.md) (see "Architecture map (runtime path vs the rest)") —
+no new information, just a visual of the same path.
+
+```mermaid
+flowchart LR
+    A["crypto_trading_bot.py<br/>main loop, consensus (PanelDecision),<br/>trade gate"] --> B["marketdata.py<br/>Coinbase OHLCV + Fibonacci block<br/>(CMC / SOCIAL / Trends secondaries)"]
+    B --> C["Provider utils<br/>claudeutil.py / openaiutil.py /<br/>grokutil.py / perplexityutil.py<br/>(Gemini called inline)"]
+    C --> D["coinbaseutil2.py<br/>orders, fill confirmation"]
+    D --> E["historyutil.py<br/>recommendations"]
+    D --> F["executionledger.py<br/>intent/fill rows, positions, daily cap"]
 ```
 
 ---
@@ -241,3 +271,7 @@ tradingbot/
 
 ### I want to compare multiple LLMs on any question
 → See [README_LLM_COMPARE.md](README_LLM_COMPARE.md) and `llm_compare.py`
+
+---
+
+**License:** private, all rights reserved.
