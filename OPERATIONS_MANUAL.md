@@ -468,17 +468,33 @@ Discovers top volume movers within filtered category/chain. Auto-refreshes cache
 
 ## Regression Testing
 
-Test data files are provided for regression testing the analyzer:
+The analyzer's behavior is pinned by `tests/test_analyzer.py` (synthetic
+fixtures in `tmp_path`, no network, no real history) — run
+`./venv/bin/python -m pytest tests/test_analyzer.py -q`. That is the canonical
+regression check.
+
+The legacy demo files `history/test_recommendation_data.json` and
+`history/test_expected_output.csv` predate the T10 overhaul and predate the
+`trading_mode` field (T2). They are kept for reference only:
+
+- Their records carry **no `trading_mode`**, so the current analyzer classifies
+  them all as `excluded_unknown` (excluded from scoring, reported in a count
+  line) — the fixture now exercises the unknown-exclusion path, not scoring.
+- `test_expected_output.csv` describes the **old** CSV columns. The overhauled
+  analyzer writes per-mode files (`analysis_live_YYYYMMDD.csv`,
+  `analysis_whatif_YYYYMMDD.csv`) with benchmark-relative columns
+  (`coin_return_pct`, `benchmark_return_pct`, `fee_floor_pct`, `fee_source`,
+  `excess_return_pct`, `outcome`, `category`, ...) — it does not reproduce the
+  old file.
+
+To exercise real benchmark-relative scoring by hand, run the analyzer against a
+history whose records carry `trading_mode` `live`/`whatif` (e.g. one produced by
+a what-if cadence — see `docs/RUNBOOK_whatif_cadence.md`):
 
 ```bash
-# Copy test data to live location
-cp history/test_recommendation_data.json history/recommendations.json
-
-# Run analyzer
-python tradeanalyzer.py
-
-# Compare output structure against test_expected_output.csv
-# Note: Actual prices will vary, so outcome values may differ
+HISTORY_DIR=/tmp/tradbot_scratch python tradeanalyzer.py --help   # see all flags
+HISTORY_DIR=/tmp/tradbot_scratch python tradeanalyzer.py          # full scoring
+HISTORY_DIR=/tmp/tradbot_scratch python tradeanalyzer.py --offline  # structural, no network
 ```
 
 ---
