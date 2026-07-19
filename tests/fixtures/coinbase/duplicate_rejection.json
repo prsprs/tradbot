@@ -1,0 +1,29 @@
+{
+  "_captured": "2026-07-19T03:00Z live acceptance, RUNBOOK_live_acceptance.md §7",
+  "_finding": "Coinbase Advanced Trade does NOT reject a duplicate client_order_id with an error. Re-submitting the same client_order_id (market_order_buy, same product) returns success=true with the ORIGINAL order_id and does not create a second order or move funds (idempotent dedupe). There is no error text, so _looks_like_duplicate can never fire on the real duplicate shape; the correct duplicate signal is success_response.order_id matching an order_id already recorded in the execution ledger for that client_order_id.",
+  "_original_fill": {
+    "order_id": "00fc688f-2cf6-427d-9495-096098cb8a2f",
+    "client_order_id": "run_20260719T025131Z-ETH-buy",
+    "filled_size": "0.00264045",
+    "avg_price": "1870.89"
+  },
+  "duplicate_resubmit_response": {
+    "success": true,
+    "success_response": {
+      "order_id": "00fc688f-2cf6-427d-9495-096098cb8a2f",
+      "product_id": "ETH-USD",
+      "side": "BUY",
+      "client_order_id": "run_20260719T025131Z-ETH-buy",
+      "attached_order_id": ""
+    },
+    "order_configuration": {
+      "market_market_ioc": {
+        "quote_size": "5.00",
+        "rfq_enabled": false,
+        "rfq_disabled": false,
+        "reduce_only": false,
+        "currency_size": null
+      }
+    }
+  }
+}
