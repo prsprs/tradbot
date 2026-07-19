@@ -8,19 +8,25 @@ import json
 import os
 import sys
 import time
+import traceback
+import uuid
 
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+# TS-3 (audit 2026-07-19): load_dotenv() is called in main(), NOT here --
+# importing this module must not mutate os.environ from a developer's .env
+# (the import-purity invariant is pinned by tests/test_import_purity.py).
+# Modules below that snapshot env values at import time are re-resolved in
+# main() right after load_dotenv() -- see _refresh_env_snapshots().
 from dotenv import load_dotenv
-load_dotenv()
 
 from coinbase.rest import RESTClient
 
 from coinbaseutil2 import BlobbyTrader 
 
-from claudeutil import ClaudeTrader, compare_recommendations, get_consensus_action
+from claudeutil import ClaudeTrader
 
 from openaiutil import OpenAITrader
 
@@ -28,18 +34,24 @@ from grokutil import GrokTrader
 
 from perplexityutil import PerplexityTrader
 
+import historyutil
 from historyutil import record_recommendation
 
 import executionledger
+
+import coinmarketcaputil
 
 from modelregistry import get_model
 
 import llmpreflight
 
+import panelprompts
+
 import voteschema
 
 import marketdata
 
+import lunarcrushutil
 from lunarcrushutil import filter_from_cache, cache_exists, get_cache_age
 
 from polymarketutil import filter_coins_by_polymarket
@@ -63,6 +75,9 @@ Examples:
   
 Environment variables can also be used (CLI takes precedence):
   TRADING_MODE, LLM_MODE, PRIMARY_LLM, COMPARE_LLMS, ANALYZE_COINS, etc.
+
+Set HISTORY_DIR to redirect history/ledger output to a scratch directory
+(recommended for test runs and first-time use).
 """
     )
     
@@ -125,7 +140,12 @@ Environment variables can also be used (CLI takes precedence):
             'Maximum cumulative intended LIVE USD spend across ALL runs in a '
             'single UTC day (default: 15.00), summed from the execution ledger. '
             'A live buy that would exceed it is refused with [DAILY CAP]. '
-            'What-if spend does NOT count against this cap.'
+            'What-if spend does NOT count against this cap. '
+            'Accounting contract (MP-10): every live INTENT row counts toward '
+            'the cap -- including intents whose order later failed -- except '
+            'attempts whose fill was marked duplicate_of (Coinbase idempotent '
+            'dedupe: no second fill, so only the original intent counts); '
+            'fees are excluded (intended notional only).'
         )
     )
 
@@ -197,12 +217,29 @@ Environment variables can also be used (CLI takes precedence):
         help='Tiebreaker LLM when no consensus (default: gemini)'
     )
     
-    # Log integration rounds
+    # Log integration rounds. When true (default), each panelist's FULL
+    # response is captured to <HISTORY_DIR>/panel_responses/<run_id>.log and the
+    # console shows a concise per-panelist summary plus one pointer line. When
+    # false, that capture is suppressed entirely.
     parser.add_argument(
         '--log-rounds',
         choices=['true', 'false'],
         default=os.environ.get('LOG_INTEGRATION_ROUNDS', 'true').lower(),
-        help='Log integration round details (default: true)'
+        help='Capture full panelist responses to the per-run panel_responses '
+             'log file (default: true). false suppresses the capture.'
+    )
+
+    # Escape hatch: also echo every panelist's FULL response inline on the
+    # console (the pre-LG-3 behavior). Off by default so multi-thousand-word
+    # grok/perplexity essays no longer bury the [COMPARISON] verdicts; the full
+    # text is always in the panel_responses log regardless.
+    parser.add_argument(
+        '--show-responses',
+        action='store_true',
+        default=os.environ.get('SHOW_PANEL_RESPONSES', 'false').lower() == 'true',
+        help='Also print each panelist full response inline on the console '
+             '(default: false; full text is always written to the '
+             'panel_responses log file either way)'
     )
     
     # Discovery method
@@ -306,6 +343,73 @@ def get_config_source(arg_name, env_name):
     if os.environ.get(env_name):
         return f"{env_name} env"
     return "default"
+
+
+def format_daily_cap_banner_line(cap, source):
+    """One startup-banner line: the daily LIVE spend cap plus how much of
+    today's (UTC) cap is already committed across all runs.
+
+    'spent today' REUSES executionledger.live_spend_today() -- the SAME
+    daily-sum (intended_spend_on_date over LIVE intent rows for the current
+    UTC day) that the live daily-cap gate consults before every buy (see
+    maybe_execute_buy). No second parallel implementation, and no new lock
+    path: live_spend_today() reads the ledger lock-free via load_executions(),
+    exactly like the run-start `[LEDGER] daily snapshot` read above -- so this
+    never touches the ledger_lock and can't interact with the recommendations
+    lock ordering AGENTS.md warns about.
+
+    The cap is only consulted when a BUY is attempted, so without this line a
+    HOLD/SELL run gives the operator zero cap visibility. Degrades gracefully:
+    a missing/empty ledger sums to $0.00; a corrupt/unreadable ledger NEVER
+    crashes the banner (mirrors the non-fatal snapshot handling) -- it renders
+    'spent today unknown' instead.
+    """
+    try:
+        spent = executionledger.live_spend_today()
+        spent_str = f"${spent:.2f} spent today [UTC]"
+    except Exception as e:  # corrupt/unreadable ledger -> non-fatal banner
+        spent_str = f"spent today unknown [UTC] (ledger unreadable: {e})"
+    return f"Daily spend cap: ${cap:.2f} ({spent_str}) [{source}]"
+
+
+def vote_outcome_label(final_action, dispatched):
+    """One coin's compact outcome label for the RUN SUMMARY vote table.
+
+    `final_action` is the PanelDecision.action already computed at the call
+    site (None when the decision was blocked/abstained -- see PanelDecision's
+    docstring). `dispatched` is gate_and_maybe_buy's return value: True iff
+    the mode-aware trade gate approved the action AND it was a BUY dispatched
+    to maybe_execute_buy (which may still refuse it on a spend cap or the
+    exclusion list -- this label reflects gate approval + dispatch, not a
+    confirmed fill, same intent-vs-fill distinction coinsToBuy already makes
+    for excluded coins, see maybe_execute_buy's MP-6a/MP-9 comment).
+
+    HOLD/SELL actions render as-is (no SELL execution path exists today --
+    see gate_and_maybe_buy's [NO SELL PATH] handling -- so a SELL is never
+    'dispatched'). A BUY that the trade gate declined (e.g. REQUIRE_CONSENSUS
+    with a tiebreaker-only decision) renders '->gate-blocked' rather than
+    silently looking identical to an ordered one.
+    """
+    if not final_action:
+        return 'BLOCKED'
+    if 'BUY' in final_action:
+        return f"{final_action}->{'ordered' if dispatched else 'gate-blocked'}"
+    return final_action
+
+
+def format_vote_outcomes_line(outcomes):
+    """Compact per-coin vote table for the RUN SUMMARY, e.g.:
+
+        Votes: BTC HOLD | ETH HOLD | SOL HOLD | DOGE BUY->ordered | LINK HOLD
+
+    `outcomes` is a list of (coin_symbol, label) pairs in analysis order
+    (see coin_vote_outcomes / vote_outcome_label). Returns '' when there are
+    no outcomes (e.g. a zero-coin run) so the caller can skip the line
+    entirely rather than print a bare 'Votes:'.
+    """
+    if not outcomes:
+        return ''
+    return "Votes: " + " | ".join(f"{coin} {label}" for coin, label in outcomes)
 
 
 # === T9: real Coinbase market data injection (plan Phase 2) ==================
@@ -511,13 +615,12 @@ def sendCoinCheckRequest(coin, market_block=None):
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
     # T9: market_block (Coinbase market data + fib + demoted trends + grounding)
-    # is prepended as the PRIMARY data section when present.
-    prefix = f"{market_block}\n\n" if market_block else ""
+    # is prepended as the PRIMARY data section when present (inside the builder).
 
     try:
         followUpResponse = client.models.generate_content(
             model=get_model('gemini'),
-            contents=f'{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now? {voteschema.schema_instruction(coin)}',
+            contents=panelprompts.coin_check_prompt(coin, coin_type, market_block),
             config=gemini_structured_config(),
         )
         return followUpResponse
@@ -532,28 +635,14 @@ def sendCoinCheckRequest(coin, market_block=None):
 def sendTrendCheckRequest(coin, trends_data=None, market_block=None):
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
-    # T9: market_block prepended as the PRIMARY data section when present.
-    prefix = f"{market_block}\n\n" if market_block else ""
-
-    # Build trends section if data is available
-    trends_section = ""
-    if trends_data:
-        trends_section = f"""
-
-Here is the actual Google Trends data we collected:
-
----BEGIN GOOGLE TRENDS DATA---
-{trends_data}
----END GOOGLE TRENDS DATA---
-
-Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
-
-Use this data in your analysis. """
+    # T9: market_block prepended as the PRIMARY data section when present
+    # (inside the builder).
 
     try:
         followUpResponse = client.models.generate_content(
             model=get_model('gemini'),
-            contents=f'{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin} right now?{trends_section}{voteschema.schema_instruction(coin)}',
+            contents=panelprompts.trend_check_prompt(coin, coin_type,
+                                                     trends_data, market_block),
             config=gemini_structured_config(),
         )
         return followUpResponse
@@ -568,19 +657,10 @@ def sendIntegratedCoinCheckRequest(coin_symbol, peer_analysis, market_block=None
         return None
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
-    # T9: market_block prepended as the PRIMARY data section when present.
-    prefix = f"{market_block}\n\n" if market_block else ""
-    prompt = f"""{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin_symbol} right now?
-
-Additionally, consider the following analysis from another AI system:
-
----BEGIN PEER ANALYSIS---
-{peer_analysis}
----END PEER ANALYSIS---
-
-After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
-
-{voteschema.schema_instruction(coin_symbol)}"""
+    # T9: market_block prepended as the PRIMARY data section when present
+    # (inside the builder).
+    prompt = panelprompts.integrated_coin_check_prompt(
+        coin_symbol, coin_type, peer_analysis, market_block)
 
     try:
         followUpResponse = client.models.generate_content(
@@ -600,34 +680,10 @@ def sendIntegratedTrendCheckRequest(coin_symbol, peer_analysis, trends_data=None
         return None
     # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
     coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
-    # T9: market_block prepended as the PRIMARY data section when present.
-    prefix = f"{market_block}\n\n" if market_block else ""
-
-    # Build trends section if data is available
-    trends_section = ""
-    if trends_data:
-        trends_section = f"""
-Here is the actual Google Trends data we collected:
-
----BEGIN GOOGLE TRENDS DATA---
-{trends_data}
----END GOOGLE TRENDS DATA---
-
-Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
-
-"""
-
-    prompt = f"""{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {coin_type} with symbol {coin_symbol} right now?
-{trends_section}
-Additionally, consider the following analysis from another AI system:
-
----BEGIN PEER ANALYSIS---
-{peer_analysis}
----END PEER ANALYSIS---
-
-After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
-
-{voteschema.schema_instruction(coin_symbol)}"""
+    # T9: market_block prepended as the PRIMARY data section when present
+    # (inside the builder).
+    prompt = panelprompts.integrated_trend_check_prompt(
+        coin_symbol, coin_type, peer_analysis, trends_data, market_block)
 
     try:
         followUpResponse = client.models.generate_content(
@@ -950,6 +1006,10 @@ def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None,
                 response_text = (resp.text or "") if resp else None
     except Exception as e:
         print(f"Error getting {llm_name} response: {e}")
+        # LG-2: full traceback for unattended (cron) runs -- the one-line
+        # str(e) was the only clue an operator got. Logging only; the
+        # fail-closed return (None -> abstain('error') upstream) is unchanged.
+        traceback.print_exc()
         return None, None
 
     rec = resolve_vote(llm_name, response_text, coin_symbol)
@@ -959,8 +1019,14 @@ def get_llm_response(llm_name, coin_symbol, use_trend_check, peer_analysis=None,
 # === T8 structured-output migration (plan Phase 2) ===
 #
 # Analysis votes (Round 1, Round 2, and solo-mode checks) arrive as
-# schema-enforced JSON from the native structured-output providers; grok and
-# perplexity keep the delimiter-tag parser as a loudly-logged fallback.
+# schema-enforced JSON from native structured output. gemini/claude/openai are
+# ALWAYS structured (STRUCTURED_VOTE_PROVIDERS below). grok/perplexity were
+# migrated to native structured output too (phase 2, 2026-07-19): each attempts
+# the schema request first and keeps the delimiter-tag parser as a fallback
+# used ONLY when the provider rejects the schema PARAMETER itself. Which path a
+# grok/perplexity response took is carried on the response string
+# (voteschema.tag_vote_path) and read here — it can't be inferred from the
+# bytes without reviving the exact refusal-scraped-into-a-BUY bug this removes.
 # Discovery parsing (+++SYM+++) is untouched.
 
 STRUCTURED_VOTE_PROVIDERS = ('gemini', 'claude', 'openai')
@@ -976,20 +1042,30 @@ def resolve_vote(llm_name, response_text, coin_symbol):
       None                  — no response at all (the tallies' legacy
                               'error'/'parse_failure' mapping applies).
 
-    Structured providers (gemini/claude/openai) parse JSON against the vote
-    schema — a delimiter tag in their output no longer counts for anything.
-    Fallback providers (grok/perplexity) use the hardened delimiter parser,
-    with every parse loudly logged as [FALLBACK PARSER], plus the same
+    Routing: gemini/claude/openai (STRUCTURED_VOTE_PROVIDERS) always parse JSON
+    against the vote schema. grok/perplexity route by the path tag their util
+    stamped on the response — 'structured' -> the same JSON parser; 'fallback'
+    (provider rejected the schema parameter, util re-requested with the
+    delimiter tag) -> the hardened delimiter parser. A structured response that
+    returned garbage fails closed to abstain('parse_failure') in the JSON
+    parser; it is NEVER re-parsed as a delimiter tag. An untagged string from a
+    non-structured provider keeps the legacy delimiter path (back-compat).
+    Every delimiter parse is loudly logged as [FALLBACK PARSER], with the same
     conservative symbol binding applied to the tag's symbol prefix.
     """
     if response_text is None:
         return None
-    if llm_name in STRUCTURED_VOTE_PROVIDERS:
+    path = voteschema.vote_path_of(response_text)
+    if llm_name in STRUCTURED_VOTE_PROVIDERS or path == 'structured':
         return voteschema.resolve_structured_vote(llm_name, response_text, coin_symbol)
     if not response_text.strip():
         return None  # empty fallback response: legacy mapping in the tallies
-    print(f"[FALLBACK PARSER] {llm_name}/{coin_symbol}: structured output not "
-          "enabled for this provider; parsing delimiter tag")
+    if path == 'fallback':
+        print(f"[FALLBACK PARSER] {llm_name}/{coin_symbol}: provider rejected the "
+              "structured-output schema parameter; parsing the delimiter-tag request")
+    else:
+        print(f"[FALLBACK PARSER] {llm_name}/{coin_symbol}: no structured output "
+              "for this provider; parsing delimiter tag")
     tag_symbol, rec = extract_tagged_vote(response_text)
     if rec is None:
         # F6 instrumentation (measured 2026-07-18, semantics unchanged):
@@ -1163,6 +1239,121 @@ def validate_tiebreaker_config(tiebreaker, primary_llm, llm_mode):
     return tiebreaker
 
 
+def warn_if_primary_off_panel(primary_llm, compare_llms, llm_mode):
+    """MP-5 (warn-only, owner decision #4, audit 2026-07-19): the voting panel
+    in process_coin_with_comparison is built from COMPARE_LLMS ONLY. When
+    PRIMARY_LLM is not in COMPARE_LLMS, its Round-1 analysis is still paid
+    for and printed -- but the panel never tallies it: the response text is
+    passed in and then ignored, and the primary casts no vote. That is almost
+    certainly a misconfiguration (paying for an analysis that cannot count),
+    so warn loudly at startup. No change to consensus math -- warn only.
+
+    Only relevant in the compare/integrate modes where the panel votes;
+    single-LLM modes never consult COMPARE_LLMS. Returns True iff the
+    warning fired (pure-ish: prints, but no state), so it is unit-testable
+    like validate_tiebreaker_config above.
+    """
+    if llm_mode not in ('compare', 'integrate'):
+        return False
+    if primary_llm in compare_llms:
+        return False
+    print("!" * 66)
+    print(f"[CONFIG WARNING] PRIMARY_LLM ('{primary_llm}') is not in COMPARE_LLMS "
+          f"({','.join(compare_llms)}).")
+    print("[CONFIG WARNING] The voting panel is built from COMPARE_LLMS only: the")
+    print("[CONFIG WARNING] primary's Round-1 analysis is paid for but its vote will")
+    print("[CONFIG WARNING] NOT count toward consensus. Add it to --compare-llms /")
+    print("[CONFIG WARNING] COMPARE_LLMS if you want it on the panel.")
+    print("!" * 66)
+    return True
+
+
+# === Panel-response log (LG-3, audit 2026-07-19) ==============================
+#
+# Grok and perplexity answer analysis prompts with multi-thousand-word essays.
+# A 5-coin compare run used to dump every panelist's FULL response inline, so
+# ~10 essays buried the one-line "[COMPARISON] gemini: HOLD, ..." verdicts an
+# operator actually reads (owner-observed 2026-07-19).
+#
+# Now the full text is captured to a per-run log file and the console keeps a
+# concise per-panelist summary plus ONE pointer line telling the operator where
+# the raw text went. The escape hatch --show-responses / SHOW_PANEL_RESPONSES
+# restores the old inline console dump for acceptance runs that want everything
+# on screen.
+#
+# Location: <HISTORY_DIR>/panel_responses/<run_id>.log. Keying off HISTORY_DIR
+# (rather than a fixed repo-relative path) means scratch/what-if runs that
+# already redirect history via HISTORY_DIR drop their transcripts in the same
+# scratch dir and never litter the repo. The repo default (./history/) is
+# already gitignored via `history/*`, so no per-user data is ever committed.
+#
+# Import purity: nothing here runs or creates a directory at import time; the
+# panel_responses/ dir is created lazily on the first write. Full text is never
+# truncated (acceptance runs must read raw LLM output).
+
+_panel_log_pointer_shown = False
+
+
+def _panel_response_log_path():
+    """Absolute-ish path of this run's panel-response log, keyed off HISTORY_DIR."""
+    base = getattr(historyutil, 'HISTORY_DIR', None) or os.environ.get('HISTORY_DIR', './history/')
+    run_id = globals().get('RUN_ID') or 'run_unknown'
+    return os.path.join(base, 'panel_responses', f'{run_id}.log')
+
+
+def _panel_response_summary(response_text, max_len=200):
+    """One-line console summary of a panelist response: vote + confidence +
+    FIRST reason for structured providers; the first non-empty line (the
+    essay's lede) for fallback providers. Never raises."""
+    try:
+        vote, _err = voteschema.parse_vote(response_text)
+    except Exception:
+        vote = None
+    if vote is not None:
+        action = 'ABSTAIN' if vote.abstain else vote.action
+        parts = [str(action), f"conf={vote.confidence:.2f}"]
+        reason = (vote.reasons[0].strip() if getattr(vote, 'reasons', None) else '')
+        if reason:
+            parts.append(reason[:max_len])
+        return ' | '.join(parts)
+    for line in (response_text or '').splitlines():
+        line = line.strip()
+        if line:
+            return line[:max_len]
+    return '(no visible text)'
+
+
+def log_panel_response(provider, coin_symbol, round_label, response_text):
+    """Capture one panelist's FULL response to the per-run panel-response log
+    and print a concise console summary (vote + confidence + first reason),
+    plus ONE pointer line per run.
+
+    With SHOW_PANEL_RESPONSES the full text is ALSO echoed inline (the legacy
+    behavior). Callers gate this on LOG_INTEGRATION_ROUNDS, so --log-rounds=false
+    still suppresses the capture entirely (unchanged 'quiet' semantics)."""
+    global _panel_log_pointer_shown
+    if not response_text:
+        return
+    if globals().get('SHOW_PANEL_RESPONSES', False):
+        print(f"\n--- {provider.capitalize()} {round_label} Response for {coin_symbol} ---")
+        print(response_text)
+    path = _panel_response_log_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(f"\n===== {ts} | {coin_symbol} | {provider} | {round_label} =====\n")
+            fh.write(response_text if response_text.endswith('\n') else response_text + '\n')
+    except OSError as e:
+        # Never let a logging failure derail the trading run.
+        print(f"[PANEL LOG] could not write {path}: {e}")
+        return
+    if not _panel_log_pointer_shown:
+        print(f"[PANEL LOG] full panelist responses -> {os.path.abspath(path)}")
+        _panel_log_pointer_shown = True
+    print(f"[PANEL] {provider}/{coin_symbol} {round_label}: {_panel_response_summary(response_text)}")
+
+
 def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_check=False, trends_data=None):
     """Process a coin recommendation with optional LLM comparison or integration.
 
@@ -1271,8 +1462,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             resp, rec = get_llm_response(llm, coin_symbol, use_trend_check, None, trends_data)
             tally_round1(llm, resp, rec)
             if resp and LOG_INTEGRATION_ROUNDS:
-                print(f"\n--- {llm.capitalize()} Round 1 Response for {coin_symbol} ---")
-                print(resp)
+                log_panel_response(llm, coin_symbol, 'Round 1', resp)
 
         def votes_display(votes, abstains):
             display = {}
@@ -1380,9 +1570,8 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             else:
                 r2_abstains[llm] = 'error' if not resp else 'parse_failure'
 
-            if LOG_INTEGRATION_ROUNDS:
-                print(f"\n--- {llm.capitalize()} Round 2 Response for {coin_symbol} ---")
-                print(resp)
+            if resp and LOG_INTEGRATION_ROUNDS:
+                log_panel_response(llm, coin_symbol, 'Round 2', resp)
 
             # Track flips
             r1_val = r1_votes.get(llm)
@@ -1397,6 +1586,9 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
         # T3(f): an exception in the multi-LLM block blocks the decision —
         # never a silent fallback to the primary's solo vote (doc 5.3.4).
         print(f"Error in LLM processing for {coin_symbol}: {e}")
+        # LG-2: full traceback for unattended (cron) runs. Logging only; the
+        # blocked decision and its pinned block_reason string are unchanged.
+        traceback.print_exc()
         print(f"  [BLOCKED] {coin_symbol}: exception in multi-LLM processing")
         return PanelDecision(action=None, consensus_state='blocked',
                              block_reason=f'exception: {e}')
@@ -1409,6 +1601,37 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
 # configurable (with a hard ceiling), and adds a per-run spend cap.
 
 NOTIONAL_CEILING_USD = 100.0  # refuse per-buy notional above this; $5-scale experiment
+
+
+def strip_dotenv_live_confirmation(shell_had_confirmation, environ):
+    """Enforce that LIVE_TRADING_CONFIRMED comes from the shell, never .env.
+
+    The env half of the T1 double lock exists so that no *persistent config*
+    can arm live trading by itself -- consent must be typed per invocation
+    (or supplied by a deliberate shell alias). load_dotenv() would defeat
+    that by importing the var from .env into os.environ, so main() snapshots
+    whether the shell provided it BEFORE load_dotenv() and calls this
+    afterward. (load_dotenv never overrides an existing shell value, so the
+    only case to undo is ".env introduced it".)
+
+    Args:
+        shell_had_confirmation: was LIVE_TRADING_CONFIRMED set pre-dotenv?
+        environ: the os.environ mapping (mutated in place).
+
+    Returns:
+        A warning string to print if a .env-supplied value was stripped,
+        else None.
+    """
+    if not shell_had_confirmation and 'LIVE_TRADING_CONFIRMED' in environ:
+        del environ['LIVE_TRADING_CONFIRMED']
+        return (
+            "[LIVE LOCK] LIVE_TRADING_CONFIRMED found in .env -- IGNORED.\n"
+            "[LIVE LOCK] The env confirmation must be set in the shell per "
+            "invocation\n"
+            "[LIVE LOCK] (e.g. LIVE_TRADING_CONFIRMED=1 <command>); a config "
+            "file cannot arm live trading."
+        )
+    return None
 
 
 def resolve_trading_mode(args, env):
@@ -1459,6 +1682,33 @@ def resolve_trading_mode(args, env):
         return 'whatif', notice
 
     return 'whatif', None
+
+
+def new_run_id(now=None):
+    """One run_id per process invocation (T2), e.g. run_20260719T101112Z_3f9a1c.
+
+    The timestamp part keeps the naive-UTC + 'Z' storage contract. The random
+    suffix (MP-1b) kills same-second cross-run collisions: two runs started in
+    the same second used to share a run_id and therefore the same
+    deterministic client_order_id per coin (run_id-coin-buy), so the second
+    run's real buy was silently deduped by Coinbase into the first run's
+    order while both runs ledgered a fill.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return 'run_' + now.strftime('%Y%m%dT%H%M%SZ') + '_' + uuid.uuid4().hex[:6]
+
+
+def parse_analyze_coins(raw):
+    """Parse --coins into an ordered, DEDUPED, max-5 symbol list (MP-1a).
+
+    Dedupe (order-preserving) comes first: '--coins=BTC,ETH,BTC' used to
+    analyze BTC twice and record two fills for one real (idempotently deduped)
+    order. Returns (coins, dropped) where dropped counts unique symbols
+    ignored beyond the 5-coin cap.
+    """
+    deduped = list(dict.fromkeys(
+        c.strip().upper() for c in raw.split(',') if c.strip()))
+    return deduped[:5], max(0, len(deduped) - 5)
 
 
 def validate_notional(value):
@@ -1571,17 +1821,25 @@ def buy_something(coinToBuy):
 
         if WHATIF_MODE and not DEX_MODE:
             # Uniform record of both modes: a simulated fill at the current ask.
+            # MP-6c: record ESTIMATED fees (~1.2%/side, the measured Coinbase
+            # small-notional rate) so whatif P&L stops being systematically
+            # optimistic vs live; fees_estimated marks them as estimates and
+            # status='simulated' remains the honest mode label.
             executionledger.record_fill(
-                ledger_id, status='simulated', avg_fill_price=ask)
+                ledger_id, status='simulated', avg_fill_price=ask,
+                fees_usd=round(notional * 0.012, 4), fees_estimated=True)
             print(f"[WHAT-IF] Would execute BUY for {coinToBuy} (${notional:.2f}) "
-                  f"@ ask {ask if ask is not None else 'unknown'}")
+                  f"@ ask {ask if ask is not None else 'unknown'} "
+                  f"(est. fees ${notional * 0.012:.4f})")
         elif DEX_MODE:
             # DEX handles whatif internally and returns a dict.
             result = trader.market_order_buy(product_id, quote_size, whatif=WHATIF_MODE)
             executed = bool(result and result.get('executed'))
             if WHATIF_MODE:
+                # MP-6c: estimated fees on the DEX simulated fill too.
                 executionledger.record_fill(
-                    ledger_id, status='simulated', avg_fill_price=ask)
+                    ledger_id, status='simulated', avg_fill_price=ask,
+                    fees_usd=round(notional * 0.012, 4), fees_estimated=True)
             elif executed:
                 executionledger.record_fill(
                     ledger_id, status='filled',
@@ -1631,36 +1889,164 @@ def maybe_execute_buy(coin_symbol):
          without money); a buy that would exceed it is refused with [SPEND CAP]
          and tallied.
     A refused buy commits nothing. On approval, buy_something writes the ledger
-    rows and (in live mode) places the order. Mutates coinsToBuy / whatif_buys.
+    rows and (in live mode) places the order. Mutates coinsToBuy / whatif_buys
+    / daily_cap_blocked.
+
+    MP-6/MP-9: the exclusion check runs FIRST, in BOTH modes -- an excluded
+    coin no longer burns run-cap headroom (the budget commit used to precede
+    it), and whatif no longer "buys" coins live could never buy. The daily
+    cap is enforced in whatif too (from whatif intent rows, soft-fail) so the
+    whatif stream stops overstating what live could have done.
+
+    MP-3: the cross-process ledger lock is held from the daily-cap READ all
+    the way through buy_something's intent WRITE, closing the check-then-write
+    TOCTOU where two overlapping runs both read under-cap and both order. The
+    lock is reentrant, so append_intent/record_fill re-acquiring it inside
+    buy_something is fine. In live mode the lock therefore also spans order
+    placement -- overlapping runs serialize their buys, the intended
+    conservative behavior at this notional scale. The history
+    (recommendations) lock is NEVER taken inside this span.
     """
-    global whatif_buys
+    global whatif_buys, daily_cap_blocked
 
-    # 1. Daily LIVE spend cap (live only; ledger-backed, spans runs).
-    if not WHATIF_MODE and executionledger.daily_cap_would_exceed(NOTIONAL_USD, DAILY_SPEND_CAP_USD):
-        already = executionledger.live_spend_today()
-        print(f"[DAILY CAP] BUY for {coin_symbol} refused: ${NOTIONAL_USD:.2f} would push "
-              f"today's LIVE spend past the ${DAILY_SPEND_CAP_USD:.2f} daily cap "
-              f"(${already:.2f} already committed today across all runs).")
+    # 0. Exclusion list -- both modes, BEFORE any budget is committed (MP-6a +
+    # MP-9). Still counted in coinsToBuy so the summary shows the intent.
+    if coin_symbol in coinsToExclude:
+        coinsToBuy.append(coin_symbol)
+        print(f"[EXCLUDED] {coin_symbol} is on the exclude list "
+              f"({TRADING_MODE}); no order placed, no budget committed.")
         return
 
-    # 2. Per-run spend cap (T1; counts what-if too).
-    if not spend_tracker.try_spend(NOTIONAL_USD):
-        print(f"[SPEND CAP] BUY for {coin_symbol} refused: ${NOTIONAL_USD:.2f} would push "
-              f"run spend past the ${spend_tracker.cap:.2f} cap "
-              f"(${spend_tracker.spent:.2f} already committed).")
-        return
+    with executionledger.ledger_lock():
+        # 1. Daily spend cap (ledger-backed, spans runs).
+        # MP-2 live: the ledger read FAILS CLOSED -- a corrupt ledger triggers
+        # quarantine + snapshot auto-restore, and refuses the buy when no
+        # snapshot exists (an empty ledger would silently reset this cap to $0).
+        if not WHATIF_MODE:
+            try:
+                exceeded = executionledger.daily_cap_would_exceed(NOTIONAL_USD, DAILY_SPEND_CAP_USD)
+            except executionledger.LedgerError as err:
+                if not _recover_live_ledger(coin_symbol, err):
+                    return  # fail-closed: no snapshot -> refuse the buy
+                try:
+                    exceeded = executionledger.daily_cap_would_exceed(NOTIONAL_USD, DAILY_SPEND_CAP_USD)
+                except executionledger.LedgerError as err2:
+                    print(f"[LEDGER ERROR] restored ledger is itself unreadable ({err2}); "
+                          f"refusing LIVE BUY for {coin_symbol} (fail-closed).")
+                    print("[LEDGER ERROR] To recover: repair the JSON in the "
+                          "quarantined (or snapshot) file, then run:")
+                    print(f"[LEDGER ERROR]   {executionledger.recovery_command()}")
+                    print("[LEDGER ERROR] (see OPERATIONS_MANUAL.md, 'Ledger recovery')")
+                    return
+            if exceeded:
+                already = executionledger.live_spend_today()
+                daily_cap_blocked += 1
+                print(f"[DAILY CAP] BUY for {coin_symbol} refused: ${NOTIONAL_USD:.2f} would push "
+                      f"today's LIVE spend past the ${DAILY_SPEND_CAP_USD:.2f} daily cap "
+                      f"(${already:.2f} already committed today across all runs).")
+                return
+        else:
+            # MP-6b: enforce the daily cap in whatif too, computed from whatif
+            # intent rows, so the whatif stream can't contain buy sequences
+            # live could never make. SOFT-FAIL by design: an error computing
+            # the whatif cap logs and continues -- the learning loop's data
+            # engine must never crash on its own bookkeeping. A corrupt
+            # ledger follows the MP-2 whatif policy: quarantine-and-continue.
+            try:
+                if executionledger.daily_cap_would_exceed(
+                        NOTIONAL_USD, DAILY_SPEND_CAP_USD, trading_mode='whatif'):
+                    already = executionledger.spend_today(trading_mode='whatif')
+                    daily_cap_blocked += 1
+                    print(f"[DAILY CAP] (whatif-simulated) BUY for {coin_symbol} refused: "
+                          f"${NOTIONAL_USD:.2f} would push today's WHATIF spend past the "
+                          f"${DAILY_SPEND_CAP_USD:.2f} daily cap "
+                          f"(${already:.2f} simulated today across all runs). "
+                          "No real cap was consumed -- this mirrors what live would refuse.")
+                    return
+            except executionledger.LedgerError as err:
+                qpath = executionledger.quarantine_corrupt_ledger()
+                print(f"[LEDGER ERROR] {err}")
+                print(f"[LEDGER ERROR] whatif mode: corrupt ledger quarantined to "
+                      f"{qpath}; continuing with a fresh ledger.")
+            except Exception as err:
+                print(f"[LEDGER ERROR] whatif daily-cap check failed "
+                      f"(soft-fail, continuing): {err}")
 
-    coinsToBuy.append(coin_symbol)
-    if not WHATIF_MODE and coin_symbol in coinsToExclude:
-        # Excluded from live trading: no order, and no ledger rows (we never
-        # intended to buy it). Still counted in coinsToBuy for the summary.
-        print(f"[EXCLUDED] {coin_symbol} is on the exclude list; no order placed.")
-        return
+        # 2. Per-run spend cap (T1; counts what-if too).
+        if not spend_tracker.try_spend(NOTIONAL_USD):
+            print(f"[SPEND CAP] BUY for {coin_symbol} refused: ${NOTIONAL_USD:.2f} would push "
+                  f"run spend past the ${spend_tracker.cap:.2f} cap "
+                  f"(${spend_tracker.spent:.2f} already committed).")
+            return
 
-    buy_something(coin_symbol)
-    if WHATIF_MODE:
-        whatif_buys += 1
+        coinsToBuy.append(coin_symbol)
+        buy_something(coin_symbol)
+        if WHATIF_MODE:
+            whatif_buys += 1
 
+
+def _recover_live_ledger(coin_symbol, err):
+    """MP-2 + DI-4: corrupt-ledger recovery at the LIVE buy gate.
+
+    Quarantines the corrupt file (rename to .corrupt-<ts>; NEVER deleted),
+    then auto-restores from the newest run-start snapshot
+    (executions.json.bak-<date>) -- the snapshot carries the real daily-cap
+    data, so continuing is not trading on a wrongly-reset $0 cap. Only when
+    NO snapshot exists (essentially the feature's first run) is the buy
+    refused, and the refusal text contains the exact copy-paste recovery
+    command.
+
+    Returns True when a snapshot restore succeeded (the caller re-checks the
+    daily cap against the restored ledger); False when the buy must be
+    refused (fail-closed).
+    """
+    print(f"[LEDGER ERROR] {err}")
+    qpath = executionledger.quarantine_corrupt_ledger()
+    if qpath:
+        print(f"[LEDGER ERROR] corrupt ledger preserved at {qpath} (nothing deleted).")
+    snap = executionledger.restore_from_snapshot()
+    if snap is None:
+        cmd = (f"cp '{qpath}' '{executionledger.EXECUTIONS_FILE}'" if qpath
+               else executionledger.recovery_command())
+        print(f"[LEDGER ERROR] no .bak- snapshot exists to auto-restore from; "
+              f"refusing LIVE BUY for {coin_symbol} (fail-closed -- an empty "
+              f"ledger would silently reset the daily spend cap to $0).")
+        print("[LEDGER ERROR] To recover: repair the JSON in the quarantined "
+              "file, then run:")
+        print(f"[LEDGER ERROR]   {cmd}")
+        print("[LEDGER ERROR] (see OPERATIONS_MANUAL.md, 'Ledger recovery')")
+        return False
+    print(f"[LEDGER ERROR] recovered from snapshot {os.path.basename(snap)} -- "
+          "continuing with the snapshot's cap data.")
+    return True
+
+
+def gate_and_maybe_buy(decision, final_action, coin_symbol):
+    """The single gate->execute wiring for both analysis loops (TS-2).
+
+    Applies the mode-aware trade gate (decision_allows_trade) and dispatches an
+    approved BUY to maybe_execute_buy. Extracted from the two formerly
+    duplicated call sites (coin-choice loop and discovery loop) so the
+    gate->execute assembly lives in ONE tested function and cannot silently
+    diverge between the loops again.
+
+    MP-7 interim: a decision the gate would otherwise allow whose action is
+    SELL is loudly logged as un-executable (no SELL path exists today --
+    market_order_sell has zero callers) instead of being silently dropped.
+
+    Returns True iff the buy was dispatched to maybe_execute_buy (which may
+    still refuse it on a spend cap or the exclusion list); False otherwise.
+    """
+    if not decision_allows_trade(decision, LLM_MODE, REQUIRE_CONSENSUS):
+        return False
+    if final_action and 'SELL' in final_action:
+        print(f"[NO SELL PATH] consensus SELL recorded but not executable "
+              f"({coin_symbol}); no order placed.")
+        return False
+    if not final_action or 'BUY' not in final_action:
+        return False
+    maybe_execute_buy(coin_symbol)
+    return True
 
 
 def apply_coin_filters(coins: list) -> list:
@@ -1970,6 +2356,101 @@ def resolve_analyze_coins_env(use_coin_discovery, analyze_coins):
     return ','.join(analyze_coins)
 
 
+def resolve_coin_selection_conflict(has_explicit_coins, coins_from_cli,
+                                    filter_flags_on_cli, analyze_coins_display):
+    """Fail-closed resolution of the explicit-coins vs filters/discovery clash.
+
+    The bug (owner-observed 2026-07-19, live terminal): USE_COIN_DISCOVERY is
+    `len(ANALYZE_COINS) == 0`, so ANY explicit coin -- including the very common
+    `ANALYZE_COINS` env var -- silently defeats --chains/--categories/
+    --polymarket-filter/--discovery, because the filter path and the santiment
+    discovery path BOTH require USE_COIN_DISCOVERY. The bot analyzed the env
+    coins in COIN CHOICE MODE while the banner still advertised "Chain Filter:
+    solana" / "Category Filter: meme-coins" as if active. Nothing may be
+    silently ignored, and the banner must never print an inert filter as active.
+
+    Provenance decides the resolution (get_config_source distinguishes a CLI
+    flag from an env default cleanly -- that machinery is what makes the
+    env-override branch safe rather than a guess):
+
+      * filter flags on the CLI AND coins also from the CLI (--coins) ->
+        both intents are explicit and mutually exclusive; refuse to guess and
+        fail closed with an error the user must resolve  ('error').
+      * filter flags on the CLI but coins only from the ANALYZE_COINS env var ->
+        the CLI intent is unambiguously discovery/filtering, so override the
+        persistent env coins and proceed in discovery/filter mode, loudly
+        ('override').
+      * anything else (no explicit coins, or no CLI filter flags) -> no
+        conflict; use the explicit coins as-is ('proceed').
+
+    Pure function so the whole decision table is unit-testable without argv,
+    traders, or the environment. Returns (action, message): action is one of
+    'proceed' | 'error' | 'override'; message is None for 'proceed', else the
+    text main() should print (before exiting, for 'error').
+    """
+    if not has_explicit_coins or not filter_flags_on_cli:
+        return ('proceed', None)
+    flag_list = "--chains/--categories/--polymarket-filter/--discovery"
+    if coins_from_cli:
+        msg = (
+            "\n[CONFIG ERROR] Conflicting coin selection on the command line:\n"
+            f"  explicit --coins ({analyze_coins_display}) AND filter/discovery "
+            f"flags ({flag_list})\n"
+            "  were BOTH given. Explicit coins run in COIN CHOICE MODE, which\n"
+            "  silently ignores every filter and discovery flag -- so one side\n"
+            "  would be discarded. Refusing to guess (fail-closed).\n"
+            "  Fix: either DROP the filter/discovery flags to analyze exactly\n"
+            "  --coins, OR pass --coins= (empty) to enter discovery/filter mode."
+        )
+        return ('error', msg)
+    msg = (
+        f"\n[CONFIG] {flag_list} given on the CLI: ignoring ANALYZE_COINS env "
+        f"({analyze_coins_display})\n"
+        "  and entering discovery/filter mode (CLI intent is clearly filtering)."
+    )
+    return ('override', msg)
+
+
+def _refresh_env_snapshots():
+    """TS-3 companion: re-resolve env-derived globals that were captured at
+    import time, now that load_dotenv() runs in main() (i.e. AFTER imports).
+
+    Before TS-3, load_dotenv() ran at module scope BEFORE the imports below
+    it, so .env values were visible to every module-level
+    `X = os.environ.get(...)` snapshot in the import graph. With the load
+    moved into main(), those snapshots are taken before .env is loaded --
+    without this refresh, .env-only settings (the documented home of the
+    CMC/LunarCrush API keys, see .env.example) would silently stop reaching
+    the modules that captured them. Shell-exported env vars are unaffected
+    either way (load_dotenv never overrides an existing variable).
+
+    Every known import-time env snapshot in the bot's import graph is
+    re-resolved here, mirroring each module's own default expression (kept
+    in sync by tests/test_import_purity.py's refresh test):
+      - historyutil.HISTORY_DIR / RECOMMENDATIONS_FILE
+      - executionledger.HISTORY_DIR / EXECUTIONS_FILE (its lock paths and
+        .bak/.corrupt siblings all derive from EXECUTIONS_FILE at call time)
+      - coinmarketcaputil.CMC_API_KEY (request headers read the global at
+        call time; marketdata's CMC section depends on it)
+      - lunarcrushutil.LUNARCRUSH_API_KEY (LunarCrushClient default key;
+        marketdata's SOCIAL section re-reads os.environ itself either way)
+      - this module's MARKET_BLOCK_TTL_SECONDS
+    coingeckoutil also snapshots COINGECKO_API_KEY at import, but it is only
+    ever imported lazily inside functions (coinbaseutil2/tradeanalyzer), so
+    its import happens after load_dotenv() and needs no refresh.
+    """
+    global MARKET_BLOCK_TTL_SECONDS
+    history_dir = os.environ.get('HISTORY_DIR', './history/')
+    historyutil.HISTORY_DIR = history_dir
+    historyutil.RECOMMENDATIONS_FILE = os.path.join(history_dir, 'recommendations.json')
+    executionledger.HISTORY_DIR = history_dir
+    executionledger.EXECUTIONS_FILE = os.path.join(history_dir, 'executions.json')
+    coinmarketcaputil.CMC_API_KEY = (os.environ.get('CMC_API_KEY', '')
+                                     or os.environ.get('COINMARKETCAP_API_KEY', ''))
+    lunarcrushutil.LUNARCRUSH_API_KEY = os.environ.get('LUNARCRUSH_API_KEY', '')
+    MARKET_BLOCK_TTL_SECONDS = int(os.environ.get('MARKET_BLOCK_TTL_SECONDS', 900))
+
+
 def main():
     """Run the trading bot end to end.
 
@@ -1981,9 +2462,10 @@ def main():
     file read them at call time.
     """
     global args, pytrends
-    global coinsToBuy, coinsToSell, coinsToHold
+    global coinsToBuy, coinsToSell, coinsToHold, coin_vote_outcomes
     global TRADING_MODE, WHATIF_MODE, LLM_MODE, PRIMARY_LLM, COMPARE_LLMS
     global REQUIRE_CONSENSUS, INTEGRATION_TIEBREAKER, LOG_INTEGRATION_ROUNDS
+    global SHOW_PANEL_RESPONSES
     global ANALYZE_COINS_RAW, ANALYZE_COINS, USE_COIN_DISCOVERY
     global CHAINS_RAW, CHAINS, CATEGORIES_RAW, CATEGORIES, POLYMARKET_FILTER
     global USE_COIN_FILTERING, DEX_MODE, discovery_default_used, DISCOVERY_RAW
@@ -1995,7 +2477,25 @@ def main():
     global grounding_tool, config, coinsToExclude
     global whatif_buys, whatif_sells, trader
     global NOTIONAL_USD, RUN_SPEND_CAP_USD, spend_tracker, DAILY_SPEND_CAP_USD
-    global RUN_ID
+    global RUN_ID, daily_cap_blocked
+
+    # TS-3: .env is loaded HERE, as main()'s first action -- never at import
+    # time. It must precede parse_args() (whose defaults read os.environ) and
+    # every client construction below. _refresh_env_snapshots() then
+    # re-resolves the env values other modules snapshotted at import time,
+    # before .env was available (see its docstring).
+    # T1 corollary: the live-confirmation lock must NOT be satisfiable from
+    # .env, so snapshot its shell presence before dotenv and strip any
+    # .env-supplied value after (see strip_dotenv_live_confirmation).
+    shell_had_live_confirmation = 'LIVE_TRADING_CONFIRMED' in os.environ
+    load_dotenv()
+    _refresh_env_snapshots()
+    dotenv_live_warning = strip_dotenv_live_confirmation(
+        shell_had_live_confirmation, os.environ)
+    if dotenv_live_warning:
+        print("\n" + "!" * 66)
+        print(dotenv_live_warning)
+        print("!" * 66 + "\n")
 
     # Parse command-line arguments
     args = parse_args()
@@ -2012,6 +2512,12 @@ def main():
 
     coinsToHold = []
 
+    # Per-coin final-vote outcomes for the RUN SUMMARY vote table (see
+    # format_vote_outcomes_line). Appended once per coin, right after the
+    # trade gate runs, in both the coin-choice and discovery loops below --
+    # not reimplemented per loop.
+    coin_vote_outcomes = []
+
     # Configuration from CLI args (with env var fallback)
     # T1: resolve the effective trading mode through the double lock. Any live
     # request that is not fully armed (--live AND LIVE_TRADING_CONFIRMED=1)
@@ -2025,7 +2531,8 @@ def main():
     # every history record this run writes (and later joined against T5's
     # execution ledger / client_order_id). Generated once, here, right after
     # the trading mode is resolved so it can be logged alongside it.
-    RUN_ID = 'run_' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    # MP-1b: includes a random suffix (see new_run_id).
+    RUN_ID = new_run_id()
 
     if live_downgrade_notice:
         print("\n" + "!" * 66)
@@ -2061,23 +2568,42 @@ def main():
     # runs today (UTC). Enforced only for live buys (see maybe_execute_buy).
     DAILY_SPEND_CAP_USD = float(args.daily_spend_cap_usd)
 
+    # DI-4: run-start ledger snapshot (executions.json.bak-<date>, idempotent
+    # per UTC day). This is the auto-recovery source for a corrupt ledger
+    # (MP-2, see _recover_live_ledger). Non-fatal by design: a failed snapshot
+    # must never block a run.
+    try:
+        _snap = executionledger.snapshot_ledger()
+        if _snap:
+            print(f"[LEDGER] daily snapshot: {_snap}")
+    except Exception as e:
+        print(f"[LEDGER] daily snapshot skipped (non-fatal): {e}")
+
     LLM_MODE = args.llm_mode
     PRIMARY_LLM = args.primary_llm
     COMPARE_LLMS = [llm.strip() for llm in args.compare_llms.split(',')]
     REQUIRE_CONSENSUS = args.require_consensus == 'true'
     INTEGRATION_TIEBREAKER = args.tiebreaker
     LOG_INTEGRATION_ROUNDS = args.log_rounds == 'true'
+    SHOW_PANEL_RESPONSES = args.show_responses
 
     # T3(d): tiebreaker == primary is forbidden in multi-LLM modes; downgrade
     # to 'none' with a loud warning (see validate_tiebreaker_config).
     INTEGRATION_TIEBREAKER = validate_tiebreaker_config(INTEGRATION_TIEBREAKER, PRIMARY_LLM, LLM_MODE)
 
-    # Coin choice: specify coins directly instead of LLM discovery (max 5)
+    # MP-5 (warn-only): a primary that is not on the COMPARE_LLMS panel pays
+    # for a Round-1 analysis whose vote can never count (see
+    # warn_if_primary_off_panel). Consensus math is unchanged.
+    warn_if_primary_off_panel(PRIMARY_LLM, COMPARE_LLMS, LLM_MODE)
+
+    # Coin choice: specify coins directly instead of LLM discovery (max 5).
+    # MP-1a: deduped, order-preserving (see parse_analyze_coins).
     ANALYZE_COINS_RAW = args.coins.strip()
-    ANALYZE_COINS = [c.strip().upper() for c in ANALYZE_COINS_RAW.split(',') if c.strip()][:5]
+    ANALYZE_COINS, _dropped_coins = parse_analyze_coins(ANALYZE_COINS_RAW)
     USE_COIN_DISCOVERY = len(ANALYZE_COINS) == 0
-    if len([c.strip() for c in ANALYZE_COINS_RAW.split(',') if c.strip()]) > 5:
-        print(f"Warning: --coins limited to 5 coins, ignoring extras")
+    if _dropped_coins:
+        print(f"Warning: --coins limited to 5 unique coins, ignoring "
+              f"{_dropped_coins} extra(s)")
 
     # T7: propagate --coins framing to the panel traders, before trader
     # construction below (see resolve_analyze_coins_env docstring).
@@ -2095,8 +2621,52 @@ def main():
     # Check if filtering is requested
     USE_COIN_FILTERING = len(CHAINS) > 0 or len(CATEGORIES) > 0 or POLYMARKET_FILTER
 
+    # Fail-closed on the explicit-coins vs filters/discovery clash (owner bug
+    # 2026-07-19): explicit coins force COIN CHOICE MODE, which silently ignores
+    # every filter/discovery flag. Decide by provenance -- get_config_source
+    # returns the flag name only when it was passed on the CLI (not for an env
+    # default), so we can tell a CLI --coins from an ANALYZE_COINS env var.
+    coins_from_cli = get_config_source('--coins', 'ANALYZE_COINS') == '--coins'
+    filter_flags_on_cli = (
+        get_config_source('--chains', 'CHAINS') == '--chains'
+        or get_config_source('--categories', 'CATEGORIES') == '--categories'
+        or get_config_source('--polymarket-filter', 'POLYMARKET_FILTER') == '--polymarket-filter'
+        or get_config_source('--discovery', 'DISCOVERY') == '--discovery'
+    )
+    _conflict_action, _conflict_msg = resolve_coin_selection_conflict(
+        has_explicit_coins=not USE_COIN_DISCOVERY,
+        coins_from_cli=coins_from_cli,
+        filter_flags_on_cli=filter_flags_on_cli,
+        analyze_coins_display=', '.join(ANALYZE_COINS),
+    )
+    if _conflict_action == 'error':
+        print(_conflict_msg)
+        sys.exit(1)
+    elif _conflict_action == 'override':
+        print(_conflict_msg)
+        # Drop the env coins and enter discovery/filter mode. Clear the
+        # ANALYZE_COINS env var too, so the panel traders pick "meme coin"
+        # discovery framing (see resolve_analyze_coins_env) instead of the
+        # now-discarded explicit-coin framing set a few lines above.
+        ANALYZE_COINS = []
+        ANALYZE_COINS_RAW = ''
+        USE_COIN_DISCOVERY = True
+        os.environ.pop('ANALYZE_COINS', None)
+
     # DEX mode configuration (needed early for discovery default)
     DEX_MODE = args.dex
+
+    # SC-3 (warn-but-allow, owner decision 2026-07-19): the DEX branch never
+    # got the CEX path's fill-confirmation hardening -- a live DEX "fill" maps
+    # straight to a ledger row with no exchange-side confirmation. Warn loudly
+    # when both --dex and an armed live mode are in effect, then proceed.
+    if DEX_MODE and not WHATIF_MODE:
+        print("!" * 66)
+        print("[WARNING] DEX live fills are recorded unverified "
+              "(no fill-confirmation hardening)")
+        print("[WARNING] The Coinbase (CEX) path confirms fills via get_order; "
+              "the DEX path does not.")
+        print("!" * 66)
 
     # Discovery methods: llm, santiment, or both
     # DEX mode defaults to santiment (Solana tokens), CEX defaults to llm
@@ -2241,6 +2811,11 @@ def main():
     whatif_buys = 0
     whatif_sells = 0
 
+    # MP-8: daily-cap refusals get their own tally (the [DAILY CAP] branch
+    # returns before spend_tracker.blocked is touched, so the run-cap counter
+    # never saw them -- acceptance issue #2).
+    daily_cap_blocked = 0
+
     # Initialize trader based on exchange mode
     if DEX_MODE:
         try:
@@ -2292,6 +2867,12 @@ def main():
     # Show trade sizing / spend cap
     print(f"Notional per buy: ${NOTIONAL_USD:.2f}")
     print(f"Run spend cap: ${RUN_SPEND_CAP_USD:.2f}")
+    # T5: daily LIVE spend cap + how much of today's UTC cap is already spent.
+    # Cheap ledger read (same daily-sum the buy gate uses); see
+    # format_daily_cap_banner_line. Without it a HOLD/SELL run -- which never
+    # reaches the cap gate -- shows no daily-cap info at all.
+    daily_cap_source = get_config_source('--daily-spend-cap-usd', 'DAILY_SPEND_CAP_USD')
+    print(format_daily_cap_banner_line(DAILY_SPEND_CAP_USD, daily_cap_source))
 
     # Show LLM configuration
     llm_mode_source = get_config_source('--llm-mode', 'LLM_MODE')
@@ -2312,22 +2893,27 @@ def main():
     else:
         print(f"Coin Selection: {', '.join(ANALYZE_COINS)} [{coins_source}]")
 
-    # Show filter settings
-    if CHAINS:
-        chains_source = get_config_source('--chains', 'CHAINS')
-        print(f"Chain Filter: {', '.join(CHAINS)} [{chains_source}]")
-    if CATEGORIES:
-        categories_source = get_config_source('--categories', 'CATEGORIES')
-        print(f"Category Filter: {', '.join(CATEGORIES)} [{categories_source}]")
-    if CHAINS or CATEGORIES:
-        cache_age = get_cache_age()
-        if cache_age:
-            print(f"Cache Age: {cache_age}")
-        else:
-            print(f"Cache Age: NOT FOUND (run refresh_coin_cache.py)")
-    if POLYMARKET_FILTER:
-        polymarket_source = get_config_source('--polymarket-filter', 'POLYMARKET_FILTER')
-        print(f"Polymarket Filter: Enabled [{polymarket_source}]")
+    # Show filter settings. Banner honesty (owner bug 2026-07-19): the coin
+    # filters and santiment discovery BOTH apply only in discovery mode; with
+    # explicit coins they are inert, so never advertise them as active. Gating
+    # on USE_COIN_DISCOVERY keeps the banner truthful in every case (including
+    # after the env-override branch above, which flips USE_COIN_DISCOVERY on).
+    if USE_COIN_DISCOVERY:
+        if CHAINS:
+            chains_source = get_config_source('--chains', 'CHAINS')
+            print(f"Chain Filter: {', '.join(CHAINS)} [{chains_source}]")
+        if CATEGORIES:
+            categories_source = get_config_source('--categories', 'CATEGORIES')
+            print(f"Category Filter: {', '.join(CATEGORIES)} [{categories_source}]")
+        if CHAINS or CATEGORIES:
+            cache_age = get_cache_age()
+            if cache_age:
+                print(f"Cache Age: {cache_age}")
+            else:
+                print(f"Cache Age: NOT FOUND (run refresh_coin_cache.py)")
+        if POLYMARKET_FILTER:
+            polymarket_source = get_config_source('--polymarket-filter', 'POLYMARKET_FILTER')
+            print(f"Polymarket Filter: Enabled [{polymarket_source}]")
 
     consensus_source = get_config_source('--require-consensus', 'REQUIRE_CONSENSUS')
     print(f"Require Consensus: {REQUIRE_CONSENSUS} [{consensus_source}]")
@@ -2399,12 +2985,17 @@ def main():
             # Get analysis from PRIMARY_LLM (market block prepended internally).
             followUpResponseText = get_primary_coin_check(coin_symbol)
 
-            print(followUpResponseText)
+            # LG-1: full primary response text is gated behind the same
+            # LOG_INTEGRATION_ROUNDS flag as the panelist dumps -- these two
+            # unconditional dumps were bloating the append-forever cron log.
+            # The [PRIMARY] char-count line below always prints either way.
+            if followUpResponseText and LOG_INTEGRATION_ROUNDS:
+                log_panel_response(PRIMARY_LLM, coin_symbol, 'Primary', followUpResponseText)
 
             # T8: the primary vote is resolved provider-aware inside
-            # process_coin_with_comparison (structured JSON for
-            # gemini/claude/openai, [FALLBACK PARSER] for grok/perplexity) —
-            # no delimiter pre-parse here anymore.
+            # process_coin_with_comparison (native structured JSON for all five
+            # panelists; grok/perplexity keep a delimiter-tag fallback used only
+            # on a schema-parameter rejection) — no delimiter pre-parse here.
             print(f"[PRIMARY] {PRIMARY_LLM} response for {coin_symbol}: "
                   f"{len(followUpResponseText) if followUpResponseText else 0} chars")
 
@@ -2447,8 +3038,11 @@ def main():
 
             # T3(c) mode-aware trade gate: unanimity is required to TRADE under
             # REQUIRE_CONSENSUS; majority_action is recorded for MEASUREMENT only.
-            if decision_allows_trade(decision, LLM_MODE, REQUIRE_CONSENSUS) and 'BUY' in final_action:
-                maybe_execute_buy(coin_symbol)
+            # TS-2: single tested gate->execute wiring shared with the
+            # discovery loop below.
+            dispatched = gate_and_maybe_buy(decision, final_action, coin_symbol)
+            coin_vote_outcomes.append(
+                (coin_symbol, vote_outcome_label(final_action, dispatched)))
 
     # === HYBRID DISCOVERY MODE ===
     else:
@@ -2534,12 +3128,17 @@ def main():
             # Get analysis from PRIMARY_LLM (market block prepended internally).
             followUpResponseText = get_primary_coin_check(coin_symbol)
 
-            print(followUpResponseText)
+            # LG-1: full primary response text is gated behind the same
+            # LOG_INTEGRATION_ROUNDS flag as the panelist dumps -- these two
+            # unconditional dumps were bloating the append-forever cron log.
+            # The [PRIMARY] char-count line below always prints either way.
+            if followUpResponseText and LOG_INTEGRATION_ROUNDS:
+                log_panel_response(PRIMARY_LLM, coin_symbol, 'Primary', followUpResponseText)
 
             # T8: the primary vote is resolved provider-aware inside
-            # process_coin_with_comparison (structured JSON for
-            # gemini/claude/openai, [FALLBACK PARSER] for grok/perplexity) —
-            # no delimiter pre-parse here anymore.
+            # process_coin_with_comparison (native structured JSON for all five
+            # panelists; grok/perplexity keep a delimiter-tag fallback used only
+            # on a schema-parameter rejection) — no delimiter pre-parse here.
             print(f"[PRIMARY] {PRIMARY_LLM} response for {coin_symbol}: "
                   f"{len(followUpResponseText) if followUpResponseText else 0} chars")
 
@@ -2581,8 +3180,11 @@ def main():
 
             # T3(c) mode-aware trade gate: unanimity is required to TRADE under
             # REQUIRE_CONSENSUS; majority_action is recorded for MEASUREMENT only.
-            if decision_allows_trade(decision, LLM_MODE, REQUIRE_CONSENSUS) and 'BUY' in final_action:
-                maybe_execute_buy(coin_symbol)
+            # TS-2: single tested gate->execute wiring shared with the
+            # coin-choice loop above.
+            dispatched = gate_and_maybe_buy(decision, final_action, coin_symbol)
+            coin_vote_outcomes.append(
+                (coin_symbol, vote_outcome_label(final_action, dispatched)))
 
     # Print summary
     print("\n" + "="*50)
@@ -2596,12 +3198,14 @@ def main():
         print(f"Coin Selection: Discovery Mode ({', '.join(DISCOVERY_METHODS)})")
     else:
         print(f"Coin Selection: {', '.join(ANALYZE_COINS)}")
-    if CHAINS:
-        print(f"Chain Filter: {', '.join(CHAINS)}")
-    if CATEGORIES:
-        print(f"Category Filter: {', '.join(CATEGORIES)}")
-    if POLYMARKET_FILTER:
-        print("Polymarket Filter: Enabled")
+    # Filters only apply in discovery mode; don't report inert filters (honesty).
+    if USE_COIN_DISCOVERY:
+        if CHAINS:
+            print(f"Chain Filter: {', '.join(CHAINS)}")
+        if CATEGORIES:
+            print(f"Category Filter: {', '.join(CATEGORIES)}")
+        if POLYMARKET_FILTER:
+            print("Polymarket Filter: Enabled")
     if LLM_MODE in ['compare', 'integrate']:
         print(f"Compare LLMs: {COMPARE_LLMS}")
         print(f"Require Consensus: {REQUIRE_CONSENSUS}")
@@ -2610,12 +3214,29 @@ def main():
         print(f"Candidate Export: Enabled ({EXPORT_RECOMMENDATIONS} recommendations)")
         print(f"Candidate Dir: {CANDIDATE_DIR}")
     print(f"Coins to buy: {coinsToBuy}")
+    # Compact per-coin vote outcome table (coin_vote_outcomes is populated by
+    # both analysis loops, right after the trade gate runs, in analysis
+    # order). Skipped entirely on a zero-coin run rather than printing a bare
+    # 'Votes:' line.
+    vote_line = format_vote_outcomes_line(coin_vote_outcomes)
+    if vote_line:
+        print(vote_line)
 
     # Spend cap accounting (T1): committed intended spend + refusals
     print(f"Notional per buy: ${NOTIONAL_USD:.2f}")
     print(f"Run spend cap: ${RUN_SPEND_CAP_USD:.2f} "
           f"(committed ${spend_tracker.spent:.2f})")
     print(f"Blocked by spend cap: {spend_tracker.blocked}")
+    # MP-8: daily-cap refusals are a distinct tally (they return before the
+    # run-cap tracker is touched). In whatif they are simulated refusals.
+    print(f"Blocked by daily cap: {daily_cap_blocked}"
+          + (" (whatif-simulated)" if WHATIF_MODE and daily_cap_blocked else ""))
+    # T5/summary: the daily LIVE spend cap, reusing the SAME startup-banner
+    # helper (format_daily_cap_banner_line) rather than a second
+    # implementation. Called again here (not just cached from the banner
+    # print) so a run that placed fills shows the POST-run figure -- the
+    # ledger may have gained live intents since the banner was printed.
+    print(format_daily_cap_banner_line(DAILY_SPEND_CAP_USD, daily_cap_source))
 
     # What-if summary
     if WHATIF_MODE:
