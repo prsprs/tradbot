@@ -1,0 +1,16 @@
+# Reflection — grok/perplexity structured-output migration (2026-07-19)
+
+I spent the first third of this session just reading, and it paid off — but I nearly under-invested. The task looked like "flip two providers to json_schema," yet the real design problem was a routing one: grok/perplexity can now go *either* structured or fallback per-call, and the fallback decision happens at request time (schema-param rejection) while the parse happens later in `resolve_vote`. The hazard the task warned about — a structured response that returns garbage must abstain, never be re-parsed as a delimiter tag — is only avoidable if the path is signaled *explicitly*, not inferred from bytes. That single insight shaped everything. I settled on a `str` subclass carrying a `vote_path` attribute, which let me keep the bot-file change down to one routing condition.
+
+What surprised me most: the live re-probe *unblocked* the whole task. The 2026-07-18 fixture said grok was "unadopted" specifically because schema + `web_search` coexistence was unverified. I almost took that at face value and left grok on fallback. Re-probing with both in one request returned a clean non-abstain vote — the blocker was stale, not real. Trust the fixtures for shape, but re-probe the *stated open questions* before treating them as constraints.
+
+The golden-prompt fixture regeneration was a small trap. Migrating the vote instruction (delimiter → schema) changes the byte-exact golden for exactly 14 entries, and two drift assertions were pinned to the old "Conclude your analysis" delimiter text. I regenerated, diffed to confirm *only* those 14 changed and the trio was untouched, then updated the drift assertions to test the same spacing drift against the new ending. Regenerate-and-diff, never regenerate-and-trust.
+
+The concurrency rule (another agent editing `crypto_trading_bot.py`) was less painful than expected because I front-loaded all work into voteschema/grokutil/perplexityutil/tests and touched the bot file last, once, after re-grepping — the resolve_vote block had already drifted +17 lines by then. Doing it in any other order would have burned edits on moved anchors.
+
+**Repo knowledge I wish I'd had at the start:** (1) `panelprompts.py` centralizes all prompt bytes and is golden-tested — any vote-instruction change ripples into `golden_prompts.json` and `test_panel_prompts.py`. (2) The abstain-reason vocabulary is fixed and tested in `test_consensus.py`; don't invent new ones. (3) The whatif smoke run needs `HISTORY_DIR` (trailing slash) pointed outside the repo, `--skip-preflight` to avoid extra paid calls, and `--primary-llm` set to a panel member or you pay for an off-panel primary.
+
+**Tips for the next agent:**
+1. When a provider can take two output paths, carry the path on the response object — never infer it from content. That is the exact bug class this codebase spent real money on.
+2. Before adopting anything a fixture calls "unadopted," read *why*. If the reason is an unverified open question, the paid re-probe is cheap and often flips it.
+3. Fail-closed detectors (like `schema_param_rejected`) should be name-anchored and narrow: on ambiguity, propagate to abstain('error') rather than fall back. Test it against synthetic exceptions for *both* the trigger and the non-trigger cases.
