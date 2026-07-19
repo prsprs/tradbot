@@ -1,6 +1,7 @@
 """Tests for process_coin_with_comparison consensus math (crypto_trading_bot.py).
 
-Originally ported from lab/session_tests_20260718/test_consensus.py (11
+Originally ported from lab/session_tests_20260718/_consensus_snippet.py
+(formerly test_consensus.py) (11
 scripted-vote run_case invocations). As of T3 (consensus hardening, plan
 Phase 0) the function returns a structured PanelDecision and fails closed:
 

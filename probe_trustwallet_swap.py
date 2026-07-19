@@ -12,11 +12,11 @@ This script tests:
 4. Optionally executing a small test swap
 
 Usage:
-    python test_trustwallet_swap.py [--pair BASE/QUOTE]
-    
+    python probe_trustwallet_swap.py [--pair BASE/QUOTE]
+
 Examples:
-    python test_trustwallet_swap.py                    # Default: SOL/USDC
-    python test_trustwallet_swap.py --pair WTAO/USDC   # Test with WTAO
+    python probe_trustwallet_swap.py                    # Default: SOL/USDC
+    python probe_trustwallet_swap.py --pair WTAO/USDC   # Test with WTAO
 """
 
 import sys

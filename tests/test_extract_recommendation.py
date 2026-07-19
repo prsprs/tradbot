@@ -1,6 +1,7 @@
 """Tests for extract_recommendation / extract_tagged_vote (crypto_trading_bot.py).
 
-Ported from lab/session_tests_20260718/test_extract_rec.py (14 cases). Now
+Ported from lab/session_tests_20260718/_extract_rec_snippet.py (formerly
+test_extract_rec.py) (14 cases). Now
 imported for real via crypto_trading_bot's importable module (T4a) instead of
 the exec-source-extraction trick.
 
@@ -24,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from crypto_trading_bot import extract_recommendation, extract_tagged_vote
 
 
-# --- Ported from lab/session_tests_20260718/test_extract_rec.py ---
+# --- Ported from lab/session_tests_20260718/_extract_rec_snippet.py (formerly test_extract_rec.py) ---
 # (name, input, expected). Two rows changed by T8 (marked): they used to
 # document residual false-positive risk; the hardened parser closes both.
 CASES = [

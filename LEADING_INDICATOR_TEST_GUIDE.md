@@ -8,7 +8,7 @@ This document describes the test suite for the Leading Indicator Performance Tes
 
 | Test | Purpose | Requires Wallet | Duration |
 |------|---------|-----------------|----------|
-| `test_jupiter_swap.py` | Verify Jupiter swap integration | Yes | ~30 sec |
+| `probe_jupiter_swap.py` | Verify Jupiter swap integration | Yes | ~30 sec |
 | Dry-run mode | Validate config without trading | No | Instant |
 | Paper mode (short) | Test signal detection & paper trades | No | 5-10 min |
 | Live mode (test) | Verify live swap execution | Yes | Hours |
@@ -26,7 +26,7 @@ This document describes the test suite for the Leading Indicator Performance Tes
 
 **Command:**
 ```bash
-python test_jupiter_swap.py
+python probe_jupiter_swap.py
 ```
 
 **What it tests:**
@@ -222,7 +222,7 @@ print(f'Quote OK: {int(q[\"outAmount\"])/1e9:.6f} SOL')
 ### Full Integration Test (requires wallet)
 ```bash
 # 1. Jupiter swap test
-python test_jupiter_swap.py
+python probe_jupiter_swap.py
 
 # 2. Live mode dry-run
 python leading_indicator_tester.py \

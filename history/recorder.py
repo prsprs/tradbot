@@ -1,4 +1,9 @@
-"""History recording for recommendations."""
+"""History recording for recommendations.
+
+Note: this is llm_compare.py's history recorder, distinct from the
+LIVE BOT's history writer (historyutil.py, used by crypto_trading_bot.py).
+See AGENTS.md's "check both stacks" rule.
+"""
 
 import hashlib
 import json
@@ -10,12 +15,19 @@ from typing import Any, Dict, List, Optional
 class HistoryRecorder:
     """Records recommendations to a JSON history file."""
     
-    def __init__(self, history_file: str = "./history/llm_compare_history.json"):
+    def __init__(self, history_file: Optional[str] = None):
         """Initialize the history recorder.
-        
+
         Args:
-            history_file: Path to the JSON history file
+            history_file: Path to the JSON history file. Defaults to
+                '<HISTORY_DIR>/llm_compare_history.json', where HISTORY_DIR
+                is the HISTORY_DIR env var (falling back to './history/').
         """
+        if history_file is None:
+            history_file = os.path.join(
+                os.environ.get('HISTORY_DIR', './history/'),
+                'llm_compare_history.json'
+            )
         self.history_file = history_file
         self._ensure_directory()
     

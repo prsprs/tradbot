@@ -18,11 +18,11 @@ staged=$(git diff --cached --name-only --diff-filter=d)
 [ -z "$staged" ] && { echo "nothing staged"; exit 0; }
 
 # --- 1. Never-commit paths (per-user data, credentials) ------------------
-# history/ exceptions: recorder.py is source, test_expected_output.csv is a
-# documented fixture (see AGENTS.md "Environment").
+# history/ exceptions: recorder.py and __init__.py are source, the other
+# two are documented fixtures (see AGENTS.md "Environment").
 bad_paths=$(printf '%s\n' "$staged" | grep -E \
   '^(\.env$|cdp_api_key.*\.json$|live_trades/|paper_trades/|history/)' \
-  | grep -vE '^history/(recorder\.py|test_expected_output\.csv)$')
+  | grep -vE '^history/(recorder\.py|__init__\.py|test_expected_output\.csv|test_recommendation_data\.json)$')
 if [ -n "$bad_paths" ]; then
   echo "NEVER-COMMIT PATHS STAGED:" >&2
   printf '%s\n' "$bad_paths" >&2
@@ -47,6 +47,28 @@ secrets=$(git diff --cached | grep -nE '^\+' | grep -E \
 if [ -n "$secrets" ]; then
   echo "SECRET-SHAPED CONTENT IN STAGED DIFF (verify each is fake/placeholder):" >&2
   printf '%s\n' "$secrets" >&2
+  fail=1
+fi
+
+# --- 4. Wallet-secret heuristics (mnemonics, Solana keys) -----------------
+# A directly-spendable wallet secret is worse than an API key: env-var names
+# that conventionally hold one (*_MNEMONIC, *_SEED, SOLANA_PRIVATE_KEY), a
+# BIP39 mnemonic-phrase heuristic (12+ consecutive lowercase words -- covers
+# both 12- and 24-word phrases), and a base58-length heuristic (Solana
+# private/secret keys are ~87-88 base58 chars, which excludes 0/O/I/l).
+# Advisory, same as section 3: flags for human review, does not block any
+# differently than the existing secret check above.
+wallet_env_names=$(git diff --cached | grep -nE '^\+' | grep -E \
+  '[A-Z][A-Z0-9_]*(_MNEMONIC|_SEED)[A-Z0-9_]*["'"'"']?[[:space:]]*[:=]|SOLANA_PRIVATE_KEY["'"'"']?[[:space:]]*[:=]' \
+  | grep -viE 'os\.environ|getenv|load_dotenv|your-|fake-|placeholder|example|_ENV\b')
+mnemonic_phrase=$(git diff --cached | grep -nE '^\+' | grep -E \
+  '([a-z]{3,8} ){11,}[a-z]{3,8}')
+base58_key=$(git diff --cached | grep -nE '^\+' | grep -E \
+  '[1-9A-HJ-NP-Za-km-z]{86,88}')
+wallet_secrets=$(printf '%s\n%s\n%s\n' "$wallet_env_names" "$mnemonic_phrase" "$base58_key" | grep -v '^$' | sort -u)
+if [ -n "$wallet_secrets" ]; then
+  echo "WALLET-SECRET-SHAPED CONTENT IN STAGED DIFF (mnemonic/base58/env-var heuristics -- verify each is fake/placeholder):" >&2
+  printf '%s\n' "$wallet_secrets" >&2
   fail=1
 fi
 

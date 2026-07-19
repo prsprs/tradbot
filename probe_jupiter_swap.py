@@ -9,7 +9,7 @@ This test program:
 4. Checks balances again to verify
 
 Usage:
-    python test_jupiter_swap.py
+    python probe_jupiter_swap.py
 """
 
 import base64

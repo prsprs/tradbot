@@ -1554,7 +1554,7 @@ result = trader.execute_swap("solana", "USDC", "SOL", amount)
 | `dex/trustwallet.py` | Create | TrustWalletTrader class |
 | `dex/trader.py` | Modify | Add Trust Wallet as backend option |
 | `correlation_tracker.py` | Modify | Use Trust Wallet in live mode |
-| `test_trustwallet_swap.py` | Create | Test script for Trust Wallet swaps |
+| `probe_trustwallet_swap.py` | Create | Test script for Trust Wallet swaps |
 
 ---
 
@@ -1665,7 +1665,7 @@ twak swap execute --from-chain ethereum --from SOL --to-chain solana --to USDC -
 
 ### Current State (Completed)
 
-The `test_trustwallet_swap.py` script demonstrates the full swap flow:
+The `probe_trustwallet_swap.py` script demonstrates the full swap flow:
 
 1. ✅ Load wallet from recovery phrase (BIP44 derivation)
 2. ✅ Check SOL and token balances via RPC

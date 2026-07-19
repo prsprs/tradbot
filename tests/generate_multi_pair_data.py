@@ -9,7 +9,7 @@ Creates a single dataset with multiple pairs:
 This tests the full pipeline filtering.
 
 Usage:
-    python tests/generate_multi_pair_test.py
+    python tests/generate_multi_pair_data.py
     
     # Then run correlation analyzer:
     python correlation_tracker.py --analyze --data-dir tests/test_multi_pair_data
