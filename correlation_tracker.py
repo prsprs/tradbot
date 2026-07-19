@@ -2410,6 +2410,54 @@ def run_in_background():
     # For now, keep them open so logger output still works
 
 
+def print_test_result_detail(index: int, test: TestResult) -> None:
+    """Print one TestResult's metrics block for the discovery report.
+
+    Shared by the significant-pairs and verbose all-pairs sections. The
+    Granger metrics are None when the test was skipped (statsmodels not
+    installed or insufficient data), so that branch must not apply numeric
+    format specs to them.
+    """
+    if test.passed == "Skipped" or test.metrics.get('test_run') is False:
+        status = "SKIPPED -"
+    else:
+        status = "PASS ✓" if test.passed else "FAIL ✗"
+    print(f"\n  TEST {index}: {test.test_name}")
+
+    if test.test_name == "Data Validation":
+        print(f"  ├─ Leader samples:    {test.metrics['leader_samples']}")
+        print(f"  ├─ Follower samples:  {test.metrics['follower_samples']}")
+        print(f"  ├─ Minimum required:  {test.metrics['minimum_required']}")
+    elif test.test_name == "Cross-Correlation Analysis":
+        print(f"  ├─ Lag range tested:  {test.metrics['lag_range_periods'][0]} to {test.metrics['lag_range_periods'][1]} periods")
+        print(f"  ├─ Correlation at lag=0:      {test.metrics['correlation_at_zero']:.4f}")
+        print(f"  ├─ Correlation at optimal:    {test.metrics['correlation_at_optimal']:.4f} (at lag={test.metrics['optimal_lag_periods']}, {test.metrics['optimal_lag_seconds']}s)")
+        print(f"  ├─ Improvement over zero-lag: {test.metrics['improvement_over_zero']:+.4f} ({test.metrics['improvement_pct']:.1f}%)")
+    elif test.test_name == "Granger Causality":
+        if test.metrics.get('p_value') is None:
+            print(f"  ├─ P-value:           skipped (statsmodels not installed or insufficient data)")
+        else:
+            print(f"  ├─ Test type:         {test.metrics['test_type']}")
+            print(f"  ├─ P-value:           {test.metrics['p_value']:.4f}")
+            print(f"  ├─ Significance threshold: {test.metrics['significance_threshold']}")
+    elif test.test_name == "Rolling Correlation Stability":
+        print(f"  ├─ Window size:       {test.metrics['window_size']} periods")
+        print(f"  ├─ Mean correlation:  {test.metrics['mean_correlation']:.4f}")
+        print(f"  ├─ Std deviation:     {test.metrics['std_deviation']:.4f}")
+        print(f"  ├─ Stability score:   {test.metrics['stability_score']:.4f}")
+        print(f"  ├─ Stability threshold: {test.metrics['stability_threshold']}")
+    elif test.test_name == "Confidence Score Calculation":
+        print(f"  ├─ Factor breakdown:")
+        factors = test.metrics['factors']
+        for fname, fdata in factors.items():
+            print(f"  │   ├─ {fname}: {fdata['value']:.4f} × {fdata['weight']:.2f} = {fdata['contribution']:.4f}")
+        print(f"  ├─ Total confidence score: {test.metrics['total_score']:.4f}")
+        print(f"  ├─ Confidence level: {test.metrics['confidence_level'].upper()}")
+
+    print(f"  └─ RESULT: {status}")
+    print(f"     Reason: {test.reason}")
+
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -2724,39 +2772,8 @@ def main():
                         # Print detailed test results if available
                         if 'test_results' in pair and pair['test_results']:
                             for i, test in enumerate(pair['test_results'], 1):
-                                status = "PASS ✓" if test.passed else "FAIL ✗"
-                                print(f"\n  TEST {i}: {test.test_name}")
-                                
-                                if test.test_name == "Data Validation":
-                                    print(f"  ├─ Leader samples:    {test.metrics['leader_samples']}")
-                                    print(f"  ├─ Follower samples:  {test.metrics['follower_samples']}")
-                                    print(f"  ├─ Minimum required:  {test.metrics['minimum_required']}")
-                                elif test.test_name == "Cross-Correlation Analysis":
-                                    print(f"  ├─ Lag range tested:  {test.metrics['lag_range_periods'][0]} to {test.metrics['lag_range_periods'][1]} periods")
-                                    print(f"  ├─ Correlation at lag=0:      {test.metrics['correlation_at_zero']:.4f}")
-                                    print(f"  ├─ Correlation at optimal:    {test.metrics['correlation_at_optimal']:.4f} (at lag={test.metrics['optimal_lag_periods']}, {test.metrics['optimal_lag_seconds']}s)")
-                                    print(f"  ├─ Improvement over zero-lag: {test.metrics['improvement_over_zero']:+.4f} ({test.metrics['improvement_pct']:.1f}%)")
-                                elif test.test_name == "Granger Causality":
-                                    print(f"  ├─ Test type:         {test.metrics['test_type']}")
-                                    print(f"  ├─ P-value:           {test.metrics['p_value']:.4f}")
-                                    print(f"  ├─ Significance threshold: {test.metrics['significance_threshold']}")
-                                elif test.test_name == "Rolling Correlation Stability":
-                                    print(f"  ├─ Window size:       {test.metrics['window_size']} periods")
-                                    print(f"  ├─ Mean correlation:  {test.metrics['mean_correlation']:.4f}")
-                                    print(f"  ├─ Std deviation:     {test.metrics['std_deviation']:.4f}")
-                                    print(f"  ├─ Stability score:   {test.metrics['stability_score']:.4f}")
-                                    print(f"  ├─ Stability threshold: {test.metrics['stability_threshold']}")
-                                elif test.test_name == "Confidence Score Calculation":
-                                    print(f"  ├─ Factor breakdown:")
-                                    factors = test.metrics['factors']
-                                    for fname, fdata in factors.items():
-                                        print(f"  │   ├─ {fname}: {fdata['value']:.4f} × {fdata['weight']:.2f} = {fdata['contribution']:.4f}")
-                                    print(f"  ├─ Total confidence score: {test.metrics['total_score']:.4f}")
-                                    print(f"  ├─ Confidence level: {test.metrics['confidence_level'].upper()}")
-                                
-                                print(f"  └─ RESULT: {status}")
-                                print(f"     Reason: {test.reason}")
-                        
+                                print_test_result_detail(i, test)
+
                         # Final conclusion for this pair
                         print("\n" + "-"*40)
                         strength = "STRONG" if pair['confidence'] >= 0.7 else "MODERATE" if pair['confidence'] >= 0.5 else "WEAK"
@@ -2787,39 +2804,8 @@ def main():
                         # Print detailed test results if available
                         if pair.get('test_results'):
                             for i, test in enumerate(pair['test_results'], 1):
-                                status = "PASS ✓" if test.passed else "FAIL ✗"
-                                print(f"\n  TEST {i}: {test.test_name}")
-                                
-                                if test.test_name == "Data Validation":
-                                    print(f"  ├─ Leader samples:    {test.metrics['leader_samples']}")
-                                    print(f"  ├─ Follower samples:  {test.metrics['follower_samples']}")
-                                    print(f"  ├─ Minimum required:  {test.metrics['minimum_required']}")
-                                elif test.test_name == "Cross-Correlation Analysis":
-                                    print(f"  ├─ Lag range tested:  {test.metrics['lag_range_periods'][0]} to {test.metrics['lag_range_periods'][1]} periods")
-                                    print(f"  ├─ Correlation at lag=0:      {test.metrics['correlation_at_zero']:.4f}")
-                                    print(f"  ├─ Correlation at optimal:    {test.metrics['correlation_at_optimal']:.4f} (at lag={test.metrics['optimal_lag_periods']}, {test.metrics['optimal_lag_seconds']}s)")
-                                    print(f"  ├─ Improvement over zero-lag: {test.metrics['improvement_over_zero']:+.4f} ({test.metrics['improvement_pct']:.1f}%)")
-                                elif test.test_name == "Granger Causality":
-                                    print(f"  ├─ Test type:         {test.metrics['test_type']}")
-                                    print(f"  ├─ P-value:           {test.metrics['p_value']:.4f}")
-                                    print(f"  ├─ Significance threshold: {test.metrics['significance_threshold']}")
-                                elif test.test_name == "Rolling Correlation Stability":
-                                    print(f"  ├─ Window size:       {test.metrics['window_size']} periods")
-                                    print(f"  ├─ Mean correlation:  {test.metrics['mean_correlation']:.4f}")
-                                    print(f"  ├─ Std deviation:     {test.metrics['std_deviation']:.4f}")
-                                    print(f"  ├─ Stability score:   {test.metrics['stability_score']:.4f}")
-                                    print(f"  ├─ Stability threshold: {test.metrics['stability_threshold']}")
-                                elif test.test_name == "Confidence Score Calculation":
-                                    print(f"  ├─ Factor breakdown:")
-                                    factors = test.metrics['factors']
-                                    for fname, fdata in factors.items():
-                                        print(f"  │   ├─ {fname}: {fdata['value']:.4f} × {fdata['weight']:.2f} = {fdata['contribution']:.4f}")
-                                    print(f"  ├─ Total confidence score: {test.metrics['total_score']:.4f}")
-                                    print(f"  ├─ Confidence level: {test.metrics['confidence_level'].upper()}")
-                                
-                                print(f"  └─ RESULT: {status}")
-                                print(f"     Reason: {test.reason}")
-                            
+                                print_test_result_detail(i, test)
+
                             # Final summary for this pair
                             if pair.get('confidence') is not None:
                                 print("\n" + "-"*40)
