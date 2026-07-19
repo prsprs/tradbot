@@ -1,0 +1,30 @@
+{
+  "_fixture_note": "F3: captured live 2026-07-19 from /v1/cryptocurrency/map?symbol=ONDO&limit=1 (0 credits, confirmed by status.credit_count below) -- the auto_resolve_symbol/search_cmc_coin path used to resolve a symbol NOT in coinmarketcaputil.SYMBOL_TO_CMC_ID's static cache. Confirms the shape coinmarketcaputil.search_cmc_coin already assumed (data[0].id/symbol/name/slug).",
+  "data": [
+    {
+      "id": 21159,
+      "name": "Ondo",
+      "symbol": "ONDO",
+      "slug": "ondo-finance",
+      "rank": 39,
+      "is_active": 1,
+      "first_historical_data": "2024-01-18T12:05:00.000Z",
+      "last_historical_data": "2026-07-19T00:35:00.000Z",
+      "platform": {
+        "id": 1,
+        "name": "Ethereum",
+        "symbol": "ETH",
+        "slug": "ethereum",
+        "token_address": "0xfaba6f8e4a5e8ab82f62fe7c39859fa577269be3"
+      }
+    }
+  ],
+  "status": {
+    "timestamp": "2026-07-19T00:39:53.189Z",
+    "error_code": 0,
+    "error_message": null,
+    "elapsed": 1,
+    "credit_count": 0,
+    "notice": null
+  }
+}

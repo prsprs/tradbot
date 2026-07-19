@@ -1,0 +1,58 @@
+{
+  "provider": "openai",
+  "model": "gpt-5.5",
+  "sdk": "openai 2.31.0",
+  "verified": "2026-07-18",
+  "native_structured_output": true,
+  "adopted": true,
+  "request": {
+    "method": "client.chat.completions.create",
+    "params": {
+      "model": "gpt-5.5",
+      "max_completion_tokens": 4096,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "trading_vote",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "symbol": {"type": "string", "description": "Ticker symbol of the coin analyzed"},
+              "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "abstain": {"type": "boolean", "description": "true if declining to recommend"},
+              "reasons": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["symbol", "action", "confidence", "abstain", "reasons"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "messages": [{"role": "user", "content": "<analysis prompt ending with the voteschema schema instruction>"}]
+    }
+  },
+  "response": {
+    "finish_reason": "stop",
+    "content": "{\"abstain\":true,\"action\":\"HOLD\",\"confidence\":0.0,\"reasons\":[\"No real-time BTC price/volume data available.\",\"Short-term signal cannot be assessed reliably.\"],\"symbol\":\"BTC\"}",
+    "parsed": {
+      "abstain": true,
+      "action": "HOLD",
+      "confidence": 0.0,
+      "reasons": [
+        "No real-time BTC price/volume data available.",
+        "Short-term signal cannot be assessed reliably."
+      ],
+      "symbol": "BTC"
+    },
+    "reasoning_tokens": 98,
+    "refusal": null
+  },
+  "quirks": [
+    "Full JSON Schema accepted in strict mode INCLUDING minimum/maximum on numbers and additionalProperties:false (verified first try - no schema surgery needed).",
+    "gpt-5.x rules still apply: max_completion_tokens (not max_tokens), no temperature; reasoning tokens bill against the same budget (98 on this probe), so keep the 4096 budget generous.",
+    "message.content is the raw JSON string; message.refusal is a separate field (null here). Empty content at finish_reason=length means reasoning consumed the budget - map to abstain(parse_failure), never a vote.",
+    "Property order in the emitted JSON is alphabetical, not schema order - parse, don't string-match.",
+    "The model volunteered abstain=true when it declined - the explicit-abstain path works natively."
+  ]
+}

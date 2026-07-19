@@ -1,0 +1,67 @@
+{
+  "data": [
+    {
+      "tags": [
+        {
+          "slug": "mineable",
+          "name": "Mineable",
+          "category": "OTHERS"
+        },
+        {
+          "slug": "pow",
+          "name": "PoW",
+          "category": "ALGORITHM"
+        }
+      ],
+      "id": 1,
+      "name": "Bitcoin",
+      "symbol": "BTC",
+      "slug": "bitcoin",
+      "is_active": 1,
+      "infinite_supply": false,
+      "is_fiat": 0,
+      "circulating_supply": 20058175,
+      "total_supply": 20058175,
+      "max_supply": 21000000,
+      "date_added": "2010-07-13T00:00:00.000Z",
+      "num_market_pairs": 12668,
+      "cmc_rank": 1,
+      "last_updated": "2026-07-18T23:14:00.000Z",
+      "tvl_ratio": null,
+      "platform": null,
+      "self_reported_circulating_supply": null,
+      "self_reported_market_cap": null,
+      "minted_market_cap": 1297484952339.16,
+      "quote": [
+        {
+          "id": 2781,
+          "symbol": "USD",
+          "price": 64686.09194700727,
+          "volume_24h": 14132486832.059502,
+          "volume_change_24h": -48.9047,
+          "cex_volume_24h": 14117150879.292215,
+          "dex_volume_24h": 15335952.76728395,
+          "percent_change_1h": -0.13380481,
+          "percent_change_24h": 1.30321139,
+          "percent_change_7d": 0.91843665,
+          "percent_change_30d": 3.15638094,
+          "percent_change_60d": -15.71920805,
+          "percent_change_90d": -12.60035702,
+          "market_cap": 1297484952339.1626,
+          "market_cap_dominance": 58.724,
+          "fully_diluted_market_cap": 1358407930887.15,
+          "minted_market_cap": 1297484952339.16,
+          "tvl": null,
+          "last_updated": "2026-07-18T23:14:05.000Z"
+        }
+      ]
+    }
+  ],
+  "status": {
+    "timestamp": "2026-07-18T23:15:01.724Z",
+    "error_code": "0",
+    "error_message": "",
+    "elapsed": 27,
+    "credit_count": 1
+  }
+}

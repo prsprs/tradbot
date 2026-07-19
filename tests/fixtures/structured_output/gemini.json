@@ -1,0 +1,52 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.1-pro-preview",
+  "sdk": "google-genai 1.72.0",
+  "verified": "2026-07-18",
+  "native_structured_output": true,
+  "adopted": true,
+  "request": {
+    "method": "client.models.generate_content",
+    "params": {
+      "model": "gemini-3.1-pro-preview",
+      "contents": "<analysis prompt ending with the voteschema schema instruction>",
+      "config": {
+        "tools": [{"google_search": {}}],
+        "response_mime_type": "application/json",
+        "response_schema": {
+          "type": "object",
+          "properties": {
+            "symbol": {"type": "string", "description": "Ticker symbol of the coin analyzed"},
+            "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "abstain": {"type": "boolean", "description": "true if declining to recommend"},
+            "reasons": {"type": "array", "items": {"type": "string"}}
+          },
+          "required": ["symbol", "action", "confidence", "abstain", "reasons"]
+        }
+      }
+    }
+  },
+  "response": {
+    "finish_reason": "FinishReason.STOP",
+    "text": "{\"symbol\":\"BTC\",\"action\":\"HOLD\",\"confidence\":0,\"abstain\":true,\"reasons\":[\"I am an AI and cannot provide real financial advice.\",\"Cryptocurrency markets are volatile and unpredictable.\"]} ",
+    "parsed": {
+      "symbol": "BTC",
+      "action": "HOLD",
+      "confidence": 0,
+      "abstain": true,
+      "reasons": [
+        "I am an AI and cannot provide real financial advice.",
+        "Cryptocurrency markets are volatile and unpredictable."
+      ]
+    },
+    "thoughts_token_count": 855
+  },
+  "quirks": [
+    "response_schema must NOT contain additionalProperties: the API 400s with INVALID_ARGUMENT 'Unknown name \"additional_properties\"' (verified with and without tools).",
+    "Compatible with the google_search grounding tool in the same request (verified live: schema + tools returned valid JSON, finish STOP).",
+    "response.text can carry trailing whitespace after the closing brace - strip before json.loads.",
+    "Reasoning-heavy even under a schema (thoughts_token_count=855 on this tiny probe). Leave output uncapped like the bot's other Gemini analysis calls; empty text at finish_reason=MAX_TOKENS must map to abstain(parse_failure), never a vote.",
+    "The model volunteered abstain=true with a compliant envelope when it declined - the explicit-abstain path works natively."
+  ]
+}

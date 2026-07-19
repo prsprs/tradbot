@@ -1,0 +1,55 @@
+{
+  "provider": "claude",
+  "model": "claude-opus-4-8",
+  "sdk": "anthropic 0.94.0",
+  "verified": "2026-07-18",
+  "native_structured_output": true,
+  "adopted": true,
+  "request": {
+    "method": "client.messages.create",
+    "params": {
+      "model": "claude-opus-4-8",
+      "max_tokens": 4096,
+      "output_config": {
+        "format": {
+          "type": "json_schema",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "symbol": {"type": "string", "description": "Ticker symbol of the coin analyzed"},
+              "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+              "confidence": {"type": "number"},
+              "abstain": {"type": "boolean", "description": "true if declining to recommend"},
+              "reasons": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["symbol", "action", "confidence", "abstain", "reasons"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "messages": [{"role": "user", "content": "<analysis prompt ending with the voteschema schema instruction>"}]
+    }
+  },
+  "response": {
+    "stop_reason": "end_turn",
+    "content_block_types": ["text"],
+    "text": "{\"symbol\":\"BTC\",\"action\":\"HOLD\",\"confidence\":0.4,\"abstain\":true,\"reasons\":[\"No real-time market data available to assess current price action\",\"Short-term trading requires live indicators I cannot verify\"]}",
+    "parsed": {
+      "symbol": "BTC",
+      "action": "HOLD",
+      "confidence": 0.4,
+      "abstain": true,
+      "reasons": [
+        "No real-time market data available to assess current price action",
+        "Short-term trading requires live indicators I cannot verify"
+      ]
+    }
+  },
+  "quirks": [
+    "anthropic 0.94.0 supports output_config={'format': {'type': 'json_schema', 'schema': ...}} on messages.create directly - no beta header needed, no tool-forcing workaround required.",
+    "The schema must NOT use minimum/maximum on number properties: the API 400s with \"For 'number' type, properties maximum, minimum are not supported\" (verified). Confidence range is therefore validated client-side in voteschema.parse_vote.",
+    "additionalProperties: false IS accepted (unlike Gemini).",
+    "The JSON arrives as a single ordinary text content block; the existing next((b.text for b in content if b.type=='text'), '') extraction works unchanged, returning '' when no text block exists (e.g. stop_reason=max_tokens with the budget consumed) - which downstream maps to abstain(parse_failure).",
+    "The model volunteered abstain=true when it declined - the explicit-abstain path works natively."
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "_fixture_note": "F3: captured live 2026-07-19 querying /v3/cryptocurrency/quotes/latest with params={'id': '1', 'convert': 'USD'} (id-based lookup, BTC's CMC id) instead of params={'symbol': 'BTC', ...}. Confirms `data` is a LIST in the id-based response too, exactly like the symbol-based shape in coinmarketcap_quotes_latest_btc_v3.json -- no extra parsing branch needed for id vs symbol queries, only the request params differ.",
+  "data": [
+    {
+      "tags": [
+        {
+          "slug": "mineable",
+          "name": "Mineable",
+          "category": "OTHERS"
+        },
+        {
+          "slug": "pow",
+          "name": "PoW",
+          "category": "ALGORITHM"
+        }
+      ],
+      "id": 1,
+      "name": "Bitcoin",
+      "symbol": "BTC",
+      "slug": "bitcoin",
+      "is_active": 1,
+      "infinite_supply": false,
+      "is_fiat": 0,
+      "circulating_supply": 20058196,
+      "total_supply": 20058196,
+      "max_supply": 21000000,
+      "date_added": "2010-07-13T00:00:00.000Z",
+      "num_market_pairs": 12668,
+      "cmc_rank": 1,
+      "last_updated": "2026-07-19T00:36:00.000Z",
+      "tvl_ratio": null,
+      "platform": null,
+      "self_reported_circulating_supply": null,
+      "self_reported_market_cap": null,
+      "minted_market_cap": 1298563376079.47,
+      "quote": [
+        {
+          "id": 2781,
+          "symbol": "USD",
+          "price": 64739.78896604032,
+          "volume_24h": 14253775047.13587,
+          "volume_change_24h": -47.4101,
+          "cex_volume_24h": 14238255734.577185,
+          "dex_volume_24h": 15519312.55868265,
+          "percent_change_1h": -0.05426105,
+          "percent_change_24h": 1.33107254,
+          "percent_change_7d": 1.52723458,
+          "percent_change_30d": 2.84595844,
+          "percent_change_60d": -15.52271317,
+          "percent_change_90d": -12.75103468,
+          "market_cap": 1298563376079.474,
+          "market_cap_dominance": 58.7644,
+          "fully_diluted_market_cap": 1359535568286.85,
+          "minted_market_cap": 1298563376079.47,
+          "tvl": null,
+          "last_updated": "2026-07-19T00:37:04.000Z"
+        }
+      ]
+    }
+  ],
+  "status": {
+    "timestamp": "2026-07-19T00:38:21.224Z",
+    "error_code": "0",
+    "error_message": "",
+    "elapsed": 4,
+    "credit_count": 1
+  }
+}

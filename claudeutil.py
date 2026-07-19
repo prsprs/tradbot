@@ -1,6 +1,26 @@
 import anthropic
 import os
 
+from modelregistry import get_model
+
+import voteschema
+
+
+def _claude_output_config():
+    """T8 native structured output: anthropic>=0.94 supports
+    output_config={'format': {'type': 'json_schema', ...}} on
+    messages.create (probe-verified 2026-07-18, see
+    tests/fixtures/structured_output/claude.json). The schema variant drops
+    minimum/maximum, which this API rejects on number properties; the
+    confidence range is validated client-side in voteschema.parse_vote."""
+    return {
+        "format": {
+            "type": "json_schema",
+            "schema": voteschema.schema_for_claude(),
+        }
+    }
+
+
 class ClaudeTrader:
     def __init__(self):
         """Initialize the Anthropic Claude client with API credentials from environment."""
@@ -8,7 +28,7 @@ class ClaudeTrader:
         if not api_key:
             raise ValueError("CLAUDE_API_KEY environment variable not set")
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = "claude-opus-4-8"
+        self.model = get_model('claude')
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
@@ -32,27 +52,41 @@ class ClaudeTrader:
         )
         return next((b.text for b in message.content if b.type == "text"), "")
     
-    def send_coin_check_request(self, coin_symbol):
-        """Check if a specific coin should be bought, sold, or held."""
+    def send_coin_check_request(self, coin_symbol, market_block=None):
+        """Check if a specific coin should be bought, sold, or held.
+
+        T8: returns the model's schema-enforced JSON vote as text ('' when no
+        text block came back, e.g. the token budget was consumed — downstream
+        that maps to abstain(parse_failure), never a vote).
+        T9: market_block (Coinbase market-data + fib + demoted trends + a
+        grounding line) is prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
+        prefix = f"{market_block}\n\n" if market_block else ""
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
+            output_config=_claude_output_config(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+                    "content": f"{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? {voteschema.schema_instruction(coin_symbol)}"
                 }
             ]
         )
         return next((b.text for b in message.content if b.type == "text"), "")
     
-    def send_trend_check_request(self, coin_symbol, trends_data=None):
-        """Check coin recommendation based on Google Trends analysis."""
+    def send_trend_check_request(self, coin_symbol, trends_data=None, market_block=None):
+        """Check coin recommendation based on Google Trends analysis.
+
+        T9: market_block, when supplied, is prepended as the PRIMARY data
+        section (it already carries the demoted trends signal); in the live
+        bot flow trends_data is folded into market_block, but the trends_data
+        path is retained for direct use and its own tests."""
         if coin_symbol is None:
             return None
-        
+        prefix = f"{market_block}\n\n" if market_block else ""
+
         # Build trends section if data is available
         trends_section = ""
         if trends_data:
@@ -64,31 +98,38 @@ Here is the actual Google Trends data we collected:
 {trends_data}
 ---END GOOGLE TRENDS DATA---
 
+Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
+
 Use this data in your analysis. """
-        
+
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
+            output_config=_claude_output_config(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section}Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+                    "content": f"{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section}{voteschema.schema_instruction(coin_symbol)}"
                 }
             ]
         )
         return next((b.text for b in message.content if b.type == "text"), "")
 
-    def send_integrated_coin_check(self, coin_symbol, peer_analysis):
-        """Round 2: Check coin with peer LLM analysis as additional context."""
+    def send_integrated_coin_check(self, coin_symbol, peer_analysis, market_block=None):
+        """Round 2: Check coin with peer LLM analysis as additional context.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
+        prefix = f"{market_block}\n\n" if market_block else ""
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
+            output_config=_claude_output_config(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"""Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the meme coin with symbol {coin_symbol} right now?
+                    "content": f"""{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
 
 Additionally, consider the following analysis from another AI system:
 
@@ -98,17 +139,20 @@ Additionally, consider the following analysis from another AI system:
 
 After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
 
-Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
+{voteschema.schema_instruction(coin_symbol)}"""
                 }
             ]
         )
         return next((b.text for b in message.content if b.type == "text"), "")
 
-    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None):
-        """Round 2: Check coin with Google Trends + peer LLM analysis."""
+    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None, market_block=None):
+        """Round 2: Check coin with Google Trends + peer LLM analysis.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        
+        prefix = f"{market_block}\n\n" if market_block else ""
+
         # Build trends section if data is available
         trends_section = ""
         if trends_data:
@@ -119,15 +163,18 @@ Here is the actual Google Trends data we collected:
 {trends_data}
 ---END GOOGLE TRENDS DATA---
 
+Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
+
 """
-        
+
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
+            output_config=_claude_output_config(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"""Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the meme coin with symbol {coin_symbol} right now?
+                    "content": f"""{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
 {trends_section}
 Additionally, consider the following analysis from another AI system:
 
@@ -137,7 +184,7 @@ Additionally, consider the following analysis from another AI system:
 
 After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
 
-Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
+{voteschema.schema_instruction(coin_symbol)}"""
                 }
             ]
         )

@@ -1,0 +1,54 @@
+{
+  "provider": "perplexity",
+  "model": "sonar-pro",
+  "sdk": "openai 2.31.0 (base_url https://api.perplexity.ai)",
+  "verified": "2026-07-18",
+  "native_structured_output": true,
+  "adopted": false,
+  "adoption_note": "T8 scope keeps perplexity on the delimiter-tag fallback parser (loudly logged as [FALLBACK PARSER]). Probe evidence: json_schema mode is honored, but see the truncation quirk before ever adopting it.",
+  "request": {
+    "method": "client.chat.completions.create",
+    "params": {
+      "model": "sonar-pro",
+      "max_tokens": 2000,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "symbol": {"type": "string", "description": "Ticker symbol of the coin analyzed"},
+              "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "abstain": {"type": "boolean", "description": "true if declining to recommend"},
+              "reasons": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["symbol", "action", "confidence", "abstain", "reasons"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "messages": [{"role": "user", "content": "<analysis prompt>"}]
+    }
+  },
+  "response": {
+    "finish_reason": "stop",
+    "content": "{\"abstain\":false,\"action\":\"HOLD\",\"confidence\":0.62,\"reasons\":[\"Price is consolidating around 64k with mixed technical signals (bearish breakdown yet strong demand zone), offering no clear short-term edge for either side\",\"Volatility and conflicting directional indicators across venues increase risk of mistiming a short-term entry or exit; waiting for a clearer breakout or breakdown is prudent\"],\"symbol\":\"BTC\"}",
+    "parsed": {
+      "abstain": false,
+      "action": "HOLD",
+      "confidence": 0.62,
+      "reasons": [
+        "Price is consolidating around 64k with mixed technical signals (bearish breakdown yet strong demand zone), offering no clear short-term edge for either side",
+        "Volatility and conflicting directional indicators across venues increase risk of mistiming a short-term entry or exit; waiting for a clearer breakout or breakdown is prudent"
+      ],
+      "symbol": "BTC"
+    }
+  },
+  "quirks": [
+    "Perplexity's json_schema wrapper omits name/strict: response_format={'type':'json_schema','json_schema':{'schema': ...}}.",
+    "TRUNCATION HAZARD (observed live, first probe at max_tokens=800): the response came back as UNTERMINATED JSON cut mid-string - Perplexity does not guarantee the schema output fits the token budget. Any JSON parse of Perplexity output must treat failure as abstain(parse_failure). Retested at max_tokens=2000: clean, valid JSON (413 chars).",
+    "Unlike the other four providers' probes, sonar-pro produced a real (non-abstain) HOLD vote with live market context - its built-in search grounding fires even in schema mode.",
+    "Remember the flat per-request fee (~$0.006) on top of token costs (MODELS.md)."
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "config": {
+    "id": "$btc",
+    "name": "Bitcoin",
+    "symbol": "BTC",
+    "topic": "bitcoin",
+    "generated": 1784416113
+  },
+  "data": {
+    "id": 1,
+    "name": "Bitcoin",
+    "symbol": "BTC",
+    "price": 64775,
+    "price_btc": 1,
+    "market_cap": 1299140485611,
+    "percent_change_24h": 1.3690404862267849,
+    "percent_change_7d": 0.8776449,
+    "percent_change_30d": 2.9629,
+    "volume_24h": 14204577357.892233,
+    "max_supply": 21000000,
+    "circulating_supply": 20058140,
+    "close": 64775,
+    "galaxy_score": 66.7,
+    "alt_rank": 40,
+    "volatility": 0.0081,
+    "market_cap_rank": 1
+  }
+}

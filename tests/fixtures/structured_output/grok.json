@@ -1,0 +1,55 @@
+{
+  "provider": "grok",
+  "model": "grok-4.5",
+  "sdk": "openai 2.31.0 (base_url https://api.x.ai/v1, Responses API)",
+  "verified": "2026-07-18",
+  "native_structured_output": true,
+  "adopted": false,
+  "adoption_note": "T8 scope keeps grok on the delimiter-tag fallback parser (loudly logged as [FALLBACK PARSER]). This probe is evidence for a future migration: the xAI Responses API DOES honor json_schema output natively.",
+  "request": {
+    "method": "client.responses.create",
+    "params": {
+      "model": "grok-4.5",
+      "input": [{"role": "user", "content": "<analysis prompt>"}],
+      "max_output_tokens": 2000,
+      "text": {
+        "format": {
+          "type": "json_schema",
+          "name": "trading_vote",
+          "strict": true,
+          "schema": {
+            "type": "object",
+            "properties": {
+              "symbol": {"type": "string", "description": "Ticker symbol of the coin analyzed"},
+              "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "abstain": {"type": "boolean", "description": "true if declining to recommend"},
+              "reasons": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["symbol", "action", "confidence", "abstain", "reasons"],
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "response": {
+    "status": "completed",
+    "output_text": "{\"symbol\":\"BTC\",\"action\":\"HOLD\",\"confidence\":0,\"abstain\":true,\"reasons\":[\"No real-time market data available\",\"Cannot provide informed short-term trading advice\"]}",
+    "parsed": {
+      "symbol": "BTC",
+      "action": "HOLD",
+      "confidence": 0,
+      "abstain": true,
+      "reasons": [
+        "No real-time market data available",
+        "Cannot provide informed short-term trading advice"
+      ]
+    }
+  },
+  "quirks": [
+    "Responses API structured output uses text={'format': {...}} (Responses shape), NOT chat-completions' response_format - full schema with minimum/maximum and additionalProperties accepted.",
+    "Probed WITHOUT the bot's tools=[{'type':'web_search'}]; schema+web_search coexistence is unverified - one reason (besides T8 scope) the delimiter fallback is retained for now.",
+    "Known from MODELS.md: max_output_tokens is a soft cap on this API (observed exceeded on plain calls)."
+  ]
+}

@@ -1,6 +1,8 @@
 import openai
 import os
 
+from modelregistry import get_model
+
 class GrokTrader:
     def __init__(self):
         """Initialize the Grok client with API credentials from environment."""
@@ -11,7 +13,7 @@ class GrokTrader:
             api_key=api_key,
             base_url="https://api.x.ai/v1"
         )
-        self.model = "grok-4"
+        self.model = get_model('grok')
         # Web search requires Responses API with web_search tool
         self.tools = [{"type": "web_search"}]
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
@@ -43,19 +45,25 @@ class GrokTrader:
         
         return self._call_responses_api(prompt)
     
-    def send_coin_check_request(self, coin_symbol):
-        """Check if a specific coin should be bought, sold, or held."""
+    def send_coin_check_request(self, coin_symbol, market_block=None):
+        """Check if a specific coin should be bought, sold, or held.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
+        prefix = f"{market_block}\n\n" if market_block else ""
         return self._call_responses_api(
-            f"Using real-time web search for current market data and sentiment, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+            f"{prefix}Using real-time web search for current market data and sentiment, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
         )
     
-    def send_trend_check_request(self, coin_symbol, trends_data=None):
-        """Check coin recommendation based on Google Trends analysis."""
+    def send_trend_check_request(self, coin_symbol, trends_data=None, market_block=None):
+        """Check coin recommendation based on Google Trends analysis.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        
+        prefix = f"{market_block}\n\n" if market_block else ""
+
         # Build trends section if data is available
         trends_section = ""
         if trends_data:
@@ -67,18 +75,23 @@ Here is the actual Google Trends data we collected:
 {trends_data}
 ---END GOOGLE TRENDS DATA---
 
+Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
+
 Use this data in your analysis."""
-        
+
         return self._call_responses_api(
-            f"Using real-time web search combined with Google Trends analysis, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section} Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+            f"{prefix}Using real-time web search combined with Google Trends analysis, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section} Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
         )
 
-    def send_integrated_coin_check(self, coin_symbol, peer_analysis):
-        """Round 2: Check coin with peer LLM analysis as additional context."""
+    def send_integrated_coin_check(self, coin_symbol, peer_analysis, market_block=None):
+        """Round 2: Check coin with peer LLM analysis as additional context.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
+        prefix = f"{market_block}\n\n" if market_block else ""
         return self._call_responses_api(
-            f"""Using real-time web search for current market data and sentiment, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
+            f"""{prefix}Using real-time web search for current market data and sentiment, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
 
 Additionally, consider the following analysis from another AI system:
 
@@ -91,11 +104,14 @@ After reviewing the peer analysis, provide your final recommendation. You may ag
 Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
         )
 
-    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None):
-        """Round 2: Check coin with Google Trends + peer LLM analysis."""
+    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None, market_block=None):
+        """Round 2: Check coin with Google Trends + peer LLM analysis.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        
+        prefix = f"{market_block}\n\n" if market_block else ""
+
         # Build trends section if data is available
         trends_section = ""
         if trends_data:
@@ -106,10 +122,12 @@ Here is the actual Google Trends data we collected:
 {trends_data}
 ---END GOOGLE TRENDS DATA---
 
+Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
+
 """
-        
+
         return self._call_responses_api(
-            f"""Using real-time web search combined with Google Trends analysis, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
+            f"""{prefix}Using real-time web search combined with Google Trends analysis, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
 {trends_section}
 Additionally, consider the following analysis from another AI system:
 

@@ -1,6 +1,11 @@
 import openai
 import os
 
+from modelregistry import get_model
+
+import voteschema
+
+
 class OpenAITrader:
     def __init__(self):
         """Initialize the OpenAI client with API credentials from environment."""
@@ -8,7 +13,7 @@ class OpenAITrader:
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = "gpt-5.5"
+        self.model = get_model('openai')
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
@@ -32,27 +37,40 @@ class OpenAITrader:
         )
         return response.choices[0].message.content
     
-    def send_coin_check_request(self, coin_symbol):
-        """Check if a specific coin should be bought, sold, or held."""
+    def send_coin_check_request(self, coin_symbol, market_block=None):
+        """Check if a specific coin should be bought, sold, or held.
+
+        T8: native structured output (response_format json_schema strict,
+        probe-verified for gpt-5.5 — see
+        tests/fixtures/structured_output/openai.json). Returns the JSON vote
+        as text; '' when content is empty (e.g. finish_reason=length with the
+        budget consumed by reasoning) so downstream maps it to
+        abstain(parse_failure), never a vote.
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
+        prefix = f"{market_block}\n\n" if market_block else ""
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
+            response_format=voteschema.openai_response_format(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+                    "content": f"{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? {voteschema.schema_instruction(coin_symbol)}"
                 }
             ]
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
     
-    def send_trend_check_request(self, coin_symbol, trends_data=None):
-        """Check coin recommendation based on Google Trends analysis."""
+    def send_trend_check_request(self, coin_symbol, trends_data=None, market_block=None):
+        """Check coin recommendation based on Google Trends analysis.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        
+        prefix = f"{market_block}\n\n" if market_block else ""
+
         # Build trends section if data is available
         trends_section = ""
         if trends_data:
@@ -64,31 +82,38 @@ Here is the actual Google Trends data we collected:
 {trends_data}
 ---END GOOGLE TRENDS DATA---
 
+Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
+
 Use this data in your analysis. """
-        
+
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
+            response_format=voteschema.openai_response_format(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section}Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"
+                    "content": f"{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section}{voteschema.schema_instruction(coin_symbol)}"
                 }
             ]
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
 
-    def send_integrated_coin_check(self, coin_symbol, peer_analysis):
-        """Round 2: Check coin with peer LLM analysis as additional context."""
+    def send_integrated_coin_check(self, coin_symbol, peer_analysis, market_block=None):
+        """Round 2: Check coin with peer LLM analysis as additional context.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
+        prefix = f"{market_block}\n\n" if market_block else ""
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
+            response_format=voteschema.openai_response_format(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"""Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
+                    "content": f"""{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
 
 Additionally, consider the following analysis from another AI system:
 
@@ -98,17 +123,20 @@ Additionally, consider the following analysis from another AI system:
 
 After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
 
-Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
+{voteschema.schema_instruction(coin_symbol)}"""
                 }
             ]
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
 
-    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None):
-        """Round 2: Check coin with Google Trends + peer LLM analysis."""
+    def send_integrated_trend_check(self, coin_symbol, peer_analysis, trends_data=None, market_block=None):
+        """Round 2: Check coin with Google Trends + peer LLM analysis.
+
+        T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        
+        prefix = f"{market_block}\n\n" if market_block else ""
+
         # Build trends section if data is available
         trends_section = ""
         if trends_data:
@@ -119,15 +147,18 @@ Here is the actual Google Trends data we collected:
 {trends_data}
 ---END GOOGLE TRENDS DATA---
 
+Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
+
 """
-        
+
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
+            response_format=voteschema.openai_response_format(),
             messages=[
                 {
                     "role": "user",
-                    "content": f"""Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
+                    "content": f"""{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
 {trends_section}
 Additionally, consider the following analysis from another AI system:
 
@@ -137,8 +168,8 @@ Additionally, consider the following analysis from another AI system:
 
 After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
 
-Conclude your analysis with a left angle bracket, followed by two asterisks, followed by the name of the coin being analyzed, followed by a dash, followed by the string PRS, followed by another dash, followed by the recommendation expressed as either the keyword BUY, SELL, or HOLD, followed by two asterisks, followed by a right angle bracket"""
+{voteschema.schema_instruction(coin_symbol)}"""
                 }
             ]
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
