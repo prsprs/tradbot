@@ -27,13 +27,90 @@ export GOOGLE_API_KEY=...     # Gemini
 export CLAUDE_API_KEY=...     # Claude
 export COINBASE_API_KEY=...   # Coinbase trading
 
-# Run main trading bot
-python crypto_trading_bot.py --trading-mode whatif --llm-mode compare
+# Run main trading bot (defaults to what-if / simulation — no real trades)
+python crypto_trading_bot.py --llm-mode compare
 ```
 
 Alternatively, instead of `export`, copy `.env.example` to `.env` and fill in
 your keys — the bot loads it automatically at startup. Shell `export`s still
 work and take precedence over `.env` values.
+
+### Trading mode & the live-trading double lock
+
+The bot now defaults to **what-if (simulation)** mode. Live trading is
+double-locked and requires **both**:
+
+1. the `--live` command-line flag, **and**
+2. the environment variable `LIVE_TRADING_CONFIRMED=1`.
+
+```bash
+# Live trading (executes REAL orders): BOTH locks required
+LIVE_TRADING_CONFIRMED=1 python crypto_trading_bot.py --live --llm-mode compare
+```
+
+Any live request that is missing either lock is automatically downgraded to
+what-if, and the bot prints a loud notice explaining what was missing. Trade
+sizing is also configurable and capped:
+
+- `--notional-usd` (env `TRADE_NOTIONAL_USD`, default `5.00`, hard ceiling
+  `100.00`) — USD per buy order (CEX and DEX).
+- `--run-spend-cap-usd` (env `RUN_SPEND_CAP_USD`, default `10.00`) — maximum
+  cumulative intended spend across all buys in one run; buys that would exceed
+  it are refused (what-if spend counts against the cap too).
+- `--daily-spend-cap-usd` (env `DAILY_SPEND_CAP_USD`, default `15.00`) —
+  maximum cumulative intended **live** spend across all runs in a single UTC
+  day, summed from the execution ledger; a live buy that would exceed it is
+  refused with `[DAILY CAP]`. What-if spend does not count against this cap.
+
+> **Migration note (breaking change):** `--trading-mode=live` (or
+> `TRADING_MODE=live`) **alone no longer enables live trading**. The
+> `--trading-mode` flag value is still accepted for compatibility, but live
+> now requires the `--live` flag **and** `LIVE_TRADING_CONFIRMED=1`. Scripts
+> that previously relied on `--trading-mode=live` will run in what-if until
+> updated. The default with no flags is now what-if (previously live).
+
+### What each recommendation is based on
+
+Every coin analysis is grounded in a compact, plainly-labeled data block
+built fresh each run and prepended to every panelist's prompt (see
+`marketdata.py`):
+
+- **MARKET DATA** (Coinbase OHLCV, primary) — last price, 24h/72h/7d change,
+  range, volume trend, and volatility, verifiable by every panelist from the
+  same candles.
+- **FIBONACCI** — retracement levels computed from that same OHLCV window.
+- **CMC** (CoinMarketCap) — rank, market-cap dominance, supply, and
+  multi-window % change. Resolved by CoinMarketCap numeric ID rather than
+  ticker symbol where possible, so a colliding ticker can't silently return
+  a different asset's numbers.
+- **SOCIAL** (LunarCrush) — galaxy score, alt rank, an interaction-weighted
+  sentiment aggregate, and social volume.
+- **GOOGLE TRENDS** — a secondary signal only (search interest, not price);
+  it's noisy on low-volume tickers, so it never carries the analysis alone.
+
+Any of the above that can't be fetched is disclosed explicitly (e.g. `CMC
+DATA UNAVAILABLE: <reason>`) — never silently omitted, and never invented.
+
+### How the panel decides
+
+Each LLM votes with a schema-enforced JSON object (`symbol`, `action`,
+`confidence`, `abstain`, `reasons`) instead of free-text scraped for
+keywords, so a model's refusal or hedge can't be misread as a BUY. In
+`compare`/`integrate` mode with `--require-consensus=true` (the default), a
+trade only happens when every panelist agrees; any parse failure, refusal,
+API error, or symbol mismatch counts as an abstain, and the panel **fails
+closed** — it never shrinks the quorum or falls back to a single model's
+opinion to force a decision.
+
+### Scoring past recommendations
+
+`tradeanalyzer.py` grades recorded whatif/live recommendations against
+BTC-relative benchmark returns (never a backtester or simulated P&L — it
+only compares a recorded decision to observed prices). See
+[docs/RUNBOOK_whatif_cadence.md](docs/RUNBOOK_whatif_cadence.md) for running
+the bot on a schedule to accumulate data for it to grade, and
+[docs/RUNBOOK_live_acceptance.md](docs/RUNBOOK_live_acceptance.md) for the
+owner-executed live acceptance test.
 
 See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 
@@ -75,6 +152,10 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 
 | Document | Purpose |
 |----------|---------|
+| [AGENTS.md](AGENTS.md) | **Start here for AI-assisted development** — hard rules, environment, architecture map, API gotchas (any agent: Devin/Windsurf/Codex/Grok/Claude) |
+| [MODELS.md](MODELS.md) | LLM model registry, migration history, per-provider request/response shapes |
+| [docs/RUNBOOK_whatif_cadence.md](docs/RUNBOOK_whatif_cadence.md) | Scheduled what-if runs that feed `tradeanalyzer.py`'s benchmark-relative scoring |
+| [docs/RUNBOOK_live_acceptance.md](docs/RUNBOOK_live_acceptance.md) | Owner-executed live acceptance test (the one supervised real trade) |
 | [INSTRUCTIONS_FOR_IMPLEMENTATION.md](INSTRUCTIONS_FOR_IMPLEMENTATION.md) | Guidelines for implementing features |
 | [METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md](METHODS_OF_SPECIFYING_RUNTIME_OPTIONS.md) | CLI vs env var configuration patterns |
 | [PARSING_OPTIONS_FOR_VARIABLE_INPUT.md](PARSING_OPTIONS_FOR_VARIABLE_INPUT.md) | Handling variable LLM output formats |
@@ -120,13 +201,14 @@ tradingbot/
 
 | API | Purpose | Module | Required |
 |-----|---------|--------|----------|
-| **Coinbase** | CEX trading | `coinbaseutil2.py` | For live trading |
+| **Coinbase** | CEX trading + OHLCV candles for the market data block | `coinbaseutil2.py`, `marketdata.py` | Always (client is constructed even in what-if mode; real orders need live trading armed — see above) |
 | **Jupiter** | Solana DEX | `dex/jupiterutil.py` | For DEX trading |
 | **CoinGecko** | Price data | `coingeckoutil.py` | Free tier available |
-| **LunarCrush** | Social data, categories | `lunarcrushutil.py` | $24/month |
+| **CoinMarketCap** | Rank, dominance, supply, %-change (CMC section of the market data block) | `coinmarketcaputil.py`, `marketdata.py` | Free tier (15k credits/mo) |
+| **LunarCrush** | Social data, categories, and the SOCIAL section of the market data block | `lunarcrushutil.py`, `marketdata.py` | Individual plan, $24/month |
 | **Polymarket** | Prediction markets | `polymarketutil.py` | Free |
 | **Santiment** | On-chain metrics | `santimentutil.py` | Free tier |
-| **Google Trends** | Search trends | `context/trends.py` | Free |
+| **Google Trends** | Search trends; a secondary signal in `crypto_trading_bot.py`'s market data block (own `pytrends` usage), also used by `llm_compare.py` | `context/trends.py` | Free |
 
 ---
 
