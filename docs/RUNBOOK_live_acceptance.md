@@ -100,8 +100,82 @@ Why these values:
       (SOL, etc. from prior manual/live activity) flagged `bot-unknown balance`
       — that is correct: the report explicitly states bot positions are an
       attribution, **not** account truth.
+
+> **Recommendation (doc note only, no code change):** the reconciliation on
+> the current account shows 17 legacy holdings plus ETH drift unrelated to
+> the bot. The ledger-attribution design already handles this correctly (it
+> never claims account truth, only bot-attributed positions), but a
+> **dedicated/clean Coinbase portfolio used only for bot trading** would make
+> "drift" mean something — right now the diff between bot ledger and account
+> balance is dominated by pre-existing manual holdings, not anything the bot
+> did. Consider it before scaling past single acceptance trades.
 - [ ] The `run_id` in the ledger intent row matches the `run_id` in the new
       `history/recommendations.json` record (the join key).
+
+## 3a. What today's evidence does / does not show
+
+Today's acceptance run (2026-07-19) validated the **execution path**: gate,
+caps, order placement, fill confirmation, ledger, and the daily-cap
+accounting all behaved correctly (the startup banner correctly showed "$5.00
+spent today" against the acceptance fill). It says nothing about **strategy
+performance** — do not conflate the two. Only 6 mature directional records
+exist so far, which is not enough to draw any conclusion about whether the
+panel's BUY/SELL calls are any good. Before drawing conclusions about
+strategy, run `python tradeanalyzer.py` for benchmark-relative scoring (a BUY
+that rose but trailed BTC, or didn't clear fees, is scored a LOSS, not a
+win). Also remember the fee floor: round-trip fees are ≈1.2% of notional per
+side (≈$0.059 observed on the $5 acceptance fill), so at small notional a
+trade needs **more than ≈2.4% edge round-trip** just to clear fees before it
+can be a real win.
+
+## 3b. Observing a cap refusal without spending money
+
+The daily-cap REFUSAL (`[DAILY CAP] ... refused`) is only reached when a
+**BUY** is attempted — it is not consulted on HOLD or SELL votes, and there
+is no CLI flag to force a BUY vote (the panel decides). If every vote you've
+seen so far has been HOLD, you have never actually seen this refusal path
+fire, only inferred it exists from the code. `scripts/demo_cap_refusal.py`
+lets you observe it directly, with **no LLM call, no network call, no order,
+and no money spent**: it seeds a scratch execution ledger with a whatif
+intent that already consumes the daily cap, then calls the exact same
+production function (`maybe_execute_buy`) that a real BUY vote reaches, with
+a forced decision instead of a panel call. It refuses to run if
+`TRADING_MODE=live` or `LIVE_TRADING_CONFIRMED=1` is set.
+
+```bash
+mkdir -p /tmp/tradbot-cap-demo
+HISTORY_DIR=/tmp/tradbot-cap-demo TRADING_MODE=whatif \
+  ./venv/bin/python scripts/demo_cap_refusal.py
+```
+
+Observed output (captured 2026-07-19, whatif, scratch `HISTORY_DIR`, no
+network, no order):
+
+```
+======================================================================
+DEMO: daily-cap refusal path (WHATIF, no money, no network)
+======================================================================
+Scratch ledger: /tmp/tradbot-cap-demo/executions.json
+Daily spend cap: $5.00   Notional per buy: $5.00
+
+[SEEDED] whatif intent: SOL $5.00 -> $5.00 already committed today (whatif)
+
+[FORCED] Attempting a BUY for BTC (forced decision -- no LLM call)
+----------------------------------------------------------------------
+[DAILY CAP] (whatif-simulated) BUY for BTC refused: $5.00 would push today's WHATIF spend past the $5.00 daily cap ($5.00 simulated today across all runs). No real cap was consumed -- this mirrors what live would refuse.
+----------------------------------------------------------------------
+
+Blocked by daily cap: 1
+
+[OK] The [DAILY CAP] refusal fired. No order was placed, buy_something() was never called, nothing was spent.
+```
+
+This exercises the whatif branch of the cap check (the code path is
+identical in shape to the live branch, just against `trading_mode='whatif'`
+intents and the `spend_today(trading_mode='whatif')` tally instead of
+`live_spend_today()`) — it is a demonstration of the refusal mechanics and
+the operator-visible message shape, not a substitute for eventually seeing
+the real live `[DAILY CAP]` line fire on an actual BUY vote.
 
 ## 4. Abort / no-trade criteria (all normal, not failures)
 
@@ -112,7 +186,11 @@ Why these values:
   rerun to seek a BUY, or accept the HOLD and validate the path in what-if
   instead.
 - **`[SPEND CAP]` / `[DAILY CAP]`** → a cap refused the buy. Expected if you
-  already did a live buy today; the caps work. Nothing spent.
+  already did a live buy today; the caps work. Nothing spent. Note the caps are
+  consulted **only when a BUY is attempted**, so a HOLD/SELL vote never triggers
+  either cap line — to demo a cap you need an actual BUY. (The startup banner's
+  `Daily spend cap: $X ($Y spent today [UTC])` line shows today's committed
+  spend regardless of the vote, so cap visibility no longer depends on a BUY.)
 - **`[ORDER] ... Status: OPEN` / fill unconfirmed** → the order was placed but
   did not confirm FILLED within the poll window. The ledger records it
   `unconfirmed`. Do **not** rerun blindly (idempotency will dedupe the same

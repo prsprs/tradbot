@@ -1423,7 +1423,7 @@ CoinGecko **auto-adjusts granularity** based on requested range:
 
 ## Related Documents
 
-- [`CORRELATED_PAIR_FEATURE.md`](./CORRELATED_PAIR_FEATURE.md) - Cross-exchange arbitrage design
-- [`FLASH_LOAN_FEATURE.md`](./FLASH_LOAN_FEATURE.md) - Atomic execution for correlated pairs
+- [`CORRELATED_PAIR_FEATURE.md`](./docs/design/CORRELATED_PAIR_FEATURE.md) - Cross-exchange arbitrage design (design only, moved to docs/design/)
+- [`FLASH_LOAN_FEATURE.md`](./docs/design/FLASH_LOAN_FEATURE.md) - Atomic execution for correlated pairs (design only, moved to docs/design/)
 - [`HISTORY_ANALYSIS_FEATURE.md`](./HISTORY_ANALYSIS_FEATURE.md) - General history analysis
 

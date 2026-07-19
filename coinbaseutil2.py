@@ -107,6 +107,9 @@ class OrderResult:
         return 'unconfirmed'
 
 class BlobbyTrader:
+    """This is the Coinbase trader; the name is historical (no rename planned
+    -- see docs/audit-2026-07-19/dimensions/documentation.md OB-4)."""
+
     def __init__(self, credentials_path=None):
         """Initialize the Coinbase REST client with API credentials from JSON file.
         
@@ -144,7 +147,7 @@ class BlobbyTrader:
             product = self.client.get_product(product_id)
             return product
         except Exception as e:
-            print(f"Error getting product details for {product_id}: {e}")
+            print(f"[COINBASE] Error getting product details for {product_id}: {e}")
             return None
     
     @staticmethod
@@ -172,7 +175,7 @@ class BlobbyTrader:
         try:
             resp = self.client.get_accounts(limit=250)
         except Exception as e:
-            print(f"Error fetching accounts: {e}")
+            print(f"[COINBASE] Error fetching accounts: {e}")
             return balances
         for acct in getattr(resp, 'accounts', []) or []:
             acct_dict = acct.to_dict() if hasattr(acct, 'to_dict') else dict(acct)
@@ -226,7 +229,7 @@ class BlobbyTrader:
             # exception -- not just ones whose text "looks like" a duplicate --
             # BEFORE writing a failure, so a filled order is never ledgered as
             # a clean failure.
-            print(f"Error placing market buy order for {product_id}: {e}")
+            print(f"[ORDER] Error placing market buy order for {product_id}: {e}")
             return self._resolve_create_failure(
                 product_id, client_order_id, f'exception: {e}',
                 poll_tries=poll_tries, poll_delay=poll_delay)
@@ -498,7 +501,7 @@ class BlobbyTrader:
                 base_size=base_size
             )
         except Exception as e:
-            print(f"Error placing market sell order for {product_id}: {e}")
+            print(f"[ORDER] Error placing market sell order for {product_id}: {e}")
             return OrderResult(success=False, client_order_id=client_order_id,
                                product_id=product_id, side='SELL',
                                failure_reason=f'exception: {e}')
@@ -562,7 +565,7 @@ class BlobbyTrader:
             
             return products
         except Exception as e:
-            print(f"Error listing products: {e}")
+            print(f"[COINBASE] Error listing products: {e}")
             return []
     
     def list_all_coins(self, quote_currency='USD'):

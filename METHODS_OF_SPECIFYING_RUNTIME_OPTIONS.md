@@ -186,8 +186,8 @@ def get_config():
     parser.add_argument(
         '--trading-mode',
         choices=['live', 'whatif'],
-        default=os.environ.get('TRADING_MODE', 'live'),
-        help='Trading mode (default: live, or TRADING_MODE env var)'
+        default=os.environ.get('TRADING_MODE', 'whatif'),
+        help='Trading mode (default: whatif, or TRADING_MODE env var)'
     )
     parser.add_argument(
         '--llm-mode',
@@ -238,7 +238,9 @@ Trading Bot
 optional arguments:
   -h, --help            show this help message and exit
   --trading-mode {live,whatif}
-                        Trading mode (default: live, or TRADING_MODE env var)
+                        Trading mode (default: whatif, or TRADING_MODE env var;
+                        live additionally requires --live AND shell
+                        LIVE_TRADING_CONFIRMED=1)
   --llm-mode {gemini,claude,openai,grok,perplexity,compare,integrate}
                         LLM mode (default: compare, or LLM_MODE env var)
   --coins COINS         Comma-separated coins to analyze (or ANALYZE_COINS env var)
@@ -262,7 +264,7 @@ optional arguments:
 
 | Setting | CLI Argument | Environment Variable | Default |
 |---------|--------------|---------------------|---------|
-| Trading mode | `--trading-mode` | `TRADING_MODE` | `live` |
+| Trading mode | `--trading-mode` | `TRADING_MODE` | `whatif` |
 | LLM mode | `--llm-mode` | `LLM_MODE` | `compare` |
 | Coins to analyze | `--coins` | `ANALYZE_COINS` | (discovery) |
 | Require consensus | `--require-consensus` | `REQUIRE_CONSENSUS` | `true` |

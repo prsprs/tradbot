@@ -1,4 +1,15 @@
-pl# Crypto Trading Bot
+> **⚠️ SUPERSEDED — historical design doc, predates the current safety model.**
+> This document describes an earlier version of the bot and does not mention
+> the double-lock live interlock (`--live` + `LIVE_TRADING_CONFIRMED=1`),
+> whatif-by-default mode, spend caps (`--notional-usd` /
+> `--run-spend-cap-usd` / `--daily-spend-cap-usd`), or the fail-closed
+> multi-LLM consensus panel. It also lists stale details (e.g. "OpenAI
+> GPT-4o", "Python 3.9+") that no longer match the code. **For current,
+> accurate behavior see [AGENTS.md](../../AGENTS.md) and
+> [OPERATIONS_MANUAL.md](../../OPERATIONS_MANUAL.md).** Kept here only as a
+> historical design reference.
+
+# Crypto Trading Bot
 
 An AI-powered cryptocurrency trading bot that uses multiple LLMs to analyze coins and make buy/sell/hold recommendations. Supports single-LLM mode or multi-LLM comparison and integration for higher-confidence trading signals.
 

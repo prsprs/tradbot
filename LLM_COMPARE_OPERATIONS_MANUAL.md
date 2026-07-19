@@ -217,6 +217,21 @@ python llm_compare.py --prompt "..." --mode integrate --simple-integration
 | `XAI_API_KEY` | Grok | xAI API key for Grok |
 | `PERPLEXITY_API_KEY` | Perplexity | Perplexity API key |
 
+`llm_compare.py` loads `.env` automatically as the first action in
+`main()` (mirroring `crypto_trading_bot.py`'s pattern), so any of the
+variables above (and the configuration variables in the table before it)
+can live in a `.env` file at the repo root instead of being
+shell-exported. Fixed 2026-07-19: earlier versions never called
+`load_dotenv()` at all, so `.env`-only keys were silently invisible and
+every provider reported "environment variable not set" even with a
+correctly filled-in `.env`. Shell-exported variables still take
+precedence in the usual way (`load_dotenv()` never overrides an
+already-set variable). Note that `.env` is located by walking up from
+`llm_compare.py`'s own file location, not from the current working
+directory -- running the script via `env -i` clears shell-exported vars
+but does NOT prevent it from finding and loading a real `.env` at the
+repo root.
+
 ---
 
 ## APIs and Services
@@ -243,7 +258,7 @@ python llm_compare.py --prompt "..." --mode integrate --simple-integration
 
 **Library:** `anthropic`
 
-**Model:** `claude-sonnet-4-20250514`
+**Model:** see `modelregistry.py` / [MODELS.md](MODELS.md) for the current, live model ID (this doc previously hardcoded the now-retired `claude-sonnet-4-20250514`)
 
 ---
 
@@ -426,7 +441,9 @@ Could not initialize claude: ANTHROPIC_API_KEY or CLAUDE_API_KEY environment var
 ```
 Error code: 400 - the model grok-3 is not supported when using server-side tools
 ```
-**Solution:** The system uses `grok-4` which supports server-side tools. Ensure you're using the latest version.
+**Solution:** The Grok model ID comes from `modelregistry.get_model('grok')`
+(env override `GROK_MODEL`) and must be one that supports server-side tools.
+Check `MODELS.md` / run the preflight for the current ID — never hardcode one.
 
 ### pytrends Not Installed
 ```
@@ -436,6 +453,23 @@ Warning: pytrends not installed. Install with: pip install pytrends
 
 ### No Consensus
 When LLMs disagree and no consensus is reached, the tiebreaker LLM's answer is used (unless `--tiebreaker none` is set).
+
+### All Requested LLMs Unavailable (compare mode)
+```
+Error: None of the requested LLMs could be initialized (gemini, claude). Check that the
+corresponding API key env vars are set (GOOGLE_API_KEY, ANTHROPIC_API_KEY/CLAUDE_API_KEY,
+OPENAI_API_KEY, XAI_API_KEY, PERPLEXITY_API_KEY as applicable) -- either exported in the
+shell or in a .env file at the repo root.
+```
+**Fixed 2026-07-19:** previously, if every LLM passed to `--llms` failed
+to initialize, compare mode would continue anyway -- printing an empty
+`[COMPARISON]` section and saving a junk recommendation record (no
+responses, no recommendation) into the history file. It now exits with
+status 1 and this message, and writes nothing to history. Partial
+availability (at least one requested LLM initializes) is unaffected and
+behaves as before. `single` mode and `integrate` mode already failed
+this way (integrate mode requires at least 2 available LLMs).
+**Solution:** set the missing API key(s), per the API Keys table above.
 
 ---
 

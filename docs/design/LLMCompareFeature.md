@@ -1,3 +1,11 @@
+> **⚠️ SUPERSEDED — see [README_LLM_COMPARE.md](../../README_LLM_COMPARE.md)
+> and [LLM_COMPARE_OPERATIONS_MANUAL.md](../../LLM_COMPARE_OPERATIONS_MANUAL.md)
+> for current behavior.** This design doc predates the shipped feature: it
+> describes a 2-LLM (Gemini/Claude) design, but the current tool runs all
+> five providers, and it hardcodes retired/placeholder model IDs. For the
+> current model roster and IDs see `modelregistry.py` /
+> [MODELS.md](../../MODELS.md), the single source of truth.
+
 # LLM Comparison Feature Design Document
 
 ## Overview
@@ -27,7 +35,7 @@ A wrapper module mirroring the existing Gemini client pattern:
   - `send_integrated_coin_check(coin, peer_analysis)` - Round 2 integration
   - `send_integrated_trend_check(coin, peer_analysis)` - Round 2 integration
 - Uses the `anthropic` Python SDK
-- Model: `claude-sonnet-4-20250514`
+- Model: see `modelregistry.py` / [MODELS.md](../../MODELS.md) for the current, live model ID (the ID formerly listed here, `claude-sonnet-4-20250514`, is retired — see MODELS.md's migration history)
 
 #### 2. OpenAIClient Wrapper (`openaiutil.py`)
 
@@ -110,7 +118,7 @@ Logic to compare and score recommendations:
 | Provider | Model | Wrapper Module | Special Features |
 |----------|-------|----------------|------------------|
 | Google | `gemini-2.5-pro` | Built into main script | Google Search grounding |
-| Anthropic | `claude-sonnet-4-20250514` | `claudeutil.py` | Strong reasoning |
+| Anthropic | see `modelregistry.py` / [MODELS.md](../../MODELS.md) (retired: `claude-sonnet-4-20250514`) | `claudeutil.py` | Strong reasoning |
 | OpenAI | `gpt-4o` | `openaiutil.py` | Multimodal capabilities |
 | xAI | `grok-3` | `grokutil.py` | Real-time X/Twitter data |
 | Perplexity | `sonar-pro` | `perplexityutil.py` | Built-in live web search |

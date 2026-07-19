@@ -1,3 +1,9 @@
+> **⚠️ SUPERSEDED — see [README_LLM_COMPARE.md](../../README_LLM_COMPARE.md)
+> and [LLM_COMPARE_OPERATIONS_MANUAL.md](../../LLM_COMPARE_OPERATIONS_MANUAL.md)
+> for current behavior.** This is the abstracted design doc that predates
+> the shipped `llm_compare.py` tool. For the current model roster and IDs
+> see `modelregistry.py` / [MODELS.md](../../MODELS.md).
+
 # General Purpose LLM Compare and Integrate Feature
 
 ## Overview

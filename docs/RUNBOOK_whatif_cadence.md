@@ -87,11 +87,17 @@ input tokens (the market-data block) and ~1–2k output tokens.
 |   4   |       20         |  ~$0.20–1.00     |   ~$0.80–4.00     |
 |   8   |       40         |  ~$0.40–2.00     |   ~$1.60–8.00     |
 
-\* Order-of-magnitude only. Actual cost depends on the current model IDs
-(`modelregistry.py`), per-model pricing, prompt size, and how much reasoning the
-reasoning models spend. Verify against a couple of real runs before trusting the
-budget. To cut cost, shrink the panel (`--llm-mode=gemini` for a single model)
-or the coin set, or lengthen the interval.
+\* Order-of-magnitude only. The table assumes the full 5-model panel. Actual
+cost depends on the current model IDs (`modelregistry.py`), per-model pricing,
+prompt size, and how much reasoning the reasoning models spend. Verify against a
+couple of real runs before trusting the budget. To cut cost, shrink the panel
+(`--llm-mode=gemini` for a single model) or the coin set, or lengthen the
+interval.
+
+> **Note:** the recommended live-cadence panel is the `gemini,claude,openai`
+> trio (`--compare-llms=gemini,claude,openai`), which drops the two web-search
+> models (grok, perplexity) and is correspondingly cheaper than the ×5 figures
+> above — scale the per-run cost by roughly 3/5.
 
 The **analyzer** itself costs **nothing** in LLM API terms — it makes no LLM
 calls. Its only external calls are read-only Coinbase price/candle fetches (free).
