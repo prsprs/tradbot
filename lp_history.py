@@ -10,7 +10,7 @@ This module provides functions to:
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List
 
 
@@ -106,7 +106,14 @@ class LPHistoryManager:
     
     def get_snapshots_by_period(self, hours: int = 24) -> List[Dict]:
         """Get snapshots from the last N hours."""
-        cutoff = datetime.utcnow().timestamp() - (hours * 3600)
+        # datetime.now(timezone.utc).timestamp() is not just the deprecation
+        # fix here: datetime.utcnow().timestamp() is a latent bug -- it
+        # treats the naive UTC wall-clock value as LOCAL time, so on any
+        # machine whose local tz isn't UTC, `cutoff` was systematically
+        # wrong by the local UTC offset versus `ts.timestamp()` below (which
+        # parses an aware, correctly-computed epoch). Fixed as part of this
+        # migration.
+        cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
         snapshots = self.load_snapshots()
         
         filtered = []
@@ -122,7 +129,8 @@ class LPHistoryManager:
     
     def get_trades_by_period(self, hours: int = 24) -> List[Dict]:
         """Get trades from the last N hours."""
-        cutoff = datetime.utcnow().timestamp() - (hours * 3600)
+        # See get_snapshots_by_period: fixes the same latent local-tz bug.
+        cutoff = datetime.now(timezone.utc).timestamp() - (hours * 3600)
         trades = self.load_trades()
         
         filtered = []
@@ -216,8 +224,12 @@ def create_snapshot_record(
     Returns:
         Dictionary containing the snapshot record.
     """
-    timestamp = datetime.utcnow()
-    
+    # Naive (via non-deprecated now(timezone.utc), then stripped) so
+    # isoformat() below stays 'Z'-suffixed with no embedded offset --
+    # get_snapshots_by_period's `.replace('Z', '+00:00')` parse depends on
+    # that exact shape.
+    timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+
     record = {
         'id': f"lp_snap_{timestamp.strftime('%Y%m%d_%H%M%S')}_{lp_token}",
         'timestamp': timestamp.isoformat() + 'Z',
@@ -277,8 +289,10 @@ def create_trade_record(
     Returns:
         Dictionary containing the trade record.
     """
-    timestamp = datetime.utcnow()
-    
+    # See create_snapshot_record: naive so the stored format (and the parser
+    # in get_trades_by_period) is unaffected by this migration.
+    timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+
     record = {
         'id': f"lp_trade_{timestamp.strftime('%Y%m%d_%H%M%S')}_{lp_token}_{action}",
         'timestamp': timestamp.isoformat() + 'Z',

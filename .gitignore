@@ -36,7 +36,11 @@ cdp_api_key*.json
 
 # History files (user-specific data)
 history/recommendations.json
+history/recommendations.json.bak-*
+history/executions.json
+history/analyzer_state.json
 history/*.csv
+!history/test_expected_output.csv
 
 # Temp files
 *.tmp
@@ -56,3 +60,9 @@ history/lp/
 
 # Paper trades (user-specific)
 paper_trades/
+
+# Live/DEX trade logs (per-user data; AGENTS.md rule #3 -- previously only
+# enforced by convention, not actually covered here. The 5 files already
+# tracked before this entry was added still need `git rm --cached`, see T11
+# report.)
+live_trades/

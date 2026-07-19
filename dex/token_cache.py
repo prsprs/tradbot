@@ -11,7 +11,7 @@ Features:
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import httpx
@@ -119,7 +119,11 @@ def save_token_cache(tokens: List[Dict]):
     ensure_cache_dir()
     
     cache_data = {
-        'fetched_at': datetime.utcnow().isoformat() + 'Z',
+        # Naive-isoformat + literal 'Z' preserves the existing on-disk
+        # format exactly; datetime.now(timezone.utc) is just a
+        # non-deprecated source for the value (not currently parsed back
+        # anywhere, but kept consistent with the repo's other timestamps).
+        'fetched_at': datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
         'token_count': len(tokens),
         'tokens': tokens
     }

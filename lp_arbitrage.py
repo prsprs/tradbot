@@ -28,7 +28,7 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 
 import httpx
@@ -1159,7 +1159,7 @@ class LPArbitrageEngine:
             Dictionary with cycle results.
         """
         self.wake_up_count += 1
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc)
         
         print(f"\n[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] Wake up #{self.wake_up_count}")
         
@@ -1221,7 +1221,10 @@ class LPArbitrageEngine:
             self._execute_action(action, market_price, virtual_price, spread_pct)
         
         return {
-            "timestamp": timestamp.isoformat(),
+            # Naive isoformat (no 'Z'/offset suffix) preserves this field's
+            # existing shape exactly, even though it isn't parsed back
+            # anywhere today.
+            "timestamp": timestamp.replace(tzinfo=None).isoformat(),
             "virtual_price": virtual_price,
             "market_price": market_price,
             "spread_pct": spread_pct,

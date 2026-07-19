@@ -10,10 +10,11 @@ try:
     
     api_key = creds['name']
     api_secret = creds['privateKey']
-    
-    print(f"API Key: {api_key[:40]}...")
-    print(f"Private Key starts with: {api_secret[:40]}...")
-    
+
+    # Never print any part of key material -- just confirm presence/shape.
+    print(f"API Key: present ({len(api_key)} chars)" if api_key else "API Key: MISSING")
+    print(f"Private Key: present ({len(api_secret)} chars)" if api_secret else "Private Key: MISSING")
+
     client = RESTClient(api_key=api_key, api_secret=api_secret)
     accounts = client.get_accounts()
     print(f"\n✓ SUCCESS! Found {len(accounts.accounts)} accounts")

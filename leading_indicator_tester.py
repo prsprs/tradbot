@@ -4595,6 +4595,8 @@ def run_bypass_leader_loop(config):
     last_signal_time = None
     cycle_count = 0
     signal_cooldown = interval * 3  # Minimum time between signals
+    start_time = time.time()
+    duration_seconds = getattr(config, 'duration_seconds', None)
     
     # Get sorted levels for proximity checking
     sorted_levels = sorted(fib_report.levels.items(), key=lambda x: x[1].price)
@@ -4607,14 +4609,16 @@ def run_bypass_leader_loop(config):
     print(f"[BYPASS-LEADER] Trade constraint: {trade_direction} (respecting trend)")
     print(f"[BYPASS-LEADER] Trading mode: {config.trading_mode}")
     if config.dry_run:
-        print(f"[BYPASS-LEADER] DRY RUN - no trades will be executed")
+        print(f"[BYPASS-LEADER] DRY RUN - single bounded pass, no trades will be executed")
+    if duration_seconds:
+        print(f"[BYPASS-LEADER] Duration: {format_duration(duration_seconds)}")
     print("")
-    
+
     try:
         while True:
             cycle_count += 1
             now = datetime.now(timezone.utc)
-            
+
             # Fetch current price
             price = get_price_from_exchange(
                 follower, 
@@ -4697,8 +4701,21 @@ def run_bypass_leader_loop(config):
                 print(status)
             
             last_price = price
+
+            # Dry run does a single bounded pass — never loop forever.
+            if config.dry_run:
+                print(f"\n[BYPASS-LEADER] Dry run complete after {cycle_count} cycle(s)")
+                break
+
+            # Check duration limit
+            if duration_seconds:
+                elapsed = time.time() - start_time
+                if elapsed >= duration_seconds:
+                    print(f"\n[BYPASS-LEADER] Duration limit reached ({format_duration(duration_seconds)})")
+                    break
+
             time.sleep(interval)
-            
+
     except KeyboardInterrupt:
         print(f"\n\n[BYPASS-LEADER] Stopped after {cycle_count} cycles")
         print(f"[BYPASS-LEADER] Signals generated: {1 if last_signal else 0}")
@@ -4872,7 +4889,10 @@ Examples:
     
     # Set logging level early
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        # Scope DEBUG to this tool's own logger only — setting it on the
+        # root logger would also enable DEBUG-level logging for third-party
+        # libraries (urllib3, requests, etc.), spamming the output.
+        logger.setLevel(logging.DEBUG)
     
     # Validate execution_pct
     if not (50 <= args.execution_pct <= 95):
@@ -5181,7 +5201,8 @@ Examples:
             dry_run: bool
             max_trade_usd: Optional[float]
             wallet_type: str
-        
+            duration_seconds: Optional[int] = None
+
         fib_config = FibOnlyConfig(
             follower=follower,
             sample_interval=args.sample_interval,
@@ -5191,7 +5212,8 @@ Examples:
             follower_exchange=args.follower_exchange,
             dry_run=args.dry_run,
             max_trade_usd=args.max_trade_usd,
-            wallet_type=args.wallet_type
+            wallet_type=args.wallet_type,
+            duration_seconds=duration_seconds
         )
         
         # Run bypass-leader trading loop

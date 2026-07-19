@@ -22,7 +22,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from lp_history import LPHistoryManager, DEFAULT_HISTORY_DIR
@@ -365,7 +365,9 @@ class LPAnalyzer:
     def generate_report(self) -> Dict:
         """Generate comprehensive analysis report."""
         return {
-            'generated_at': datetime.utcnow().isoformat() + 'Z',
+            # Naive-isoformat + literal 'Z' keeps this report field's shape
+            # consistent with the repo's other stored timestamps.
+            'generated_at': datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + 'Z',
             'config': {
                 'period': self.config.period,
                 'platform': self.config.platform or 'all',
@@ -449,7 +451,7 @@ def print_report(report: Dict):
 def export_to_csv(report: Dict, output_path: str = None):
     """Export analysis to CSV files."""
     if not output_path:
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         output_path = f"./history/lp/analysis_{timestamp}"
     
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
@@ -485,7 +487,7 @@ def export_to_csv(report: Dict, output_path: str = None):
 def export_to_json(report: Dict, output_path: str = None):
     """Export analysis to JSON file."""
     if not output_path:
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         output_path = f"./history/lp/analysis_{timestamp}.json"
     
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)

@@ -23,6 +23,15 @@ import requests
 LUNARCRUSH_API_KEY = os.environ.get('LUNARCRUSH_API_KEY', '')
 BASE_URL = "https://lunarcrush.com/api4/public"
 
+# LunarCrush's Cloudflare front-end rejects Python's default User-Agent with
+# a 403 "error code: 1010" that looks like an auth failure but isn't -- a
+# real browser-like User-Agent is required alongside the Bearer token.
+# Matches marketdata.py's _LUNARCRUSH_USER_AGENT (see AGENTS.md gotchas).
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 # Cache configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(SCRIPT_DIR, "coin_cache.json")
@@ -197,7 +206,10 @@ class LunarCrushClient:
                 "LUNARCRUSH_API_KEY environment variable required. "
                 "Sign up at https://lunarcrush.com for API access (~$24/month)."
             )
-        self.headers = {"Authorization": f"Bearer {self.api_key}"}
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "User-Agent": USER_AGENT,
+        }
     
     def get_coins(self, 
                   chains: Optional[List[str]] = None,
