@@ -4,10 +4,12 @@ Covered:
   1. modelregistry.get_model -- default resolution, env-var override,
      override takes precedence over default, unknown provider raises.
   2. llmpreflight.preflight -- the "not configured" short-circuit makes
-     NO network call (verified by monkeypatching the underlying
-     llm_utils.<Provider>Client classes to raise if constructed with a
-     missing key, and asserting the network-call mock is never touched);
-     PreflightResult shape; duplicate providers probed once.
+     NO network call (verified by monkeypatching the underlying money-path
+     trader classes -- claudeutil.ClaudeTrader etc. and genai.Client -- to
+     raise if constructed with a missing key, and asserting the
+     network-call mock is never touched); PreflightResult shape; duplicate
+     providers probed once. LM-1 parity: preflight and the live panel
+     construct the SAME class object per provider.
   3. crypto_trading_bot integration -- get_active_llm_panel (solo vs
      compare/integrate), and run_llm_preflight with a monkeypatched
      llmpreflight.preflight: a failure in live mode raises SystemExit,
@@ -34,6 +36,15 @@ import modelregistry
 import llmpreflight
 import voteschema
 import crypto_trading_bot as bot
+
+# The money-path modules preflight now probes (LM-1). Tests rebind the
+# trader-class names on these modules (the importing-module monkeypatch rule
+# in AGENTS.md); llmpreflight looks them up as claudeutil.ClaudeTrader etc.
+# at call time.
+import claudeutil
+import openaiutil
+import grokutil
+import perplexityutil
 
 
 # ============================================================================
@@ -85,23 +96,30 @@ def test_all_five_providers_registered():
 # ============================================================================
 
 class _RaisesIfConstructed:
-    """Stand-in for an llm_utils.<Provider>Client whose real __init__
-    raises ValueError when the required API key env var is unset. Also
-    fails the test loudly if anything tries to make a network call
+    """Stand-in for a money-path trader class (or genai.Client) whose real
+    __init__ raises ValueError when the required API key env var is unset.
+    Also fails the test loudly if anything tries to make a network call
     through it, so a bug that "configures" the probe anyway is caught."""
 
     def __init__(self):
         raise ValueError("SOME_API_KEY environment variable not set")
 
 
+# Money-path trader classes preflight probes, by provider. Gemini has no
+# wrapper class -- its money-path construction is genai.Client() with no
+# args (crypto_trading_bot.py:2356), patched via llmpreflight.genai.Client.
+_TRADER_TARGETS = {
+    'claude': (claudeutil, 'ClaudeTrader'),
+    'openai': (openaiutil, 'OpenAITrader'),
+    'grok': (grokutil, 'GrokTrader'),
+    'perplexity': (perplexityutil, 'PerplexityTrader'),
+}
+
+
 def _patch_all_clients_not_configured(monkeypatch):
-    for attr in ('GeminiClient', 'ClaudeClient', 'OpenAIClient', 'GrokClient', 'PerplexityClient'):
-        monkeypatch.setattr(llm_utils_module(), attr, _RaisesIfConstructed)
-
-
-def llm_utils_module():
-    import llm_utils
-    return llm_utils
+    for module, attr in _TRADER_TARGETS.values():
+        monkeypatch.setattr(module, attr, _RaisesIfConstructed)
+    monkeypatch.setattr(llmpreflight.genai, 'Client', _RaisesIfConstructed)
 
 
 def test_preflight_not_configured_makes_no_network_call(monkeypatch):
@@ -151,8 +169,7 @@ def test_preflight_result_shape_on_success(monkeypatch):
             self.client = _FakeAnthropicClient()
             self.model = 'claude-opus-4-8'
 
-    import llm_utils
-    monkeypatch.setattr(llm_utils, 'ClaudeClient', _FakeClaudeWrapper)
+    monkeypatch.setattr(claudeutil, 'ClaudeTrader', _FakeClaudeWrapper)
 
     results = llmpreflight.preflight(['claude'])
     result = results['claude']
@@ -180,8 +197,7 @@ def test_preflight_result_shape_on_api_error(monkeypatch):
             self.client = _FakeAnthropicClient()
             self.model = 'claude-opus-retired'
 
-    import llm_utils
-    monkeypatch.setattr(llm_utils, 'ClaudeClient', _FakeClaudeWrapper)
+    monkeypatch.setattr(claudeutil, 'ClaudeTrader', _FakeClaudeWrapper)
 
     results = llmpreflight.preflight(['claude'])
     result = results['claude']
@@ -222,7 +238,7 @@ class TestSchemaProbeDefaultUnchanged:
                 self.client = SimpleNamespace(messages=_FakeMessages())
                 self.model = 'claude-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'ClaudeClient', _FakeClaudeWrapper)
+        monkeypatch.setattr(claudeutil, 'ClaudeTrader', _FakeClaudeWrapper)
 
         result = llmpreflight.preflight(['claude'])['claude']  # schema_probe omitted
         assert result.ok is True
@@ -241,7 +257,7 @@ class TestSchemaProbeDefaultUnchanged:
                 self.client = SimpleNamespace(messages=_FakeMessages())
                 self.model = 'claude-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'ClaudeClient', _FakeClaudeWrapper)
+        monkeypatch.setattr(claudeutil, 'ClaudeTrader', _FakeClaudeWrapper)
 
         result = llmpreflight.preflight(['claude'], schema_probe=False)['claude']
         assert result.ok is True
@@ -263,7 +279,7 @@ class TestSchemaProbeClaude:
                 self.client = SimpleNamespace(messages=_FakeMessages())
                 self.model = 'claude-schema-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'ClaudeClient', _FakeClaudeWrapper)
+        monkeypatch.setattr(claudeutil, 'ClaudeTrader', _FakeClaudeWrapper)
 
     def test_valid_vote_is_ok(self, monkeypatch):
         captured = {}
@@ -306,7 +322,7 @@ class TestSchemaProbeClaude:
                 self.client = SimpleNamespace(messages=_FakeMessages())
                 self.model = 'claude-schema-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'ClaudeClient', _FakeClaudeWrapper)
+        monkeypatch.setattr(claudeutil, 'ClaudeTrader', _FakeClaudeWrapper)
         result = llmpreflight.preflight(['claude'], schema_probe=True)['claude']
         assert result.ok is False
         assert 'schema rejected' in result.error
@@ -334,7 +350,7 @@ class TestSchemaProbeOpenAI:
                 self.client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
                 self.model = 'gpt-schema-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'OpenAIClient', _FakeOpenAIWrapper)
+        monkeypatch.setattr(openaiutil, 'OpenAITrader', _FakeOpenAIWrapper)
         result = llmpreflight.preflight(['openai'], schema_probe=True)['openai']
         assert result.ok is True
         assert captured['response_format'] == voteschema.openai_response_format()
@@ -351,7 +367,7 @@ class TestSchemaProbeOpenAI:
                 self.client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
                 self.model = 'gpt-schema-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'OpenAIClient', _FakeOpenAIWrapper)
+        monkeypatch.setattr(openaiutil, 'OpenAITrader', _FakeOpenAIWrapper)
         result = llmpreflight.preflight(['openai'], schema_probe=True)['openai']
         assert result.ok is False
         assert 'schema probe' in result.error
@@ -368,15 +384,16 @@ class TestSchemaProbeGemini:
             captured['config'] = config
             return SimpleNamespace(text=_vote_json())
 
-        class _FakeGeminiWrapper:
+        # Money-path mirror: preflight constructs genai.Client() directly
+        # (no wrapper class) and reads the model from the registry.
+        class _FakeGenaiClient:
             def __init__(self):
-                self.client = SimpleNamespace(
-                    models=SimpleNamespace(generate_content=fake_generate_content))
-                self.model = 'gemini-schema-test'
+                self.models = SimpleNamespace(generate_content=fake_generate_content)
 
-        monkeypatch.setattr(llm_utils_module(), 'GeminiClient', _FakeGeminiWrapper)
+        monkeypatch.setattr(llmpreflight.genai, 'Client', _FakeGenaiClient)
         result = llmpreflight.preflight(['gemini'], schema_probe=True)['gemini']
         assert result.ok is True
+        assert result.model == modelregistry.get_model('gemini')
         assert captured['config'].response_schema == voteschema.schema_for_gemini()
         assert captured['config'].response_mime_type == 'application/json'
         # deliberately uncapped (reasoning-model gotcha -- see module docstring)
@@ -389,13 +406,11 @@ class TestSchemaProbeGemini:
         def fake_generate_content(*, model, contents, config):
             return SimpleNamespace(text='')
 
-        class _FakeGeminiWrapper:
+        class _FakeGenaiClient:
             def __init__(self):
-                self.client = SimpleNamespace(
-                    models=SimpleNamespace(generate_content=fake_generate_content))
-                self.model = 'gemini-schema-test'
+                self.models = SimpleNamespace(generate_content=fake_generate_content)
 
-        monkeypatch.setattr(llm_utils_module(), 'GeminiClient', _FakeGeminiWrapper)
+        monkeypatch.setattr(llmpreflight.genai, 'Client', _FakeGenaiClient)
         result = llmpreflight.preflight(['gemini'], schema_probe=True)['gemini']
         assert result.ok is False
 
@@ -419,7 +434,7 @@ class TestSchemaProbeUnaffectedProviders:
                 self.client = SimpleNamespace(responses=_FakeResponses())
                 self.model = 'grok-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'GrokClient', _FakeGrokWrapper)
+        monkeypatch.setattr(grokutil, 'GrokTrader', _FakeGrokWrapper)
 
         plain = llmpreflight.preflight(['grok'], schema_probe=False)['grok']
         schema = llmpreflight.preflight(['grok'], schema_probe=True)['grok']
@@ -442,12 +457,136 @@ class TestSchemaProbeUnaffectedProviders:
                 self.client = SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
                 self.model = 'sonar-test'
 
-        monkeypatch.setattr(llm_utils_module(), 'PerplexityClient', _FakePerplexityWrapper)
+        monkeypatch.setattr(perplexityutil, 'PerplexityTrader', _FakePerplexityWrapper)
 
         result = llmpreflight.preflight(['perplexity'], schema_probe=True)['perplexity']
         assert result.ok is True
         assert 'response_format' not in captured
         assert captured['max_tokens'] == llmpreflight.PROBE_MAX_TOKENS
+
+
+# ============================================================================
+# 2c. LM-1 parity: preflight probes the ACTUAL money-path classes
+# ============================================================================
+# The whole point of the llmpreflight rewrite: a green preflight must be a
+# structural guarantee that the live panel constructs, which is only true if
+# both go through the same class object (and therefore the same env-var
+# contract). Before this, preflight probed llm_utils.<Provider>Client (which
+# accepts ANTHROPIC_API_KEY) while the money-path ClaudeTrader required
+# CLAUDE_API_KEY only -- so a green preflight could precede a whole run of
+# standing abstains.
+
+class TestPreflightPanelParity:
+
+    def test_trader_class_identity_matches_bot(self):
+        """crypto_trading_bot imports these exact names; preflight looks up
+        the module attribute at call time. Same object => same env-var
+        contract, per provider."""
+        assert bot.ClaudeTrader is claudeutil.ClaudeTrader
+        assert bot.OpenAITrader is openaiutil.OpenAITrader
+        assert bot.GrokTrader is grokutil.GrokTrader
+        assert bot.PerplexityTrader is perplexityutil.PerplexityTrader
+
+    def test_gemini_construct_matches_bot(self):
+        """Gemini has no wrapper class: both preflight and the bot construct
+        genai.Client() from the same google.genai module."""
+        assert llmpreflight.genai.Client is bot.genai.Client
+
+    def test_plain_probes_construct_the_money_path_classes(self, monkeypatch):
+        """Behavioral half of the parity guarantee: each probe actually
+        reaches into its money-path module attribute (proven by a
+        construction-recording spy), so the identity check above is
+        load-bearing, not incidental."""
+        constructed = set()
+
+        class _ClaudeSpy:
+            def __init__(self):
+                constructed.add('claude')
+                self.client = SimpleNamespace(
+                    messages=SimpleNamespace(create=lambda **k: object()))
+                self.model = 'claude-x'
+
+        class _OpenAISpy:
+            def __init__(self):
+                constructed.add('openai')
+                self.client = SimpleNamespace(chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=lambda **k: object())))
+                self.model = 'openai-x'
+
+        class _GrokSpy:
+            def __init__(self):
+                constructed.add('grok')
+                self.client = SimpleNamespace(
+                    responses=SimpleNamespace(create=lambda **k: object()))
+                self.model = 'grok-x'
+
+        class _PerplexitySpy:
+            def __init__(self):
+                constructed.add('perplexity')
+                self.client = SimpleNamespace(chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=lambda **k: object())))
+                self.model = 'perplexity-x'
+
+        class _GeminiSpy:
+            def __init__(self):
+                constructed.add('gemini')
+                self.models = SimpleNamespace(generate_content=lambda **k: object())
+
+        monkeypatch.setattr(claudeutil, 'ClaudeTrader', _ClaudeSpy)
+        monkeypatch.setattr(openaiutil, 'OpenAITrader', _OpenAISpy)
+        monkeypatch.setattr(grokutil, 'GrokTrader', _GrokSpy)
+        monkeypatch.setattr(perplexityutil, 'PerplexityTrader', _PerplexitySpy)
+        monkeypatch.setattr(llmpreflight.genai, 'Client', _GeminiSpy)
+
+        results = llmpreflight.preflight(
+            ['gemini', 'claude', 'openai', 'grok', 'perplexity'])
+        assert constructed == {'gemini', 'claude', 'openai', 'grok', 'perplexity'}
+        assert all(r.ok for r in results.values())
+
+
+class TestClaudeEnvVarContract:
+    """LM-1a: the money-path ClaudeTrader must accept the standard
+    ANTHROPIC_API_KEY name too (CLAUDE_API_KEY keeps precedence). No network
+    call -- anthropic.Anthropic construction is offline."""
+
+    def test_accepts_anthropic_api_key_alias(self, monkeypatch):
+        monkeypatch.delenv('CLAUDE_API_KEY', raising=False)
+        monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-alias-not-real')
+        trader = claudeutil.ClaudeTrader()  # must not raise
+        assert trader.model == modelregistry.get_model('claude')
+
+    def test_claude_api_key_takes_precedence(self, monkeypatch):
+        monkeypatch.setenv('CLAUDE_API_KEY', 'sk-claude-primary-not-real')
+        monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-anthropic-secondary-not-real')
+        trader = claudeutil.ClaudeTrader()
+        assert trader.client.api_key == 'sk-claude-primary-not-real'
+
+    def test_raises_when_neither_key_set(self, monkeypatch):
+        monkeypatch.delenv('CLAUDE_API_KEY', raising=False)
+        monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+        with pytest.raises(ValueError):
+            claudeutil.ClaudeTrader()
+
+
+class TestProviderClientTimeouts:
+    """LM-6: every money-path SDK client sets an explicit timeout so a hung
+    provider can't stall a scheduled run for the SDK default (~600s)."""
+
+    def test_claude_client_has_timeout(self, monkeypatch):
+        monkeypatch.setenv('CLAUDE_API_KEY', 'sk-not-real')
+        assert claudeutil.ClaudeTrader().client.timeout == 90
+
+    def test_openai_client_has_timeout(self, monkeypatch):
+        monkeypatch.setenv('OPENAI_API_KEY', 'sk-not-real')
+        assert openaiutil.OpenAITrader().client.timeout == 90
+
+    def test_grok_client_has_timeout(self, monkeypatch):
+        monkeypatch.setenv('XAI_API_KEY', 'sk-not-real')
+        assert grokutil.GrokTrader().client.timeout == 90
+
+    def test_perplexity_client_has_timeout(self, monkeypatch):
+        monkeypatch.setenv('PERPLEXITY_API_KEY', 'sk-not-real')
+        assert perplexityutil.PerplexityTrader().client.timeout == 90
 
 
 # ============================================================================

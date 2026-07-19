@@ -157,6 +157,24 @@ client.models.generate_content(
 - `response.usage_metadata` carries token accounting;
   `thoughts_token_count` is the Gemini-side analog of OpenAI's
   `reasoning_tokens`.
+- **Not-configured contract (verified empirically 2026-07-19):** `genai.Client()`
+  with neither `GOOGLE_API_KEY` nor `GEMINI_API_KEY` set raises
+  `builtins.ValueError` ("No API key was provided…") *before* any network
+  call. `llmpreflight` depends on this exact exception type to route Gemini
+  through the same `NOT_CONFIGURED_ERROR` path as the four trader classes —
+  if a future SDK bump changes the type, preflight will misreport "not
+  configured" as a probe failure. Note the env-var asymmetry: the bare
+  `genai.Client()` (the money path) accepts either env var, while
+  `llm_utils.GeminiClient` gates on `GOOGLE_API_KEY` only.
+- **Preflight/panel parity + timeouts (2026-07-19):** `llmpreflight` probes the
+  *actual money-path classes* (`claudeutil.ClaudeTrader` etc.; Gemini as a
+  literal `genai.Client()` mirror) — pinned by `TestPreflightPanelParity`;
+  keep it that way when adding a provider. All four SDK clients construct
+  with `timeout=90` (a hung provider fails in 90s, not the SDK's ~600s
+  default; deliberate, set at client construction in each `*util.py`).
+  Known accepted gap: the Gemini schema probe omits `google_search`
+  grounding, so no startup probe proves grounding+`response_schema` coexist —
+  that coexistence is covered only by the T8 fixtures.
 
 ### Grok (`grok-4.5`, `openai` SDK pointed at `api.x.ai`, Responses API)
 
@@ -231,8 +249,8 @@ prompts/parsing (`+++SYM+++`) are untouched.
 | `gemini` | yes | **yes** | `GenerateContentConfig(response_mime_type="application/json", response_schema=...)` |
 | `claude` | yes | **yes** | `messages.create(output_config={"format": {"type": "json_schema", "schema": ...}})` (anthropic >= 0.94, no beta header) |
 | `openai` | yes | **yes** | `response_format={"type": "json_schema", "json_schema": {"name", "strict": true, "schema"}}` |
-| `grok` | yes (probed) | no — delimiter fallback, logged `[FALLBACK PARSER]` | Responses API `text={"format": {"type": "json_schema", ...}}` |
-| `perplexity` | yes (probed) | no — delimiter fallback, logged `[FALLBACK PARSER]` | `response_format={"type": "json_schema", "json_schema": {"schema": ...}}` (no name/strict wrapper) |
+| `grok` | yes | **yes** (T8 phase 2, 2026-07-19) | Responses API `text={"format": {"type": "json_schema", "name", "strict": true, "schema"}}`, coexists with `tools=[{"type":"web_search"}]`; delimiter tag kept as schema-param-rejection fallback |
+| `perplexity` | yes | **yes** (T8 phase 2, 2026-07-19) | `response_format={"type": "json_schema", "json_schema": {"schema": ...}}` (no name/strict wrapper); delimiter tag kept as schema-param-rejection fallback |
 
 Per-provider quirks (all verified live, cost: cents):
 
@@ -256,15 +274,24 @@ Per-provider quirks (all verified live, cost: cents):
   (`max_completion_tokens`, no `temperature`, reasoning tokens billed
   against the same budget — 98 on the probe).
 - **Grok**: the Responses-API `text.format` json_schema shape works
-  (strict, full schema). NOT adopted this phase: schema + the bot's
-  `web_search` tool coexistence is unprobed, and T8 scope keeps grok on the
-  hardened delimiter fallback. Evidence is in the fixture for a future
-  migration.
+  (strict, full schema incl. minimum/maximum + additionalProperties).
+  **ADOPTED** (T8 phase 2, 2026-07-19): the last blocker — whether the schema
+  coexists with the bot's `web_search` grounding tool — was re-probed with
+  BOTH in one request and returned `status=completed` with valid JSON and a
+  real non-abstain vote (grounding fired under the schema). `max_output_tokens`
+  is a SOFT cap, so grokutil leaves analysis calls uncapped; empty output maps
+  to abstain(parse_failure). The delimiter-tag parser is retained ONLY as the
+  fallback when the provider rejects the schema *parameter* itself.
 - **Perplexity**: json_schema mode is honored (note the wrapper has no
   name/strict). **Truncation hazard observed live**: at `max_tokens=800`
   the response came back as *unterminated JSON* cut mid-string — Perplexity
-  does not guarantee the schema output fits the budget. Clean at 2000.
-  NOT adopted this phase (fallback parser retained).
+  does not guarantee the schema output fits the budget. Clean at 2000 and
+  again at 4096 (the budget perplexityutil sends). **ADOPTED** (T8 phase 2,
+  2026-07-19); a truncated/unterminated tail fails closed to
+  abstain(parse_failure) — never repaired or partially trusted — and the
+  delimiter-tag parser is retained ONLY as the schema-parameter-rejection
+  fallback. Property order in the emitted JSON is not schema order (parse,
+  don't string-match).
 
 Failure mapping shared by every provider path (feeds T3's PanelDecision):
 API error → abstain(`error`); empty text at cap → abstain(`parse_failure`);

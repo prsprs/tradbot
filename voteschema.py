@@ -125,6 +125,35 @@ def openai_response_format():
     }
 
 
+def grok_text_format():
+    """xAI Responses API `text.format` param (Responses shape — NOT chat
+    completions' response_format). The full canonical schema is accepted in
+    strict mode, including minimum/maximum and additionalProperties
+    (probe-verified 2026-07-18 and re-probed 2026-07-19 alongside the bot's
+    web_search grounding tool — see tests/fixtures/structured_output/grok.json).
+    Used as ``client.responses.create(..., text={"format": grok_text_format()})``.
+    """
+    return {
+        "type": "json_schema",
+        "name": "trading_vote",
+        "strict": True,
+        "schema": copy.deepcopy(VOTE_SCHEMA),
+    }
+
+
+def perplexity_response_format():
+    """Perplexity chat.completions `response_format` param. The json_schema
+    wrapper has NO name/strict keys (unlike OpenAI's) — probe-verified
+    (tests/fixtures/structured_output/perplexity.json). TRUNCATION HAZARD: at a
+    tight token budget Perplexity returns UNTERMINATED JSON cut mid-string; an
+    unparsed/truncated tail is never repaired or partially trusted — parse_vote
+    fails closed to abstain('parse_failure')."""
+    return {
+        "type": "json_schema",
+        "json_schema": {"schema": copy.deepcopy(VOTE_SCHEMA)},
+    }
+
+
 def schema_instruction(coin_symbol):
     """The output-contract tail for structured-path analysis prompts.
 
@@ -386,3 +415,77 @@ def resolve_structured_vote(provider, response_text, coin_symbol, log=print):
         except Exception:
             pass
         return Abstain('parse_failure')
+
+
+# === T8 phase-2: grok / perplexity native-structured migration plumbing ===
+#
+# grok and perplexity attempt native structured output FIRST and fall back to
+# the hardened delimiter-tag REQUEST only when the provider rejects the schema
+# PARAMETER itself. Which path produced a given response is not inferable from
+# its bytes without reintroducing the exact bug this migration removes (a
+# structured response that returned garbage must abstain, NOT be re-parsed as a
+# delimiter tag), so the path is carried explicitly on the response string and
+# read by crypto_trading_bot.resolve_vote.
+
+class _PathTaggedText(str):
+    """A provider response string that remembers which output path produced it
+    ('structured' | 'fallback'). Behaves as an ordinary ``str`` everywhere
+    else; only resolve_vote reads the tag, and only off the un-mutated response
+    object it was handed (any str operation degrades it back to a plain str,
+    which is fine — the tag is consumed before any such use)."""
+    __slots__ = ('vote_path',)
+
+    def __new__(cls, value, vote_path):
+        obj = super().__new__(cls, "" if value is None else value)
+        obj.vote_path = vote_path
+        return obj
+
+
+def tag_vote_path(text, vote_path):
+    """Wrap a provider response with the output path that produced it
+    ('structured' | 'fallback'). ``None`` passes through unchanged: an API
+    failure must still reach the caller as None (its 'error' mapping), never as
+    an empty tagged string (which maps to abstain('parse_failure'))."""
+    if text is None:
+        return None
+    return _PathTaggedText(text, vote_path)
+
+
+def vote_path_of(text):
+    """The output path recorded on a response ('structured' | 'fallback'), or
+    None for a plain/untagged string."""
+    return getattr(text, 'vote_path', None)
+
+
+# Substrings that mark a provider (or the SDK) rejecting the structured-output
+# PARAMETER we sent — the ONLY condition under which grok/perplexity fall back
+# to the delimiter-tag request. Deliberately anchored on the structured-output
+# surface by NAME: a bare 400, a content/moderation error, a timeout, or a
+# rate-limit error must NOT match (those propagate to abstain('error')). All
+# OpenAI-compatible 400s that reject an unsupported parameter name it in the
+# error body, so a genuine future param-rejection is still caught.
+_SCHEMA_PARAM_MARKERS = (
+    'response_format', 'json_schema', 'json schema', 'text.format',
+    'output_config', 'response_schema', 'response schema',
+    'structured output', 'structured_outputs', "'format'", '"format"',
+)
+
+
+def schema_param_rejected(exc):
+    """True iff ``exc`` looks like the provider/SDK rejecting the
+    structured-output PARAMETER we sent (grok's text.format / perplexity's
+    response_format). Returns False — so the error propagates and maps to
+    abstain('error') — for content errors, timeouts, auth/rate-limit, and 5xx.
+
+    A structured attempt that merely returned malformed or truncated JSON is
+    NOT an exception here: it fails closed to abstain('parse_failure') at parse
+    time. This detector governs only whether to retry with the delimiter-tag
+    request, never whether to trust content."""
+    if isinstance(exc, TypeError):
+        # SDK client doesn't accept the kwarg name (e.g. older openai lib).
+        msg = str(exc).lower()
+        return ('unexpected keyword argument' in msg and
+                any(p in msg for p in
+                    ('response_format', 'text', 'format', 'output_config')))
+    msg = f"{getattr(exc, 'message', '') or ''} {exc}".lower()
+    return any(m in msg for m in _SCHEMA_PARAM_MARKERS)

@@ -6,14 +6,21 @@ to fail every call -- a retired model ID, an expired key, an unset env
 var -- run one minimal-cost probe request per configured provider and
 surface the result up front.
 
-Each probe reuses the exact client construction the bot uses in production
-(llm_utils.<Provider>Client), so a preflight pass is a real signal that the
-production code path works, not just that the network is reachable. A
+Each probe constructs the EXACT money-path class the bot uses in production
+(claudeutil.ClaudeTrader, openaiutil.OpenAITrader, grokutil.GrokTrader,
+perplexityutil.PerplexityTrader, and a literal mirror of the bot's
+`genai.Client()` for Gemini) -- NOT the parallel llm_utils.<Provider>Client
+wrappers, which serve llm_compare.py and can diverge in which env vars they
+accept (LM-1: llm_utils.ClaudeClient accepts ANTHROPIC_API_KEY while the
+money-path ClaudeTrader historically required CLAUDE_API_KEY only, so a
+green preflight could precede a full run of standing abstains). Probing the
+real classes makes a preflight pass a structural guarantee that the
+production panel constructs, not just that the network is reachable. A
 provider with no API key configured is reported as
 PreflightResult(ok=False, error='not configured') WITHOUT making a network
-call -- the llm_utils client constructors already raise ValueError in that
-case before touching the network, and preflight() treats that as the
-"not configured" signal rather than a probe failure.
+call -- each money-path constructor raises ValueError in that case before
+touching the network (genai.Client() included), and preflight() treats that
+as the "not configured" signal rather than a probe failure.
 
 F9 -- OPTIONAL schema-probe mode (`preflight(providers, schema_probe=True)`):
 the plain probe above only proves "the model ID + auth + endpoint work" --
@@ -52,7 +59,18 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-import llm_utils
+from google import genai
+
+# The ACTUAL money-path classes the bot constructs (crypto_trading_bot.py
+# imports these same names). Probing these -- not llm_utils/ -- is the whole
+# point of this rewrite (LM-1). Imported at module scope so tests rebind the
+# importing module's name per AGENTS.md's monkeypatch rule (e.g.
+# monkeypatch.setattr(claudeutil, 'ClaudeTrader', fake)).
+import claudeutil
+import openaiutil
+import grokutil
+import perplexityutil
+from modelregistry import get_model
 import voteschema
 
 # Deliberately small: enough headroom that a reasoning-capable model
@@ -93,13 +111,17 @@ class PreflightResult:
 
 
 def _probe_gemini() -> PreflightResult:
+    """Literal mirror of the bot's Gemini construction: `genai.Client()` with
+    no args (crypto_trading_bot.py:2356) + the registry model. genai.Client()
+    raises ValueError when no key is configured (verified) -- the SAME
+    not-configured signal the four trader classes raise."""
     from google.genai import types
 
-    wrapper = llm_utils.GeminiClient()  # raises ValueError if GOOGLE_API_KEY unset
-    model = wrapper.model
+    client = genai.Client()  # raises ValueError if no GOOGLE/GEMINI key
+    model = get_model('gemini')
     start = time.monotonic()
     try:
-        wrapper.client.models.generate_content(
+        client.models.generate_content(
             model=model,
             contents=PROBE_PROMPT,
             config=types.GenerateContentConfig(max_output_tokens=PROBE_MAX_TOKENS),
@@ -110,11 +132,11 @@ def _probe_gemini() -> PreflightResult:
 
 
 def _probe_claude() -> PreflightResult:
-    wrapper = llm_utils.ClaudeClient()  # raises ValueError if no API key
-    model = wrapper.model
+    trader = claudeutil.ClaudeTrader()  # raises ValueError if no API key
+    model = trader.model
     start = time.monotonic()
     try:
-        wrapper.client.messages.create(
+        trader.client.messages.create(
             model=model,
             max_tokens=PROBE_MAX_TOKENS,
             messages=[{"role": "user", "content": PROBE_PROMPT}],
@@ -125,11 +147,11 @@ def _probe_claude() -> PreflightResult:
 
 
 def _probe_openai() -> PreflightResult:
-    wrapper = llm_utils.OpenAIClient()  # raises ValueError if OPENAI_API_KEY unset
-    model = wrapper.model
+    trader = openaiutil.OpenAITrader()  # raises ValueError if OPENAI_API_KEY unset
+    model = trader.model
     start = time.monotonic()
     try:
-        wrapper.client.chat.completions.create(
+        trader.client.chat.completions.create(
             model=model,
             max_completion_tokens=PROBE_MAX_TOKENS,
             messages=[{"role": "user", "content": PROBE_PROMPT}],
@@ -140,13 +162,13 @@ def _probe_openai() -> PreflightResult:
 
 
 def _probe_grok() -> PreflightResult:
-    wrapper = llm_utils.GrokClient()  # raises ValueError if XAI_API_KEY unset
-    model = wrapper.model
+    trader = grokutil.GrokTrader()  # raises ValueError if XAI_API_KEY unset
+    model = trader.model
     start = time.monotonic()
     try:
         # No web_search tool here -- preflight only needs to prove the
         # model ID + auth + endpoint are valid, not exercise search.
-        wrapper.client.responses.create(
+        trader.client.responses.create(
             model=model,
             input=[{"role": "user", "content": PROBE_PROMPT}],
             max_output_tokens=PROBE_MAX_TOKENS,
@@ -157,11 +179,11 @@ def _probe_grok() -> PreflightResult:
 
 
 def _probe_perplexity() -> PreflightResult:
-    wrapper = llm_utils.PerplexityClient()  # raises ValueError if PERPLEXITY_API_KEY unset
-    model = wrapper.model
+    trader = perplexityutil.PerplexityTrader()  # raises ValueError if PERPLEXITY_API_KEY unset
+    model = trader.model
     start = time.monotonic()
     try:
-        wrapper.client.chat.completions.create(
+        trader.client.chat.completions.create(
             model=model,
             max_tokens=PROBE_MAX_TOKENS,
             messages=[{"role": "user", "content": PROBE_PROMPT}],
@@ -199,11 +221,11 @@ def _probe_gemini_schema() -> PreflightResult:
     failure."""
     from google.genai import types
 
-    wrapper = llm_utils.GeminiClient()  # raises ValueError if GOOGLE_API_KEY unset
-    model = wrapper.model
+    client = genai.Client()  # raises ValueError if no GOOGLE/GEMINI key
+    model = get_model('gemini')
     start = time.monotonic()
     try:
-        response = wrapper.client.models.generate_content(
+        response = client.models.generate_content(
             model=model,
             contents=SCHEMA_PROBE_PROMPT,
             config=types.GenerateContentConfig(
@@ -221,22 +243,19 @@ def _probe_gemini_schema() -> PreflightResult:
 
 def _probe_claude_schema() -> PreflightResult:
     """F9: real request carrying Claude's actual voteschema variant
-    (output_config json_schema, same shape as claudeutil._claude_output_config).
-    This is exactly the surface the T8 implementer's reflection flagged as
-    young and prone to server-side drift."""
-    wrapper = llm_utils.ClaudeClient()  # raises ValueError if no API key
-    model = wrapper.model
+    (output_config json_schema). Uses claudeutil._claude_output_config()
+    directly -- the SAME config builder the money path calls -- rather than
+    an inlined copy, so this probe can never drift from production. This is
+    exactly the surface the T8 implementer's reflection flagged as young and
+    prone to server-side drift."""
+    trader = claudeutil.ClaudeTrader()  # raises ValueError if no API key
+    model = trader.model
     start = time.monotonic()
     try:
-        message = wrapper.client.messages.create(
+        message = trader.client.messages.create(
             model=model,
             max_tokens=SCHEMA_PROBE_MAX_TOKENS,
-            output_config={
-                "format": {
-                    "type": "json_schema",
-                    "schema": voteschema.schema_for_claude(),
-                }
-            },
+            output_config=claudeutil._claude_output_config(),
             messages=[{"role": "user", "content": SCHEMA_PROBE_PROMPT}],
         )
     except Exception as e:
@@ -252,11 +271,11 @@ def _probe_openai_schema() -> PreflightResult:
     """F9: real request carrying OpenAI's actual voteschema variant
     (response_format json_schema strict, same shape as
     openaiutil.OpenAITrader.send_coin_check_request)."""
-    wrapper = llm_utils.OpenAIClient()  # raises ValueError if OPENAI_API_KEY unset
-    model = wrapper.model
+    trader = openaiutil.OpenAITrader()  # raises ValueError if OPENAI_API_KEY unset
+    model = trader.model
     start = time.monotonic()
     try:
-        response = wrapper.client.chat.completions.create(
+        response = trader.client.chat.completions.create(
             model=model,
             max_completion_tokens=SCHEMA_PROBE_MAX_TOKENS,
             response_format=voteschema.openai_response_format(),
@@ -301,11 +320,11 @@ def _run_one(provider: str, schema_probe: bool = False) -> PreflightResult:
     try:
         return probe()
     except ValueError:
-        # llm_utils.<Provider>Client.__init__ raises ValueError only when
-        # the provider's required API key env var is unset -- no network
-        # call has been attempted at this point.
+        # The money-path constructor (ClaudeTrader/OpenAITrader/GrokTrader/
+        # PerplexityTrader/genai.Client) raises ValueError only when the
+        # provider's required API key env var is unset -- no network call has
+        # been attempted at this point.
         try:
-            from modelregistry import get_model
             model = get_model(provider)
         except Exception:
             model = None

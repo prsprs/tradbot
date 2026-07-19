@@ -3,6 +3,8 @@ import os
 
 from modelregistry import get_model
 
+import panelprompts
+
 import voteschema
 
 
@@ -24,10 +26,16 @@ def _claude_output_config():
 class ClaudeTrader:
     def __init__(self):
         """Initialize the Anthropic Claude client with API credentials from environment."""
-        api_key = os.environ.get('CLAUDE_API_KEY')
+        # LM-1: accept the standard ANTHROPIC_API_KEY name too (CLAUDE_API_KEY
+        # keeps precedence). The money path and llmpreflight must agree on
+        # which env vars configure Claude, or a green preflight can precede a
+        # full run of standing abstains.
+        api_key = os.environ.get('CLAUDE_API_KEY') or os.environ.get('ANTHROPIC_API_KEY')
         if not api_key:
-            raise ValueError("CLAUDE_API_KEY environment variable not set")
-        self.client = anthropic.Anthropic(api_key=api_key)
+            raise ValueError("Neither CLAUDE_API_KEY nor ANTHROPIC_API_KEY environment variable set")
+        # LM-6: explicit timeout so a hung provider can't stall a scheduled run
+        # for the SDK default (~600s).
+        self.client = anthropic.Anthropic(api_key=api_key, timeout=90)
         self.model = get_model('claude')
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
@@ -62,7 +70,6 @@ class ClaudeTrader:
         grounding line) is prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -70,7 +77,8 @@ class ClaudeTrader:
             messages=[
                 {
                     "role": "user",
-                    "content": f"{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? {voteschema.schema_instruction(coin_symbol)}"
+                    "content": panelprompts.coin_check_prompt(
+                        coin_symbol, self.coin_type, market_block)
                 }
             ]
         )
@@ -85,23 +93,6 @@ class ClaudeTrader:
         path is retained for direct use and its own tests."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
-
-        # Build trends section if data is available
-        trends_section = ""
-        if trends_data:
-            trends_section = f"""
-
-Here is the actual Google Trends data we collected:
-
----BEGIN GOOGLE TRENDS DATA---
-{trends_data}
----END GOOGLE TRENDS DATA---
-
-Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
-
-Use this data in your analysis. """
-
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -109,7 +100,8 @@ Use this data in your analysis. """
             messages=[
                 {
                     "role": "user",
-                    "content": f"{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section}{voteschema.schema_instruction(coin_symbol)}"
+                    "content": panelprompts.trend_check_prompt(
+                        coin_symbol, self.coin_type, trends_data, market_block)
                 }
             ]
         )
@@ -121,7 +113,6 @@ Use this data in your analysis. """
         T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -129,17 +120,8 @@ Use this data in your analysis. """
             messages=[
                 {
                     "role": "user",
-                    "content": f"""{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
-
-Additionally, consider the following analysis from another AI system:
-
----BEGIN PEER ANALYSIS---
-{peer_analysis}
----END PEER ANALYSIS---
-
-After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
-
-{voteschema.schema_instruction(coin_symbol)}"""
+                    "content": panelprompts.integrated_coin_check_prompt(
+                        coin_symbol, self.coin_type, peer_analysis, market_block)
                 }
             ]
         )
@@ -151,22 +133,6 @@ After reviewing the peer analysis, provide your final recommendation. You may ag
         T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
-
-        # Build trends section if data is available
-        trends_section = ""
-        if trends_data:
-            trends_section = f"""
-Here is the actual Google Trends data we collected:
-
----BEGIN GOOGLE TRENDS DATA---
-{trends_data}
----END GOOGLE TRENDS DATA---
-
-Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
-
-"""
-
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -174,72 +140,19 @@ Note: values are scaled so the window maximum = 100; on low-volume tickers a sin
             messages=[
                 {
                     "role": "user",
-                    "content": f"""{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
-{trends_section}
-Additionally, consider the following analysis from another AI system:
-
----BEGIN PEER ANALYSIS---
-{peer_analysis}
----END PEER ANALYSIS---
-
-After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
-
-{voteschema.schema_instruction(coin_symbol)}"""
+                    "content": panelprompts.integrated_trend_check_prompt(
+                        coin_symbol, self.coin_type, peer_analysis,
+                        trends_data, market_block)
                 }
             ]
         )
         return next((b.text for b in message.content if b.type == "text"), "")
 
 
-def compare_recommendations(gemini_rec, claude_rec):
-    """Compare recommendations from Gemini and Claude.
-    
-    Args:
-        gemini_rec (str): Recommendation from Gemini (BUY, SELL, or HOLD)
-        claude_rec (str): Recommendation from Claude (BUY, SELL, or HOLD)
-    
-    Returns:
-        dict: Comparison result with agreement status and recommendations
-    """
-    if gemini_rec is None or claude_rec is None:
-        return {
-            "agree": False,
-            "gemini": gemini_rec,
-            "claude": claude_rec,
-            "confidence": "LOW",
-            "reason": "One or both LLMs failed to provide a recommendation"
-        }
-    
-    gemini_normalized = gemini_rec.upper().strip()
-    claude_normalized = claude_rec.upper().strip()
-    
-    agree = gemini_normalized == claude_normalized
-    
-    return {
-        "agree": agree,
-        "gemini": gemini_normalized,
-        "claude": claude_normalized,
-        "confidence": "HIGH" if agree else "LOW",
-        "consensus": gemini_normalized if agree else None
-    }
-
-
-def get_consensus_action(comparison_result, require_consensus=True):
-    """Determine trading action based on LLM comparison.
-    
-    Args:
-        comparison_result (dict): Result from compare_recommendations()
-        require_consensus (bool): If True, only act when both LLMs agree
-    
-    Returns:
-        str or None: Action to take (BUY, SELL, HOLD) or None if no action
-    """
-    if require_consensus:
-        if comparison_result["agree"]:
-            return comparison_result["consensus"]
-        else:
-            print(f"  [DISAGREE] Gemini: {comparison_result['gemini']}, Claude: {comparison_result['claude']} - No action taken")
-            return None
-    else:
-        # Default to Gemini if no consensus required
-        return comparison_result["gemini"]
+# LM-5 (audit 2026-07-19): the legacy 2-LLM consensus helpers
+# compare_recommendations() and get_consensus_action() were DELETED from this
+# module. Zero call sites existed on either branch beyond the bot's import
+# line; their capability lives in crypto_trading_bot's PanelDecision /
+# process_coin_with_comparison, EXCEPT the deliberately-dropped
+# require_consensus=False single-model fallback (fail-open; forbidden by the
+# fail-closed money-path invariant). Full record: docs/SUPERSEDED.md.

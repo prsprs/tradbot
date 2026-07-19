@@ -3,15 +3,16 @@
   "model": "grok-4.5",
   "sdk": "openai 2.31.0 (base_url https://api.x.ai/v1, Responses API)",
   "verified": "2026-07-18",
+  "reverified": "2026-07-19",
   "native_structured_output": true,
-  "adopted": false,
-  "adoption_note": "T8 scope keeps grok on the delimiter-tag fallback parser (loudly logged as [FALLBACK PARSER]). This probe is evidence for a future migration: the xAI Responses API DOES honor json_schema output natively.",
+  "adopted": true,
+  "adoption_note": "MIGRATED to native structured output 2026-07-19 (T8 phase 2). The 2026-07-18 probe left ONE blocker: text.format json_schema was probed WITHOUT the bot's web_search tool, so schema+grounding coexistence was unverified. The 2026-07-19 re-probe sent BOTH together (tools=[{'type':'web_search'}] AND text.format) and got status=completed with clean schema-valid JSON AND a real non-abstain vote (grounding fired under the schema). grokutil now attempts this shape first; the delimiter-tag request is retained only as the schema-parameter-rejection fallback.",
   "request": {
     "method": "client.responses.create",
     "params": {
       "model": "grok-4.5",
-      "input": [{"role": "user", "content": "<analysis prompt>"}],
-      "max_output_tokens": 2000,
+      "input": [{"role": "user", "content": "<analysis prompt ending with the voteschema schema instruction>"}],
+      "tools": [{"type": "web_search"}],
       "text": {
         "format": {
           "type": "json_schema",
@@ -35,21 +36,24 @@
   },
   "response": {
     "status": "completed",
-    "output_text": "{\"symbol\":\"BTC\",\"action\":\"HOLD\",\"confidence\":0,\"abstain\":true,\"reasons\":[\"No real-time market data available\",\"Cannot provide informed short-term trading advice\"]}",
+    "output_text": "{\"symbol\":\"BTC\",\"action\":\"HOLD\",\"confidence\":0.55,\"abstain\":false,\"reasons\":[\"BTC consolidating near recent highs with mixed short-term momentum indicators\",\"Elevated macroeconomic and regulatory uncertainty limiting clear directional edge\",\"On-chain and derivatives data show balanced positioning without strong breakout conviction\",\"Short-term appreciation potential exists on dips but risk-reward favors waiting for confirmation\"]}",
     "parsed": {
       "symbol": "BTC",
       "action": "HOLD",
-      "confidence": 0,
-      "abstain": true,
+      "confidence": 0.55,
+      "abstain": false,
       "reasons": [
-        "No real-time market data available",
-        "Cannot provide informed short-term trading advice"
+        "BTC consolidating near recent highs with mixed short-term momentum indicators",
+        "Elevated macroeconomic and regulatory uncertainty limiting clear directional edge",
+        "On-chain and derivatives data show balanced positioning without strong breakout conviction",
+        "Short-term appreciation potential exists on dips but risk-reward favors waiting for confirmation"
       ]
     }
   },
   "quirks": [
-    "Responses API structured output uses text={'format': {...}} (Responses shape), NOT chat-completions' response_format - full schema with minimum/maximum and additionalProperties accepted.",
-    "Probed WITHOUT the bot's tools=[{'type':'web_search'}]; schema+web_search coexistence is unverified - one reason (besides T8 scope) the delimiter fallback is retained for now.",
-    "Known from MODELS.md: max_output_tokens is a soft cap on this API (observed exceeded on plain calls)."
+    "Responses API structured output uses text={'format': {...}} (Responses shape), NOT chat-completions' response_format - full schema with minimum/maximum and additionalProperties accepted, strict mode.",
+    "COEXISTENCE VERIFIED 2026-07-19: text.format json_schema + the web_search grounding tool in the SAME request returned status=completed with valid JSON AND a real non-abstain vote (the 2026-07-18 probe abstained; the re-probe with grounding produced a live HOLD@0.55). This was the last blocker to adoption.",
+    "max_output_tokens is a SOFT cap on this API (observed exceeded on plain calls) - grokutil leaves it UNSET on analysis calls to avoid truncation; empty output maps to abstain(parse_failure), never a vote.",
+    "DELTA vs 2026-07-18: request now carries tools; response is a real HOLD@0.55 (not the earlier abstain=true) because grounding fires under the schema."
   ]
 }

@@ -3,14 +3,15 @@
   "model": "sonar-pro",
   "sdk": "openai 2.31.0 (base_url https://api.perplexity.ai)",
   "verified": "2026-07-18",
+  "reverified": "2026-07-19",
   "native_structured_output": true,
-  "adopted": false,
-  "adoption_note": "T8 scope keeps perplexity on the delimiter-tag fallback parser (loudly logged as [FALLBACK PARSER]). Probe evidence: json_schema mode is honored, but see the truncation quirk before ever adopting it.",
+  "adopted": true,
+  "adoption_note": "MIGRATED to native structured output 2026-07-19 (T8 phase 2). json_schema mode is honored; re-probed at max_tokens=4096 (the budget perplexityutil sends) and got finish_reason=stop with clean valid JSON. perplexityutil attempts this first; the delimiter-tag request is retained only as the schema-parameter-rejection fallback. The truncation hazard below is why the fallback is a REQUEST retry (on param rejection) and NOT a repair of truncated output: a truncated/unterminated tail fails closed to abstain(parse_failure).",
   "request": {
     "method": "client.chat.completions.create",
     "params": {
       "model": "sonar-pro",
-      "max_tokens": 2000,
+      "max_tokens": 4096,
       "response_format": {
         "type": "json_schema",
         "json_schema": {
@@ -28,27 +29,30 @@
           }
         }
       },
-      "messages": [{"role": "user", "content": "<analysis prompt>"}]
+      "messages": [{"role": "user", "content": "<analysis prompt ending with the voteschema schema instruction>"}]
     }
   },
   "response": {
     "finish_reason": "stop",
-    "content": "{\"abstain\":false,\"action\":\"HOLD\",\"confidence\":0.62,\"reasons\":[\"Price is consolidating around 64k with mixed technical signals (bearish breakdown yet strong demand zone), offering no clear short-term edge for either side\",\"Volatility and conflicting directional indicators across venues increase risk of mistiming a short-term entry or exit; waiting for a clearer breakout or breakdown is prudent\"],\"symbol\":\"BTC\"}",
+    "content": "{\"abstain\":true,\"action\":\"HOLD\",\"confidence\":0.15,\"reasons\":[\"Available data does not include up-to-date BTC price, order book, or technical indicators required for a short-term trading decision\",\"A sophisticated short-term bot would base actions on live market microstructure, volatility, and funding rates, none of which are provided here\",\"Without current market context, any buy/sell/hold call would be effectively random rather than systematic\",\"Responsible short-term trading recommendations require backtested, data-driven signals that cannot be reconstructed from the limited information given\"],\"symbol\":\"BTC\"}",
     "parsed": {
-      "abstain": false,
+      "abstain": true,
       "action": "HOLD",
-      "confidence": 0.62,
+      "confidence": 0.15,
       "reasons": [
-        "Price is consolidating around 64k with mixed technical signals (bearish breakdown yet strong demand zone), offering no clear short-term edge for either side",
-        "Volatility and conflicting directional indicators across venues increase risk of mistiming a short-term entry or exit; waiting for a clearer breakout or breakdown is prudent"
+        "Available data does not include up-to-date BTC price, order book, or technical indicators required for a short-term trading decision",
+        "A sophisticated short-term bot would base actions on live market microstructure, volatility, and funding rates, none of which are provided here",
+        "Without current market context, any buy/sell/hold call would be effectively random rather than systematic",
+        "Responsible short-term trading recommendations require backtested, data-driven signals that cannot be reconstructed from the limited information given"
       ],
       "symbol": "BTC"
     }
   },
   "quirks": [
     "Perplexity's json_schema wrapper omits name/strict: response_format={'type':'json_schema','json_schema':{'schema': ...}}.",
-    "TRUNCATION HAZARD (observed live, first probe at max_tokens=800): the response came back as UNTERMINATED JSON cut mid-string - Perplexity does not guarantee the schema output fits the token budget. Any JSON parse of Perplexity output must treat failure as abstain(parse_failure). Retested at max_tokens=2000: clean, valid JSON (413 chars).",
-    "Unlike the other four providers' probes, sonar-pro produced a real (non-abstain) HOLD vote with live market context - its built-in search grounding fires even in schema mode.",
+    "TRUNCATION HAZARD (observed live 2026-07-18, first probe at max_tokens=800): the response came back as UNTERMINATED JSON cut mid-string - Perplexity does not guarantee the schema output fits the token budget. Any JSON parse of Perplexity output must treat failure as abstain(parse_failure); a truncated tail is NEVER repaired or partially trusted. Clean at max_tokens=2000 (2026-07-18) and again at 4096 (2026-07-19), the budget perplexityutil sends.",
+    "sonar-pro's built-in search grounding fires even in schema mode. DELTA vs 2026-07-18: that probe produced a real HOLD@0.62; the 2026-07-19 re-probe abstained (abstain=true, HOLD@0.15) citing no live market block in the bare prompt - both are schema-valid; the explicit-abstain path works natively and maps to abstain(refusal).",
+    "Property order in the emitted JSON is NOT schema order (abstain first, symbol last here) - parse, don't string-match.",
     "Remember the flat per-request fee (~$0.006) on top of token costs (MODELS.md)."
   ]
 }

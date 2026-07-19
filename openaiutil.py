@@ -3,6 +3,8 @@ import os
 
 from modelregistry import get_model
 
+import panelprompts
+
 import voteschema
 
 
@@ -12,7 +14,9 @@ class OpenAITrader:
         api_key = os.environ.get('OPENAI_API_KEY')
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
-        self.client = openai.OpenAI(api_key=api_key)
+        # LM-6: explicit timeout so a hung provider can't stall a scheduled run
+        # for the SDK default (~600s).
+        self.client = openai.OpenAI(api_key=api_key, timeout=90)
         self.model = get_model('openai')
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
@@ -49,7 +53,6 @@ class OpenAITrader:
         T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
@@ -57,7 +60,8 @@ class OpenAITrader:
             messages=[
                 {
                     "role": "user",
-                    "content": f"{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now? {voteschema.schema_instruction(coin_symbol)}"
+                    "content": panelprompts.coin_check_prompt(
+                        coin_symbol, self.coin_type, market_block)
                 }
             ]
         )
@@ -69,23 +73,6 @@ class OpenAITrader:
         T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
-
-        # Build trends section if data is available
-        trends_section = ""
-        if trends_data:
-            trends_section = f"""
-
-Here is the actual Google Trends data we collected:
-
----BEGIN GOOGLE TRENDS DATA---
-{trends_data}
----END GOOGLE TRENDS DATA---
-
-Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
-
-Use this data in your analysis. """
-
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
@@ -93,7 +80,8 @@ Use this data in your analysis. """
             messages=[
                 {
                     "role": "user",
-                    "content": f"{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?{trends_section}{voteschema.schema_instruction(coin_symbol)}"
+                    "content": panelprompts.trend_check_prompt(
+                        coin_symbol, self.coin_type, trends_data, market_block)
                 }
             ]
         )
@@ -105,7 +93,6 @@ Use this data in your analysis. """
         T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
@@ -113,17 +100,8 @@ Use this data in your analysis. """
             messages=[
                 {
                     "role": "user",
-                    "content": f"""{prefix}Would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
-
-Additionally, consider the following analysis from another AI system:
-
----BEGIN PEER ANALYSIS---
-{peer_analysis}
----END PEER ANALYSIS---
-
-After reviewing the peer analysis, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
-
-{voteschema.schema_instruction(coin_symbol)}"""
+                    "content": panelprompts.integrated_coin_check_prompt(
+                        coin_symbol, self.coin_type, peer_analysis, market_block)
                 }
             ]
         )
@@ -135,22 +113,6 @@ After reviewing the peer analysis, provide your final recommendation. You may ag
         T9: market_block prepended as the PRIMARY data section when present."""
         if coin_symbol is None:
             return None
-        prefix = f"{market_block}\n\n" if market_block else ""
-
-        # Build trends section if data is available
-        trends_section = ""
-        if trends_data:
-            trends_section = f"""
-Here is the actual Google Trends data we collected:
-
----BEGIN GOOGLE TRENDS DATA---
-{trends_data}
----END GOOGLE TRENDS DATA---
-
-Note: values are scaled so the window maximum = 100; on low-volume tickers a single stray minute can appear as a spike to 100. Absolute search volume may be near zero.
-
-"""
-
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
@@ -158,17 +120,9 @@ Note: values are scaled so the window maximum = 100; on low-volume tickers a sin
             messages=[
                 {
                     "role": "user",
-                    "content": f"""{prefix}Based on analysis of recent data from Google Trends, would a sophisticated trading bot designed for short-term appreciation recommend buying, selling, or holding the {self.coin_type} with symbol {coin_symbol} right now?
-{trends_section}
-Additionally, consider the following analysis from another AI system:
-
----BEGIN PEER ANALYSIS---
-{peer_analysis}
----END PEER ANALYSIS---
-
-After reviewing the peer analysis and the Google Trends data provided, provide your final recommendation. You may agree, disagree, or refine your position based on this input.
-
-{voteschema.schema_instruction(coin_symbol)}"""
+                    "content": panelprompts.integrated_trend_check_prompt(
+                        coin_symbol, self.coin_type, peer_analysis,
+                        trends_data, market_block)
                 }
             ]
         )

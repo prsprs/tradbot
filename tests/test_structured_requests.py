@@ -17,6 +17,8 @@ import crypto_trading_bot as bot
 import voteschema
 from claudeutil import ClaudeTrader
 from openaiutil import OpenAITrader
+from grokutil import GrokTrader
+from perplexityutil import PerplexityTrader
 
 FIXTURES = Path(__file__).parent / "fixtures" / "structured_output"
 
@@ -76,6 +78,21 @@ class TestFixturesMatchCode:
         assert (_no_descriptions(fx_schema)
                 == _no_descriptions(voteschema.schema_for_gemini()))
 
+    def test_grok_fixture_format_matches_code(self):
+        # T8 phase 2: grok's Responses-API text.format param.
+        fx = load_fixture('grok')
+        fx_fmt = fx['request']['params']['text']['format']
+        assert (_no_descriptions(fx_fmt)
+                == _no_descriptions(voteschema.grok_text_format()))
+
+    def test_perplexity_fixture_format_matches_code(self):
+        # T8 phase 2: perplexity's chat.completions response_format param
+        # (no name/strict wrapper).
+        fx = load_fixture('perplexity')
+        fx_fmt = fx['request']['params']['response_format']
+        assert (_no_descriptions(fx_fmt)
+                == _no_descriptions(voteschema.perplexity_response_format()))
+
     @pytest.mark.parametrize("provider", ['gemini', 'claude', 'openai',
                                            'grok', 'perplexity'])
     def test_fixture_response_payload_parses_and_validates(self, provider):
@@ -115,15 +132,26 @@ class TestFixturesMatchCode:
         assert len(vote.reasons) == 6
         assert all('__ERROR__' not in r and r.strip('{}[],:" ') for r in vote.reasons)
 
-    @pytest.mark.parametrize("provider,adopted", [
-        ('gemini', True), ('claude', True), ('openai', True),
-        ('grok', False), ('perplexity', False),
-    ])
-    def test_adoption_matches_t8_scope(self, provider, adopted):
-        fx = load_fixture(provider)
-        assert fx['adopted'] is adopted
-        structured = provider in bot.STRUCTURED_VOTE_PROVIDERS
-        assert structured is adopted
+    @pytest.mark.parametrize("provider", ['gemini', 'claude', 'openai',
+                                          'grok', 'perplexity'])
+    def test_all_five_adopted_structured_output(self, provider):
+        # T8 phase 2 (2026-07-19): grok and perplexity are now migrated, so
+        # every provider's fixture records adopted=true.
+        assert load_fixture(provider)['adopted'] is True
+
+    @pytest.mark.parametrize("provider", ['gemini', 'claude', 'openai'])
+    def test_trio_is_statically_structured(self, provider):
+        # gemini/claude/openai are ALWAYS structured — a plain str with no
+        # path tag still routes to the structured parser.
+        assert provider in bot.STRUCTURED_VOTE_PROVIDERS
+
+    @pytest.mark.parametrize("provider", ['grok', 'perplexity'])
+    def test_grok_perplexity_are_path_driven_not_static(self, provider):
+        # grok/perplexity attempt structured FIRST but keep a delimiter-tag
+        # fallback, so they are routed by the response's vote_path tag, not by
+        # static membership in STRUCTURED_VOTE_PROVIDERS (which would force the
+        # structured parser onto a delimiter-tagged fallback response).
+        assert provider not in bot.STRUCTURED_VOTE_PROVIDERS
 
 
 # =============================== Claude ====================================
@@ -318,3 +346,220 @@ class TestGeminiRequests:
         # discovery keeps the plain grounded config -- no structured schema
         assert cap.kwargs['config'] == 'DISCOVERY_CONFIG_SENTINEL'
         assert 'plus signs' in cap.kwargs['contents']
+
+
+# ================================ Grok =====================================
+# T8 phase 2: grok attempts native structured output (Responses API
+# text.format json_schema, coexisting with the web_search tool) and falls back
+# to the delimiter-tag REQUEST only when the provider rejects the schema
+# parameter itself.
+
+def make_grok(create_fn):
+    trader = GrokTrader.__new__(GrokTrader)
+    trader.client = SimpleNamespace(responses=SimpleNamespace(create=create_fn))
+    trader.model = 'grok-test'
+    trader.tools = [{"type": "web_search"}]
+    trader.coin_type = 'cryptocurrency'
+    return trader
+
+
+def grok_response(output_text):
+    return SimpleNamespace(output_text=output_text, status='completed')
+
+
+# Realistic error message shapes for an OpenAI-compatible 400 that rejects the
+# structured-output parameter itself (the only fallback trigger).
+GROK_SCHEMA_400 = ("Error code: 400 - Invalid value for 'text.format': "
+                   "json_schema output is not supported for this model")
+PPLX_SCHEMA_400 = ("Error code: 400 - response_format json_schema is not "
+                   "supported")
+
+
+class _SchemaRejectingResponses:
+    """responses.create stub: raises a schema-param 400 on the structured
+    attempt (kwargs carry 'text'), returns a delimiter-tag response on the
+    unstructured fallback retry."""
+    def __init__(self, fallback_text):
+        self.calls = []
+        self.fallback_text = fallback_text
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        if 'text' in kwargs:
+            raise Exception(GROK_SCHEMA_400)
+        return grok_response(self.fallback_text)
+
+
+class TestGrokRequests:
+
+    def test_coin_check_builds_structured_request(self):
+        cap = Capture(grok_response(vote_json()))
+        out = make_grok(cap).send_coin_check_request('BTC')
+        assert out == vote_json()
+        assert voteschema.vote_path_of(out) == 'structured'
+        assert cap.kwargs['text'] == {'format': voteschema.grok_text_format()}
+        # search grounding retained alongside the schema (coexistence verified)
+        assert cap.kwargs['tools'] == [{"type": "web_search"}]
+        prompt = cap.kwargs['input'][0]['content']
+        assert voteschema.schema_instruction('BTC') in prompt
+        assert 'angle bracket' not in prompt  # delimiter contract not on this path
+        # grok's web-search preamble drift is preserved
+        assert prompt.startswith('Using real-time web search')
+
+    @pytest.mark.parametrize("method,args", [
+        ('send_trend_check_request', ('BTC', 'trend data')),
+        ('send_integrated_coin_check', ('BTC', 'peer says HOLD')),
+        ('send_integrated_trend_check', ('BTC', 'peer says HOLD', 'trend data')),
+    ])
+    def test_all_analysis_methods_are_structured(self, method, args):
+        cap = Capture(grok_response(vote_json()))
+        trader = make_grok(cap)
+        out = getattr(trader, method)(*args)
+        assert voteschema.vote_path_of(out) == 'structured'
+        assert cap.kwargs['text'] == {'format': voteschema.grok_text_format()}
+        assert 'angle bracket' not in cap.kwargs['input'][0]['content']
+
+    def test_structured_vote_resolves_to_action(self):
+        cap = Capture(grok_response(vote_json(action='HOLD')))
+        text = make_grok(cap).send_coin_check_request('BTC')
+        assert bot.resolve_vote('grok', text, 'BTC') == 'HOLD'
+
+    def test_garbage_structured_response_abstains_never_falls_back(self):
+        # A structured attempt that returns non-JSON garbage must fail closed
+        # to abstain(parse_failure) — NOT be re-parsed as a delimiter tag even
+        # though the garbage happens to carry one.
+        cap = Capture(grok_response('nonsense <**BTC-PRS-BUY**> trailing'))
+        text = make_grok(cap).send_coin_check_request('BTC')
+        assert voteschema.vote_path_of(text) == 'structured'
+        assert bot.resolve_vote('grok', text, 'BTC') == voteschema.Abstain('parse_failure')
+
+    def test_schema_param_rejection_falls_back_to_tag(self):
+        stub = _SchemaRejectingResponses('analysis <**BTC-PRS-BUY**>')
+        text = make_grok(stub).send_coin_check_request('BTC')
+        assert voteschema.vote_path_of(text) == 'fallback'
+        # structured attempt first (carried text=), then the unstructured retry
+        assert 'text' in stub.calls[0] and 'text' not in stub.calls[1]
+        # the fallback request used the delimiter instruction, not the schema one
+        fb_prompt = stub.calls[1]['input'][0]['content']
+        assert 'angle bracket' in fb_prompt
+        assert voteschema.schema_instruction('BTC') not in fb_prompt
+        # and it resolves through the delimiter parser
+        assert bot.resolve_vote('grok', text, 'BTC') == 'BUY'
+
+    def test_non_schema_error_propagates_no_fallback(self):
+        # A timeout is not a schema-param rejection: it must propagate (never a
+        # silent fallback), so get_llm_response maps it to abstain('error').
+        def boom(**kwargs):
+            raise Exception('Request timed out.')
+        with pytest.raises(Exception, match='timed out'):
+            make_grok(boom).send_coin_check_request('BTC')
+
+    def test_discovery_request_is_unstructured(self):
+        cap = Capture(grok_response("1. PEPE +++PEPE+++"))
+        make_grok(cap).send_recommendation_request()
+        assert 'text' not in cap.kwargs  # no schema on discovery
+        assert 'plus signs' in cap.kwargs['input'][0]['content']
+
+
+# ============================= Perplexity ==================================
+
+def make_perplexity(create_fn):
+    trader = PerplexityTrader.__new__(PerplexityTrader)
+    trader.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_fn)))
+    trader.model = 'sonar-test'
+    trader.coin_type = 'cryptocurrency'
+    return trader
+
+
+def perplexity_response(content):
+    return SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=content), finish_reason='stop')])
+
+
+class _SchemaRejectingCompletions:
+    """chat.completions.create stub: raises a schema-param 400 on the
+    structured attempt (kwargs carry 'response_format'), returns a delimiter
+    response on the unstructured fallback retry."""
+    def __init__(self, fallback_text):
+        self.calls = []
+        self.fallback_text = fallback_text
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        if 'response_format' in kwargs:
+            raise Exception(PPLX_SCHEMA_400)
+        return perplexity_response(self.fallback_text)
+
+
+class TestPerplexityRequests:
+
+    def test_coin_check_builds_structured_request(self):
+        cap = Capture(perplexity_response(vote_json()))
+        out = make_perplexity(cap).send_coin_check_request('BTC')
+        assert out == vote_json()
+        assert voteschema.vote_path_of(out) == 'structured'
+        assert cap.kwargs['response_format'] == voteschema.perplexity_response_format()
+        prompt = cap.kwargs['messages'][0]['content']
+        assert voteschema.schema_instruction('BTC') in prompt
+        assert 'angle bracket' not in prompt
+        # perplexity's coin-check suffix drift is preserved
+        assert 'Use current market data and recent news.' in prompt
+
+    @pytest.mark.parametrize("method,args", [
+        ('send_trend_check_request', ('BTC', 'trend data')),
+        ('send_integrated_coin_check', ('BTC', 'peer says HOLD')),
+        ('send_integrated_trend_check', ('BTC', 'peer says HOLD', 'trend data')),
+    ])
+    def test_all_analysis_methods_are_structured(self, method, args):
+        cap = Capture(perplexity_response(vote_json()))
+        trader = make_perplexity(cap)
+        out = getattr(trader, method)(*args)
+        assert voteschema.vote_path_of(out) == 'structured'
+        assert cap.kwargs['response_format'] == voteschema.perplexity_response_format()
+        assert 'angle bracket' not in cap.kwargs['messages'][0]['content']
+
+    def test_structured_vote_resolves_to_action(self):
+        cap = Capture(perplexity_response(vote_json(action='SELL')))
+        text = make_perplexity(cap).send_coin_check_request('BTC')
+        assert bot.resolve_vote('perplexity', text, 'BTC') == 'SELL'
+
+    def test_truncated_unterminated_json_abstains_parse_failure(self):
+        # The live truncation hazard: an unterminated JSON tail must fail
+        # closed to abstain(parse_failure), never be repaired or trusted.
+        truncated = ('{"symbol":"BTC","action":"BUY","confidence":0.7,'
+                     '"abstain":false,"reasons":["strong momentum and ')
+        cap = Capture(perplexity_response(truncated))
+        text = make_perplexity(cap).send_coin_check_request('BTC')
+        assert voteschema.vote_path_of(text) == 'structured'
+        assert bot.resolve_vote('perplexity', text, 'BTC') == \
+            voteschema.Abstain('parse_failure')
+
+    def test_empty_content_returns_empty_string(self):
+        cap = Capture(perplexity_response(None))
+        out = make_perplexity(cap).send_coin_check_request('BTC')
+        assert out == ""
+        assert bot.resolve_vote('perplexity', out, 'BTC') == \
+            voteschema.Abstain('parse_failure')
+
+    def test_schema_param_rejection_falls_back_to_tag(self):
+        stub = _SchemaRejectingCompletions('analysis <**BTC-PRS-SELL**>')
+        text = make_perplexity(stub).send_coin_check_request('BTC')
+        assert voteschema.vote_path_of(text) == 'fallback'
+        assert 'response_format' in stub.calls[0] and 'response_format' not in stub.calls[1]
+        fb_prompt = stub.calls[1]['messages'][0]['content']
+        assert 'angle bracket' in fb_prompt
+        assert voteschema.schema_instruction('BTC') not in fb_prompt
+        assert bot.resolve_vote('perplexity', text, 'BTC') == 'SELL'
+
+    def test_non_schema_error_propagates_no_fallback(self):
+        def boom(**kwargs):
+            raise Exception('429 rate limit exceeded')
+        with pytest.raises(Exception, match='rate limit'):
+            make_perplexity(boom).send_coin_check_request('BTC')
+
+    def test_discovery_request_is_unstructured(self):
+        cap = Capture(perplexity_response("1. PEPE +++PEPE+++"))
+        make_perplexity(cap).send_recommendation_request()
+        assert 'response_format' not in cap.kwargs
+        assert 'plus signs' in cap.kwargs['messages'][0]['content']
