@@ -15,8 +15,10 @@ Coverage (task-mandated minimums, plus a few edges):
   * judged-flag persistence / freezing
 """
 import json
+import os
 import sys
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -600,3 +602,181 @@ def test_cli_offline_run(tmp_path, capsys):
     assert 'PANEL BEHAVIOR' in out
     # state file written
     assert (tmp_path / 'analyzer_state.json').exists()
+
+
+# ===========================================================================
+# DI-1 -- timezone-independent epoch conversion (utc_epoch + price_at)
+#
+# History timestamps are stored naive-UTC; `.timestamp()` on a naive datetime
+# reads it as LOCAL time (a real past 4-hour bug -- AGENTS.md:23). These tests
+# pin that utc_epoch (and price_at, which uses it) produce identical results
+# regardless of the machine's $TZ.
+# ===========================================================================
+@pytest.fixture
+def tz_guard():
+    """Save/restore $TZ around a test that mutates it.
+
+    We set os.environ['TZ'] + time.tzset() inside the test and restore both in
+    teardown. Per the house rule we NEVER setattr the stdlib `time` module (a
+    process-global singleton); we only drive it through the documented
+    os.environ + tzset() path.
+    """
+    old = os.environ.get('TZ')
+    yield
+    if old is None:
+        os.environ.pop('TZ', None)
+    else:
+        os.environ['TZ'] = old
+    time.tzset()
+
+
+def _cb_provider(monkeypatch, candles_by_product=None, fetch=None):
+    """A CoinbasePriceProvider wired to synthetic candles (no network).
+
+    Built via __new__ so __init__ (which imports BlobbyTrader / hits Coinbase
+    credentials) never runs; _client is a non-None sentinel so price_at proceeds,
+    and marketdata.fetch_candles is monkeypatched to return canned rows.
+    """
+    import marketdata
+    if fetch is None:
+        candles_by_product = candles_by_product or {}
+        def fetch(client, product, days=None, granularity=None):  # noqa: ANN001
+            return candles_by_product.get(product, [])
+    monkeypatch.setattr(marketdata, 'fetch_candles', fetch)
+    prov = ta.CoinbasePriceProvider.__new__(ta.CoinbasePriceProvider)
+    prov._client = object()          # non-None sentinel -> price_at runs
+    prov._trader = None
+    prov._candle_cache = {}
+    return prov
+
+
+def test_utc_epoch_treats_naive_as_utc():
+    dt = datetime(2026, 4, 10, 19, 48, 6, 600002)
+    # The corrected epoch is the UTC interpretation, not the local one.
+    assert ta.utc_epoch(dt) == pytest.approx(dt.replace(tzinfo=timezone.utc).timestamp())
+
+
+def test_utc_epoch_honors_aware_datetime():
+    aware = datetime(2026, 4, 10, 19, 48, 6, tzinfo=timezone.utc)
+    assert ta.utc_epoch(aware) == pytest.approx(aware.timestamp())
+
+
+def test_utc_epoch_identical_under_utc_and_new_york(tz_guard):
+    dt = datetime(2026, 4, 10, 19, 48, 6, 600002)
+    os.environ['TZ'] = 'UTC'
+    time.tzset()
+    under_utc = ta.utc_epoch(dt)
+    os.environ['TZ'] = 'America/New_York'
+    time.tzset()
+    under_ny = ta.utc_epoch(dt)
+    # TZ-independent by construction of the fix.
+    assert under_utc == under_ny
+    # And under New_York the buggy naive interpretation really diverges (proving
+    # the bug this fix closes exists), by the ~4-5h EDT/EST offset.
+    assert dt.timestamp() != pytest.approx(under_ny)
+
+
+def test_price_at_is_tz_independent(monkeypatch, tz_guard):
+    when = datetime(2026, 1, 1, 12, 0, 0)         # far past -> ONE_DAY granularity
+    target = ta.utc_epoch(when)
+    rows = [
+        {'time': target, 'close': 100.0},          # the correct UTC candle
+        {'time': target + 5 * 3600, 'close': 200.0},  # +5h: what a local-time lookup nears
+    ]
+    os.environ['TZ'] = 'UTC'
+    time.tzset()
+    prov_utc = _cb_provider(monkeypatch, {'DOGE-USD': rows})
+    under_utc = prov_utc.price_at('DOGE', when)
+
+    os.environ['TZ'] = 'America/New_York'
+    time.tzset()
+    prov_ny = _cb_provider(monkeypatch, {'DOGE-USD': rows})
+    under_ny = prov_ny.price_at('DOGE', when)
+
+    # Same candle chosen under both zones -- and it's the correct 100.0, not the
+    # +5h 200.0 that the naive-`.timestamp()` bug would have picked under NY.
+    assert under_utc == under_ny == 100.0
+
+
+# ===========================================================================
+# DI-2 -- cache-key span isolation + nearest-candle distance guard
+# ===========================================================================
+def test_price_at_cache_key_isolates_lookback_span(monkeypatch):
+    """Same coin+granularity, different lookback spans -> distinct cache keys, so
+    one span's candles never contaminate the other; a repeat of the same span is
+    served from cache (no re-fetch)."""
+    calls = []
+
+    def fetch(client, product, days=None, granularity=None):  # noqa: ANN001
+        calls.append(days)
+        return []  # content irrelevant here; we assert on fetch behavior
+
+    prov = _cb_provider(monkeypatch, fetch=fetch)
+    when_recent = datetime(2026, 6, 1, 12, 0, 0)   # ~short span, ONE_DAY
+    when_old = datetime(2026, 1, 1, 12, 0, 0)      # ~long span, ONE_DAY
+
+    prov.price_at('DOGE', when_recent)
+    prov.price_at('DOGE', when_old)
+    # Different lookback spans -> two distinct cache keys -> two fetches.
+    assert len(calls) == 2
+    assert calls[0] != calls[1]                    # the day-spans really differ
+    # Same coin+span again -> served from cache, no third fetch.
+    prov.price_at('DOGE', when_recent)
+    assert len(calls) == 2
+
+
+def test_price_at_distance_guard_returns_none_when_nearest_too_far(monkeypatch):
+    when = datetime(2026, 1, 1, 12, 0, 0)          # far past -> ONE_DAY (86400s)
+    target = ta.utc_epoch(when)
+    # Nearest candle is 3 days off -> beyond 1.5x the ONE_DAY granularity.
+    far = [{'time': target + 3 * 86400, 'close': 123.0}]
+    prov = _cb_provider(monkeypatch, {'DOGE-USD': far})
+    assert prov.price_at('DOGE', when) is None
+
+
+def test_price_at_returns_close_when_within_distance_guard(monkeypatch):
+    when = datetime(2026, 1, 1, 12, 0, 0)          # ONE_DAY granularity
+    target = ta.utc_epoch(when)
+    near = [{'time': target + 3600, 'close': 123.0}]  # 1h off, well within 1.5 days
+    prov = _cb_provider(monkeypatch, {'DOGE-USD': near})
+    assert prov.price_at('DOGE', when) == 123.0
+
+
+def test_distance_guard_degrades_record_honestly_not_at_maturity(monkeypatch):
+    """End-to-end: when the maturity candle is beyond the distance guard,
+    price_at returns None, so score_record must NOT stamp AT_MATURITY -- it
+    degrades to run-time (or, absent a run-time price, EXPIRED_UNSCORABLE)."""
+    when = datetime(2026, 1, 1, 12, 0, 0)
+    maturity = when + timedelta(hours=24)
+    mtarget = ta.utc_epoch(maturity)
+    # Only far-off candles exist for both coin and benchmark -> guard trips.
+    far_coin = [{'time': mtarget + 5 * 86400, 'close': 0.50}]
+    far_bench = [{'time': mtarget + 5 * 86400, 'close': 70000.0}]
+    prov = _cb_provider(monkeypatch,
+                        {'DOGE-USD': far_coin, 'BTC-USD': far_bench})
+    # No run-time price either (trader is None, and no network reachable).
+    monkeypatch.setattr(ta, 'get_current_price', lambda *a, **k: None)
+
+    r = rec('dg1', 'DOGE', 'BUY', price=0.10)
+    r['timestamp'] = when.isoformat() + 'Z'
+    s = ta.score_record(r, when + timedelta(hours=48), 24, 2.4, BTC, prov, [], {})
+    assert s.category == ta.EXPIRED_UNSCORABLE      # honest degradation
+    assert s.methodology != ta.AT_MATURITY          # never falsely stamped at-maturity
+
+
+# ===========================================================================
+# DI-1 -- STATE_VERSION bump so frozen (wrong) verdicts re-score once
+# ===========================================================================
+def test_state_version_bumped_and_prior_version_discarded(tmp_path):
+    """STATE_VERSION is 3, and a prior-version (v2) state file is discarded on
+    load -- forcing the naive-timestamp-era frozen verdicts to be re-scored."""
+    assert ta.STATE_VERSION == 3
+    path = tmp_path / 'analyzer_state.json'
+    key = ta.state_key(rec('x', 'DOGE', 'BUY'))
+    # A v2 file (the format frozen with the DI-1 bug) must be discarded.
+    path.write_text(json.dumps({'version': 2, 'scored': {key: {'outcome': 'WIN'}}}))
+    assert ta.load_state(str(path)) == {}
+    # A current-version file still round-trips.
+    ta.save_state(str(path), {key: {'outcome': 'WIN'}})
+    assert ta.load_state(str(path)) == {key: {'outcome': 'WIN'}}
+    assert json.loads(path.read_text())['version'] == 3

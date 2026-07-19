@@ -83,8 +83,11 @@ AT_RUN_TIME = 'scored_at_run_time'
 # stored shape changes; a file whose version doesn't match is discarded and
 # regenerated (the state is derived data, so re-scoring is safe). v1 was the
 # implicit rec-id-keyed format with no version field; v2 is composite-keyed and
-# stores `methodology`.
-STATE_VERSION = 2
+# stores `methodology`. v3 (DI-1): the naive-`.timestamp()` epoch-conversion bug
+# (see utc_epoch) meant every at-maturity candle lookup on a non-UTC machine was
+# hours off and the wrong verdict was frozen; bumping discards those v2 states so
+# the corrupted grades are re-scored once against the corrected windows.
+STATE_VERSION = 3
 
 
 def state_key(rec: Dict) -> str:
@@ -118,6 +121,21 @@ def parse_timestamp(raw: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(raw.replace('Z', ''))
     except ValueError:
         return None
+
+
+def utc_epoch(when: datetime) -> float:
+    """Epoch seconds for a stored naive-UTC datetime, treating it as UTC.
+
+    Stored history timestamps are naive UTC (see parse_timestamp / AGENTS.md's
+    timestamp contract). Calling ``when.timestamp()`` on such a value interprets
+    it in the machine's LOCAL zone -- the exact naive-`.timestamp()` trap that
+    was a real 4-hour bug in lp_history.py (AGENTS.md:23). We stamp UTC
+    explicitly so the epoch is identical on every machine regardless of $TZ. An
+    already-aware datetime is honored as-is.
+    """
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.timestamp()
 
 
 def pct_change(old: float, new: float) -> Optional[float]:
@@ -372,7 +390,11 @@ class CoinbasePriceProvider:
             granularity = 'ONE_HOUR' if age_days <= 10 else 'ONE_DAY'
             # Coinbase caps ~300 candles/request; cap the lookback accordingly.
             days = min(age_days, 12 if granularity == 'ONE_HOUR' else 290)
-            cache_key = (coin, granularity)
+            # Cache key includes the lookback span (DI-2): a short-span fetch and
+            # a long-span fetch for the same coin+granularity return different
+            # candle sets, so keying on (coin, granularity) alone would serve one
+            # request's rows to the other and grade against the wrong window.
+            cache_key = (coin, granularity, days)
             rows = self._candle_cache.get(cache_key)
             if rows is None:
                 rows = marketdata.fetch_candles(self._client, f"{coin}-USD",
@@ -380,8 +402,18 @@ class CoinbasePriceProvider:
                 self._candle_cache[cache_key] = rows
             if not rows:
                 return None
-            target = when.timestamp()
+            # Treat the naive-UTC `when` as UTC (DI-1); a raw `.timestamp()` here
+            # would read it as local time and offset every lookup by $TZ.
+            target = utc_epoch(when)
             closest = min(rows, key=lambda r: abs(r['time'] - target))
+            # Distance guard (DI-2): if the nearest candle is more than 1.5x the
+            # granularity from the target, the target falls outside the fetched
+            # window -- return None so the record degrades honestly to an
+            # unscoreable/run-time category instead of being graded against the
+            # window edge while stamped AT_MATURITY.
+            granularity_seconds = 3600.0 if granularity == 'ONE_HOUR' else 86400.0
+            if abs(closest['time'] - target) > 1.5 * granularity_seconds:
+                return None
             return closest['close']
         except Exception as e:
             print(f"Warning: historical price for {coin} at {when} unavailable ({e})")
