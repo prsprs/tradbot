@@ -24,7 +24,7 @@ Seven implementer agents (T3, T5, T8, T9, T10, T11, T12+T13) wrote first-person 
 
 **P1 — money-path, recommend before unsupervised live runs:**
 - **F1 (Fable 5):** `main()` prunes failed-init LLMs out of `COMPARE_LLMS` before consensus sees them — a panelist can vanish with no abstain recorded (the §1.1 bug class one layer up; `--skip-preflight`/whatif paths leave it open). Convert prune → standing abstain. *(T3 reflection)*
-- **F2 (Opus 4.8):** Ambiguous create-timeout can leave the ledger saying `failed` while the order actually filled. Attempt client_order_id lookup on *any* create failure; add `reconcile --repair` for orphaned intents and `unconfirmed` fills (nothing re-polls them today). Also: the live acceptance test should deliberately trigger a duplicate order to capture the real rejection shape (`_looks_like_duplicate` is untested string guesswork). *(T5)*
+- **F2 (Opus 4.8):** Ambiguous create-timeout can leave the ledger saying `failed` while the order actually filled. Attempt client_order_id lookup on *any* create failure; add `reconcile --repair` for orphaned intents and `unconfirmed` fills (nothing re-polls them today). Also: the live acceptance test should deliberately trigger a duplicate order to capture the real rejection shape (`_looks_like_duplicate` is untested string guesswork). *(T5)* *(Duplicate capture DONE 2026-07-19 — Coinbase dedupes idempotently, no error shape; see `tests/fixtures/coinbase/duplicate_rejection.json` and AGENTS.md gotchas. `reconcile --repair` exists but auto-running it is still open.)*
 - **F3 (Sonnet 5):** CMC lookup takes `data[0]` for a symbol; CMC symbols collide, so obscure meme tickers can render a *different asset's* stats into the prompt. Switch to ID-based lookup via `coinmarketcaputil.SYMBOL_TO_CMC_ID` (helpers kept for exactly this). *(T12)*
 
 **P2 — correctness/hygiene:**
@@ -62,7 +62,7 @@ F1–F9 are resolved (F6 resolved-by-measurement: zero evidence of over-abstain 
 - Wire `llmpreflight` schema_probe into bot startup (capability landed unwired — P4-C doesn't own the bot file; second occurrence of the off-limits-monolith workaround shape, strengthening R1).
 - `reconcile --repair` is load-bearing but manual — nothing runs it automatically; consider bot-startup or cadence-runbook integration (P4-B).
 - Promote `test_market_data.py`'s file-local CMC/SOCIAL stub fixture to repo-wide `tests/conftest.py` — it's a trap for every new test file that touches `build_market_block` (P4-D).
-- Owner live-run capture: runbook §7 duplicate-rejection fixture to validate/retire `_looks_like_duplicate` (P4-B).
+- ~~Owner live-run capture: runbook §7 duplicate-rejection fixture to validate/retire `_looks_like_duplicate` (P4-B).~~ *(DONE 2026-07-19 — fixture captured, `_looks_like_duplicate` demoted to log-annotation only; see ACCEPTANCE_RESULTS_2026-07-19.md.)*
 
 ## Tradbot behavior notes for the owner
 

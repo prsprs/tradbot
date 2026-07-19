@@ -1,5 +1,11 @@
 # Session Handoff — 2026-07-18 implementation session → next session
 
+> **EXECUTED 2026-07-19:** the 7-commit plan below was carried out with
+> per-commit owner approval — commits `4640c3b..3ec83e2` on `josh` (unpushed);
+> suite 616 green before and after; end state matched the prediction below.
+> This doc is now a historical record; the reusable commit procedure it proved
+> out is generalized in `AGENTS.md` § "Preparing and executing commits".
+
 > **ADDENDUM 2026-07-19:** Acceptance testing (§ "Testing checklist" below) was
 > EXECUTED and PASSED, including owner live acceptance with a real $5 ETH fill
 > and the §7 duplicate capture — results and open issues in
@@ -13,9 +19,10 @@
 > additionally takes `docs/ACCEPTANCE_RESULTS_2026-07-19.md` and the edited
 > `docs/RUNBOOK_live_acceptance.md` (moves from commit 1 — it now documents
 > executed results, reasonable either way) plus the AGENTS.md gotcha additions.
-> Commits themselves remain NOT executed.
+> ~~Commits themselves remain NOT executed.~~ *(Superseded — see the EXECUTED
+> banner at the top: all 7 commits landed 2026-07-19.)*
 
-Written at session close for the next session (human or agent) that will **execute commits** and **run acceptance testing**. Everything below is verified as of close: **597 tests passing, 0 failures**, `import crypto_trading_bot` silent, real `history/` untouched all session (md5-stable), NOTHING committed or staged — HEAD is `2820cd3` on branch `josh`.
+Written at session close for the next session (human or agent) that will **execute commits** and **run acceptance testing** *(both since done — see top banner)*. Everything below was verified as of close: **597 tests passing, 0 failures** (616 after acceptance additions), `import crypto_trading_bot` silent, real `history/` untouched all session (md5-stable), at that point NOTHING committed or staged — HEAD was `2820cd3` on branch `josh`.
 
 ## What this session did (one paragraph)
 
@@ -47,7 +54,7 @@ After the 7 commits the only remaining dirty paths should be: `EVALUATION_LESSON
 
 ## Testing checklist for the next session
 
-1. `./venv/bin/python -m pytest tests/ -q` → expect **597 passed, 0 failures** (network-blocked by tests/conftest.py; ~2.5s)
+1. `./venv/bin/python -m pytest tests/ -q` → expect **616 passed, 0 failures** (was 597 at handoff writing; +19 from acceptance-session additions) (network-blocked by tests/conftest.py; ~2.5s)
 2. `./venv/bin/python -c "import crypto_trading_bot"` → silent
 3. Cheap E2E (1 LLM call): `HISTORY_DIR=/tmp/tradbot_scratch ./venv/bin/python crypto_trading_bot.py --trading-mode=whatif --llm-mode=gemini --coins=BTC`
 4. Panel preflight incl. schema contract (few cents): `./venv/bin/python -c "import llmpreflight; print(llmpreflight.preflight(['gemini','claude','openai'], schema_probe=True))"`

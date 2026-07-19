@@ -23,9 +23,21 @@ A multi-LLM consensus crypto trading bot that places **real-money orders on Coin
 - **Timestamp contract (load-bearing):** history records, ledger rows, and LP files store naive-UTC timestamps with a literal `'Z'` suffix (`isoformat()` without offset + `'Z'`); `tradeanalyzer.parse_timestamp` and the LP parsers depend on this exact shape, and regression tests pin it. Do not switch any storage site to aware `isoformat()` (which appends `+00:00`) piecemeal — going timezone-aware end-to-end is a planned dedicated migration. Never compute epoch time via `.timestamp()` on a naive datetime (it assumes *local* time — this was a real 4-hour bug in `lp_history.py`); use `datetime.now(timezone.utc)`.
 - **`history/` mixes per-user data (gitignored) with code**: `history/recorder.py` is source and `history/test_expected_output.csv` is a documented fixture, both tracked. If a task says "don't touch history/" it means the *data*; if it says "migrate all code" that includes `recorder.py` — ask or flag the conflict rather than guessing.
 
+## Preparing and executing commits (when the owner asks)
+
+Hard rule #4 stands: don't commit unless the owner explicitly asked, in that session, in commit-words ("commit it", "execute the commit plan"). When they have, this is the procedure that worked (7-commit backlog landed cleanly 2026-07-19):
+
+1. **Write commit plans file-partitioned.** Each file wholly in exactly one commit — never a plan that needs hunk-level staging. If source files span logical phases, group by file anyway and say so in the message. This is also how to write a handoff doc for a future committing session; put addenda in the doc itself and read them before staging (an addendum can move files between commits).
+2. **Reconcile before staging anything**: `git status --porcelain -uall` (plain status collapses untracked directories and hides files), then check the partition — every dirty/untracked path in exactly one commit or on an explicit leave-alone list. Anything unaccounted for gets flagged to the owner, not guessed.
+3. **Bracket with the suite**: full `pytest` green before the first commit and after the last. After the last, also verify the working tree matches the plan's predicted end state (the plan should state one).
+4. **Per commit**: stage, run `./scripts/check_staged_hygiene.sh`, read the staged diff yourself, then show the owner the file list + proposed message and wait for their yes. The script only pattern-matches; *you* judge context — e.g. a fixture carrying a real exchange `order_id`/fill details may be intentional, but flag it explicitly and let the owner decide.
+5. **Message style**: imperative subject ≤ ~50 chars, body explains what and why, money-path changes called out plainly. **No authorship/attribution lines of any kind** (no `Co-Authored-By`, no "Generated with …") — owner's standing rule.
+6. **Mechanics that bite**: flag-like filenames need the `--` separator (`git add -A -- './--use-fib'`); after `git rm --cached`, confirm the files still exist on disk *and* that `.gitignore` now covers them so they can't be re-added.
+7. **Never push.** Committing authorization is not pushing authorization.
+
 ## Secrets scanning (optional)
 
-This repo relies on `.gitignore` plus code review to keep `.env`, `cdp_api_key.json`, and key material out of commits — there's no automated scanner installed. Nobody should install one on another contributor's behalf, but if you (the repo owner) want a local pre-commit guard, [gitleaks](https://github.com/gitleaks/gitleaks) via [pre-commit](https://pre-commit.com/) is a lightweight option. Add a `.pre-commit-config.yaml`:
+This repo relies on `.gitignore`, `./scripts/check_staged_hygiene.sh` (run manually against the staged diff — see the commit procedure above), and code review to keep `.env`, `cdp_api_key.json`, and key material out of commits — there's no automated scanner installed. Nobody should install one on another contributor's behalf, but if you (the repo owner) want a local pre-commit guard, [gitleaks](https://github.com/gitleaks/gitleaks) via [pre-commit](https://pre-commit.com/) is a lightweight option. Add a `.pre-commit-config.yaml`:
 
 ```yaml
 repos:

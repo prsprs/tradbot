@@ -1,5 +1,10 @@
 # Runbook — Phase 1 live acceptance test (ONE supervised $5 BTC buy)
 
+> **EXECUTED 2026-07-19** by the owner — all sections including §7, with a real
+> $5 **ETH** fill (substituted for BTC on the day). Results and findings:
+> `docs/ACCEPTANCE_RESULTS_2026-07-19.md`. The procedure below remains the
+> reusable runbook for future acceptance passes (e.g. after money-path changes).
+
 **Status: reserved for a human. The agent-side work for T5 is complete.**
 Fill confirmation, the execution ledger, the daily spend cap, position
 reconciliation, and their tests all landed and pass in what-if. The one thing

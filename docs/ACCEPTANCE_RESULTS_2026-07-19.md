@@ -9,7 +9,7 @@ other users.
 
 | Capability | Evidence |
 |---|---|
-| Full test suite | 599 passed, 0 failures (was 597; +2 from §7 fixture tests) |
+| Full test suite | 599 passed, 0 failures at this point in the session (was 597; +2 from §7 fixture tests; final count after same-day reasons-hygiene fix: 616) |
 | `import crypto_trading_bot` side-effect-free | silent |
 | What-if E2E (single LLM, scratch history) | HOLD recorded, no trade, real `history/` untouched |
 | Live double lock arms | LIVE banner with `[--live + LIVE_TRADING_CONFIRMED=1]` |
@@ -82,8 +82,10 @@ other users.
       lack of a BUY vote.
 - [ ] **SELL path** — does not exist yet (SELL votes are recorded and dropped);
       users must know exits are manual.
-- [ ] Execute the **7-commit plan** in `SESSION_HANDOFF_2026-07-18.md` (this
+- [x] Execute the **7-commit plan** in `SESSION_HANDOFF_2026-07-18.md` (this
       session's new files join commit 1) so users clone tested code.
+      *(DONE 2026-07-19: commits `4640c3b..3ec83e2` on `josh`, per-commit
+      owner approval, suite 616 green before and after.)*
 
 ## Testing lessons for future humans running sessions like this
 

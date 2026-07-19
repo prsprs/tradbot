@@ -19,7 +19,7 @@ python crypto_trading_bot.py [OPTIONS]
 
 | Option | Values | Default | Description |
 |--------|--------|---------|-------------|
-| `--trading-mode` | `live`, `whatif` | `live` | Trading mode: `live` executes real trades, `whatif` simulates only |
+| `--trading-mode` | `live`, `whatif` | `whatif` | Trading mode. `whatif` simulates only. Selecting `live` alone does NOT trade: real orders additionally require the `--live` flag AND `LIVE_TRADING_CONFIRMED=1` in the environment (double interlock); otherwise the run downgrades to what-if with a loud `[LIVE LOCK]` banner |
 | `--llm-mode` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, `integrate` | `compare` | LLM mode for recommendations |
 | `--primary-llm` | `gemini`, `claude`, `openai`, `grok`, `perplexity` | `gemini` | Primary LLM for discovery |
 | `--compare-llms` | comma-separated | `gemini,claude` | LLMs for compare/integrate mode |
@@ -38,15 +38,15 @@ The startup banner shows the source of each configuration value (e.g., `[--tradi
 
 **What it does:**
 1. Discovers coins to analyze (via LLM or specified list)
-2. Fetches Google Trends data for each coin
-3. Queries LLM(s) for trading recommendations
-4. Optionally compares or integrates recommendations from multiple LLMs
-5. Records recommendations to history (for later analysis)
-6. Executes trades on Coinbase (in `live` mode) or simulates them (in `whatif` mode)
+2. Builds a market-data block per coin (Coinbase OHLCV + Fibonacci primary; CMC, LunarCrush social, and Google Trends as labeled secondaries) and injects it into every analysis prompt
+3. Queries LLM(s) for structured trading votes
+4. Optionally compares or integrates recommendations from multiple LLMs (fail-closed consensus)
+5. Records recommendations to history with `trading_mode` and `run_id` (for later analysis)
+6. Executes trades on Coinbase (only when the live double interlock is fully armed) or simulates them (`whatif`)
 
 **Output:**
 - Console output with LLM responses and recommendations
-- Trade executions on Coinbase (live mode only)
+- Trade executions on Coinbase (fully armed live mode only), with fill confirmation recorded to the execution ledger (`history/executions.json`)
 - History records saved to `./history/recommendations.json`
 - What-if summary showing simulated trades (whatif mode only)
 
@@ -122,7 +122,7 @@ Cache refresh complete!
 
 ### 3. Trade Analyzer (`tradeanalyzer.py`)
 
-Standalone program that analyzes historical recommendation accuracy by comparing past recommendations to current prices.
+Standalone program that scores past recommendations **benchmark-relative**: each matured recommendation's coin return is compared against a BTC buy-and-hold benchmark over the same window, minus the measured fee floor (~2.4% round trip), split by `trading_mode` (live vs what-if; `unknown` records are excluded, never guessed).
 
 **Usage:**
 ```bash
@@ -131,16 +131,14 @@ python tradeanalyzer.py
 
 **What it does:**
 1. Loads recommendations from `./history/recommendations.json`
-2. Finds recommendations in two time windows:
-   - **24-hour window:** Recommendations made 24-48 hours ago
-   - **7-day window:** Recommendations made 7-8 days ago
-3. Fetches current prices (Coinbase primary, CoinGecko fallback)
-4. Calculates accuracy (BUY correct if price went up, SELL correct if price went down)
-5. Generates per-LLM and per-mode statistics
+2. Selects records that have reached scoring maturity (score-at-maturity windows)
+3. Fetches coin and BTC benchmark prices (Coinbase primary, CoinGecko fallback)
+4. Scores each recommendation by excess return vs the fee-adjusted BTC benchmark (not raw price direction)
+5. Generates per-LLM and per-mode (live/whatif) statistics; `unknown`-mode records are counted and excluded
 
 **Output:**
 - Console report with accuracy statistics
-- CSV files: `./history/analysis_24h_YYYYMMDD.csv`, `./history/analysis_7d_YYYYMMDD.csv`
+- CSV files, split by mode: `./history/analysis_live_YYYYMMDD.csv`, `./history/analysis_whatif_YYYYMMDD.csv` (benchmark-relative columns; see the analyzer section below)
 
 ---
 
@@ -153,7 +151,7 @@ python tradeanalyzer.py
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRADING_MODE` | `live` | Trading mode: `live` executes real trades, `whatif` simulates only |
+| `TRADING_MODE` | `whatif` | Trading mode. Live trading also requires `--live` and `LIVE_TRADING_CONFIRMED=1` (see the double interlock note in the options table above) |
 | `LLM_MODE` | `compare` | Mode of operation: `gemini`, `claude`, `openai`, `grok`, `perplexity`, `compare`, or `integrate` |
 | `PRIMARY_LLM` | `gemini` | LLM used for coin discovery and first analysis |
 | `COMPARE_LLMS` | `gemini,claude` | Comma-separated list of LLMs to use in compare/integrate modes |
@@ -204,7 +202,7 @@ python tradeanalyzer.py
 
 **Library:** `google-genai`
 
-**Model:** `gemini-2.5-pro`
+**Model:** see `modelregistry.py` / `MODELS.md` (env override: `GEMINI_MODEL`)
 
 **Features used:** Google Search grounding for real-time market data
 
@@ -218,7 +216,7 @@ python tradeanalyzer.py
 
 **Library:** `anthropic`
 
-**Model:** `claude-sonnet-4-20250514`
+**Model:** see `modelregistry.py` / `MODELS.md` (env override: `CLAUDE_MODEL`)
 
 ---
 
@@ -230,7 +228,7 @@ python tradeanalyzer.py
 
 **Library:** `openai`
 
-**Model:** `gpt-4o`
+**Model:** see `modelregistry.py` / `MODELS.md` (env override: `OPENAI_MODEL`)
 
 ---
 
@@ -244,7 +242,7 @@ python tradeanalyzer.py
 
 **Base URL:** `https://api.x.ai/v1`
 
-**Model:** `grok-3`
+**Model:** see `modelregistry.py` / `MODELS.md` (env override: `GROK_MODEL`)
 
 **Features used:** Web search tool for real-time data
 
@@ -260,7 +258,7 @@ python tradeanalyzer.py
 
 **Base URL:** `https://api.perplexity.ai`
 
-**Model:** `sonar-pro`
+**Model:** see `modelregistry.py` / `MODELS.md` (env override: `PERPLEXITY_MODEL`)
 
 ---
 
@@ -348,8 +346,8 @@ tradingbot/
 ├── coin_cache.backup.json    # Backup of previous cache (gitignored)
 └── history/
     ├── recommendations.json  # Accumulated recommendation history
-    ├── analysis_24h_*.csv    # 24-hour analysis results
-    ├── analysis_7d_*.csv     # 7-day analysis results
+    ├── analysis_live_*.csv   # analyzer results, live-mode records
+    ├── analysis_whatif_*.csv # analyzer results, what-if records
     └── test_*.json/csv       # Regression test data
 ```
 
