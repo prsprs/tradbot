@@ -1,0 +1,37 @@
+name: Tests
+
+# Minimal CI: run the test suite on PRs and on pushes to main.
+#
+# scripts/check_staged_hygiene.sh is NOT run here. It inspects `git diff
+# --cached` (the local staging index) to catch never-commit files/secrets
+# before a commit is made -- a pre-commit developer guard. In CI, a fresh
+# checkout has nothing staged, so running it here would just print "nothing
+# staged" and vacuously pass; it adds no coverage. The hygiene check belongs
+# at commit time (see AGENTS.md), not in CI.
+#
+# The suite is network-blocked by design (see AGENTS.md / conftest.py), so
+# it is safe to run unattended in CI -- no real API calls or exchange writes.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements_dev.txt
+
+      - name: Run test suite
+        run: python -m pytest tests/ -q
