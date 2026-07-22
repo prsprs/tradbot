@@ -169,6 +169,116 @@ def ledger_lock() -> _FileLock:
     return file_lock(EXECUTIONS_FILE + '.lock')
 
 
+# ============================================================================
+# Single-instance process lock (WS-2, improvement cycle 2)
+# ============================================================================
+# The ledger lock above serializes the money GATE across overlapping runs, but
+# nothing prevented concurrent live PROCESSES -- the owner once launched 5
+# `--live` bots at once, which are unsupervisable and multiply the exchange
+# rate-limit footprint. This lock refuses a second process of the same mode.
+#
+# Design (distinct from ledger_lock's reentrant blocking flock):
+#   * NON-BLOCKING (LOCK_NB): a contender must be *refused*, never queued.
+#   * Held for the whole process lifetime -- the returned InstanceLock keeps
+#     its file handle open; the caller keeps a reference alive and never
+#     releases early. flock is released by the OS on process death, so a crash
+#     leaves no stale lock (that free-on-death is exactly why the PID written
+#     into the file is INFORMATIONAL ONLY -- it is never consulted to decide
+#     liveness, so a stale PID from a dead process can never block a new run).
+#   * PER-MODE lock file (bot_instance.<mode>.lock) beside the executions file,
+#     so a `live` run and a `whatif` run can coexist by design: whatif is
+#     read-only research and cannot touch the live money path.
+#
+# Lock ordering (docs/INVARIANTS.md (b)): this is the OUTERMOST lock, taken
+# once at startup before any network/LLM/ledger work and never interleaved
+# with the ledger/recommendations locks.
+
+
+class InstanceLock:
+    """A held single-instance lock (flock LOCK_EX|LOCK_NB on `path`).
+
+    Keeps its open file handle alive for the process lifetime; do NOT release
+    early on the money path. `release()` exists for test cleanup and for the
+    rare caller that legitimately wants to drop it.
+    """
+
+    def __init__(self, path: str, fh, pid: int):
+        self.path = path
+        self.pid = pid
+        self._fh = fh
+
+    def release(self):
+        """Drop the flock and close the handle. Idempotent."""
+        fh, self._fh = self._fh, None
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
+
+def bot_instance_lock_path(trading_mode: str) -> str:
+    """Path of the per-mode single-instance lock file, beside EXECUTIONS_FILE.
+
+    Resolved at CALL time (like ledger_lock) so a HISTORY_DIR redirect / test
+    override that repoints EXECUTIONS_FILE moves this lock file with it.
+    """
+    directory = os.path.dirname(EXECUTIONS_FILE) or '.'
+    return os.path.join(directory, f'bot_instance.{trading_mode}.lock')
+
+
+def _read_lock_pid(fh) -> Optional[int]:
+    """Best-effort read of the PID recorded in an already-open lock file.
+
+    Informational only (see the section header): used solely to name the
+    holder in a refusal message, never to decide whether the holder is alive.
+    """
+    try:
+        fh.seek(0)
+        content = fh.read().strip()
+        return int(content) if content else None
+    except (OSError, IOError, ValueError):
+        return None
+
+
+def bot_instance_lock(trading_mode: str):
+    """Try to acquire the single-instance lock for `trading_mode` (non-blocking).
+
+    Returns a (lock, holder_pid) tuple:
+      * acquired  -> (InstanceLock, None): the lock is HELD; keep the object
+        alive for the process lifetime. Our PID is written into the file for
+        the *next* contender's refusal message.
+      * contention -> (None, holder_pid_or_None): another live process holds
+        it; holder_pid is read from the file (informational only, may be None
+        if the file was empty/unreadable).
+
+    flock, not the PID, is the liveness gate: the OS drops the lock when the
+    holder dies, so a stale PID never blocks a new run.
+    """
+    path = bot_instance_lock_path(trading_mode)
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    fh = open(path, 'a+')
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, IOError):
+        # Another process holds the flock -> refuse. Read its PID (best effort)
+        # only to name it; the flock itself already proved the holder is live.
+        holder_pid = _read_lock_pid(fh)
+        fh.close()
+        return None, holder_pid
+    # Acquired. Record our PID (truncate first -- a prior holder's PID may
+    # linger since the file is never deleted). Purely informational.
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        os.fsync(fh.fileno())
+    except (OSError, IOError):
+        pass  # a PID we can't write just yields a "None" holder downstream
+    return InstanceLock(path, fh, os.getpid()), None
+
+
 class LedgerError(Exception):
     """The execution ledger exists but cannot be read (corrupt JSON /
     unreadable file). MP-2 (audit 2026-07-19): this must FAIL CLOSED -- the
@@ -213,15 +323,26 @@ def quarantine_corrupt_ledger() -> Optional[str]:
     NEVER deletes anything -- the bad file is preserved for manual repair.
     (This is local per-user runtime data, gitignored, never committed.)
     Returns the quarantine path, or None when the file doesn't exist.
+
+    Audit follow-up (2026-07-21b, same bug shape as MP-11/snapshot_ledger):
+    the os.rename is now taken under `ledger_lock()` so it serializes against
+    every writer the same way _append_row/snapshot_ledger do. Lower risk than
+    the other lock-free paths (this only fires on an already-corrupt file --
+    there's no "torn read" to protect against), but the same discipline
+    applies for defense-in-depth. Reentrant, so callers that already hold the
+    lock (both current call sites in crypto_trading_bot.maybe_execute_buy /
+    _recover_live_ledger run inside its `with ledger_lock():` span) just
+    nest a no-op re-acquire; see docs/INVARIANTS.md (b).
     """
-    if not os.path.exists(EXECUTIONS_FILE):
-        return None
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    dest = f'{EXECUTIONS_FILE}.corrupt-{stamp}'
-    while os.path.exists(dest):  # never overwrite an earlier quarantine
-        dest = f'{EXECUTIONS_FILE}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}'
-    os.rename(EXECUTIONS_FILE, dest)
-    return dest
+    with ledger_lock():
+        if not os.path.exists(EXECUTIONS_FILE):
+            return None
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        dest = f'{EXECUTIONS_FILE}.corrupt-{stamp}'
+        while os.path.exists(dest):  # never overwrite an earlier quarantine
+            dest = f'{EXECUTIONS_FILE}.corrupt-{stamp}-{uuid.uuid4().hex[:6]}'
+        os.rename(EXECUTIONS_FILE, dest)
+        return dest
 
 
 def snapshot_ledger() -> Optional[str]:
@@ -239,8 +360,15 @@ def snapshot_ledger() -> Optional[str]:
     dest = f"{EXECUTIONS_FILE}.bak-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     if os.path.exists(dest):
         return dest
-    load_executions()   # raises LedgerError if corrupt -> caller skips snapshot
-    shutil.copyfile(EXECUTIONS_FILE, dest)
+    # MP-11: the read-and-copy must run under ledger_lock, matching every
+    # mutation path (_append_row, and maybe_execute_buy's wider span) --
+    # otherwise a snapshot taken mid-replace could observe a torn file.
+    # Reentrant, so a hypothetical future caller that already holds the lock
+    # would not deadlock (see docs/INVARIANTS.md (b) and this module's
+    # _FileLock docstring).
+    with ledger_lock():
+        load_executions()   # raises LedgerError if corrupt -> caller skips snapshot
+        shutil.copyfile(EXECUTIONS_FILE, dest)
     return dest
 
 
@@ -261,16 +389,29 @@ def restore_from_snapshot() -> Optional[str]:
     The snapshot itself is left in place. Returns the snapshot path used, or
     None when no snapshot exists. The caller must re-validate by loading
     (a restored file could itself be bad; that path stays fail-closed).
+
+    Audit follow-up (2026-07-21b, same bug shape as MP-11/snapshot_ledger):
+    the copy + os.replace now run under `ledger_lock()` so a restore can't
+    interleave with a concurrent writer's load->modify->replace cycle (both
+    do an os.replace onto EXECUTIONS_FILE; without a shared lock the two
+    could race). Reentrant, so nesting under an already-held lock is safe.
+    Both current callers (crypto_trading_bot._recover_live_ledger, itself
+    only ever invoked from inside maybe_execute_buy's `with
+    executionledger.ledger_lock():` span) already hold the lock when this
+    runs -- this re-acquire is a no-op depth-increment, added for
+    defense-in-depth per docs/INVARIANTS.md (b) rather than because today's
+    call sites need it.
     """
-    snap = newest_snapshot()
-    if snap is None:
-        return None
-    ensure_history_dir()
-    directory = os.path.dirname(EXECUTIONS_FILE) or '.'
-    tmp = os.path.join(directory, f'.executions.restore.{os.getpid()}.{uuid.uuid4().hex}.tmp')
-    shutil.copyfile(snap, tmp)
-    os.replace(tmp, EXECUTIONS_FILE)
-    return snap
+    with ledger_lock():
+        snap = newest_snapshot()
+        if snap is None:
+            return None
+        ensure_history_dir()
+        directory = os.path.dirname(EXECUTIONS_FILE) or '.'
+        tmp = os.path.join(directory, f'.executions.restore.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+        shutil.copyfile(snap, tmp)
+        os.replace(tmp, EXECUTIONS_FILE)
+        return snap
 
 
 def recovery_command() -> str:
