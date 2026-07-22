@@ -34,13 +34,20 @@ import pandas as pd
 # Import existing CoinGecko utility
 from coingeckoutil import get_multiple_prices, get_coingecko_id, SYMBOL_TO_ID, auto_resolve_symbol
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
+
+
+def _setup_logging():
+    """Configure root logging for standalone CLI execution.
+
+    Only called from main() - importing this module must not mutate root
+    logging state (import-purity contract, see AGENTS.md).
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
 
 # ============================================================================
@@ -2460,6 +2467,7 @@ def print_test_result_detail(index: int, test: TestResult) -> None:
 
 def main():
     """Main entry point."""
+    _setup_logging()
     args = parse_args()
     
     # Run in background if requested (must be before any other processing)

@@ -37,6 +37,56 @@ def test_import_is_silent():
     assert result.stderr == ''
 
 
+def test_import_does_not_configure_root_logging():
+    # 2026-07-21: fibonacci_analyzer.py (pulled in via marketdata.py's
+    # top-level `from fibonacci_analyzer import ...`) used to call
+    # `logging.basicConfig()` at module scope, silently installing a root
+    # StreamHandler and surfacing third-party INFO logs (httpx etc.) as a
+    # side effect of `import crypto_trading_bot` alone -- nothing to do with
+    # any SDK. Root-caused and fixed by moving the basicConfig call behind
+    # each module's standalone-CLI entry point (see AGENTS.md). Pin it here
+    # so a reintroduced module-level basicConfig fails loudly instead of
+    # resurfacing as mystery console noise.
+    code = (
+        "import logging\n"
+        "root = logging.getLogger()\n"
+        "level_before = root.level\n"
+        "handlers_before = list(root.handlers)\n"
+        "import crypto_trading_bot\n"
+        "assert root.handlers == handlers_before, "
+        "'import added/removed root handlers: %r -> %r' % (handlers_before, root.handlers)\n"
+        "assert root.level == level_before, "
+        "'import changed root level: %r -> %r' % (level_before, root.level)\n"
+        "print('NO_ROOT_LOGGING_MUTATION')\n"
+    )
+    result = _run(code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'NO_ROOT_LOGGING_MUTATION\n'
+
+
+def test_correlation_tracker_import_does_not_configure_root_logging():
+    # correlation_tracker.py carried the identical module-level
+    # logging.basicConfig() pattern as fibonacci_analyzer.py (not reached
+    # via crypto_trading_bot's import graph, but importable on its own --
+    # e.g. by leading_indicator_tester.py and tests/test_fibonacci_analyzer.py
+    # via that import chain). Same fix, same pin.
+    code = (
+        "import logging\n"
+        "root = logging.getLogger()\n"
+        "level_before = root.level\n"
+        "handlers_before = list(root.handlers)\n"
+        "import correlation_tracker\n"
+        "assert root.handlers == handlers_before, "
+        "'import added/removed root handlers: %r -> %r' % (handlers_before, root.handlers)\n"
+        "assert root.level == level_before, "
+        "'import changed root level: %r -> %r' % (level_before, root.level)\n"
+        "print('NO_ROOT_LOGGING_MUTATION')\n"
+    )
+    result = _run(code)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'NO_ROOT_LOGGING_MUTATION\n'
+
+
 def test_import_makes_no_network_calls():
     # Replace the socket-level constructors BEFORE the import, mirroring
     # tests/conftest.py's suite-wide guard. Any import-time network attempt

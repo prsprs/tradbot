@@ -49,13 +49,20 @@ from fibonacci_analyzer import (
 SUPPORTED_EXCHANGES = ['coingecko', 'jupiter', 'coinbase', 'coinmarketcap', 'cmc']
 DEFAULT_EXCHANGE = 'coingecko'
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger(__name__)
+
+
+def _setup_logging():
+    """Configure root logging for standalone CLI execution.
+
+    Only called from main() - importing this module must not mutate root
+    logging state (import-purity contract, see AGENTS.md).
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
 
 # ============================================================================
@@ -4726,6 +4733,7 @@ def run_bypass_leader_loop(config):
 # ============================================================================
 
 def main():
+    _setup_logging()
     parser = argparse.ArgumentParser(
         description='Leading Indicator Performance Tester - Paper trading simulation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
