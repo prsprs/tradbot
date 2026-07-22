@@ -88,6 +88,10 @@ except Exception:  # pragma: no cover - defensive
 # duplicate.
 import coinmarketcaputil
 
+# WS-7: cross-process rate limiting/caching primitives (flock-guarded files
+# under a shared state dir). No I/O at import -- see ratelimit.py.
+import ratelimit
+
 
 # Coinbase Advanced Trade granularity -> seconds per candle.
 GRANULARITY_SECONDS = {
@@ -542,16 +546,24 @@ _LUNARCRUSH_USER_AGENT = (
 # Client-side throttle for the Individual plan's 10 req/min cap (conservative
 # fixed interval, mirroring coinmarketcaputil's approach rather than a token
 # bucket -- this module makes at most 2 calls per coin per run).
+#
+# WS-7 (2026-07-21): this used to be an in-process module-global timestamp,
+# which is invisible across the multiple bot processes that share one
+# LunarCrush API key -- five processes each thought they were within the
+# 10 req/min cap and collectively blew through it, drawing 429s. It's now a
+# cross-process gate (ratelimit.throttle) backed by a flock-guarded
+# timestamp file in the shared state dir; semantics (6.5s min interval
+# between calls) are unchanged, just enforced across processes instead of
+# within one. TTL for the response cache below: LunarCrush data (galaxy
+# score, sentiment, etc.) doesn't meaningfully change within ~2 minutes, so
+# concurrent runs analyzing the same coin around the same time dedupe onto
+# one real fetch instead of each burning their own request budget.
 _LUNARCRUSH_MIN_INTERVAL = 6.5
-_lunarcrush_last_call = 0.0
+_LUNARCRUSH_CACHE_TTL = 120
 
 
 def _lunarcrush_throttle():
-    global _lunarcrush_last_call
-    elapsed = time.time() - _lunarcrush_last_call
-    if elapsed < _LUNARCRUSH_MIN_INTERVAL:
-        time.sleep(_LUNARCRUSH_MIN_INTERVAL - elapsed)
-    _lunarcrush_last_call = time.time()
+    ratelimit.throttle('lunarcrush', _LUNARCRUSH_MIN_INTERVAL)
 
 
 def _lunarcrush_headers():
@@ -564,37 +576,68 @@ def _lunarcrush_headers():
 
 
 def _fetch_lunarcrush_coin_raw(coin_symbol):
-    """Real /coins/:SYMBOL/v1 call. Raises on any failure."""
+    """Real /coins/:SYMBOL/v1 call. Raises on any failure.
+
+    WS-7: wrapped in a shared TTL cache (dedupes identical concurrent
+    fetches across processes) and a bounded 429 retry (Retry-After honored,
+    exponential backoff+jitter otherwise, max 2 retries, hard sleep
+    ceiling) around the throttle+request. A cache hit is logged (never
+    silent) so data-quality surfacing can tell "cached" from "fresh"."""
     import requests
 
     key = os.environ.get('LUNARCRUSH_API_KEY', '')
     if not key:
         raise RuntimeError('LUNARCRUSH_API_KEY not set')
-    _lunarcrush_throttle()
-    url = f"{_LUNARCRUSH_BASE}/coins/{coin_symbol.lower()}/v1"
-    resp = requests.get(url, headers=_lunarcrush_headers(), timeout=10)
-    resp.raise_for_status()
-    data = (resp.json() or {}).get('data')
-    if not data:
-        raise RuntimeError(f'no LunarCrush coin data for {coin_symbol}')
+
+    def _do_fetch():
+        _lunarcrush_throttle()
+        url = f"{_LUNARCRUSH_BASE}/coins/{coin_symbol.lower()}/v1"
+
+        def _attempt():
+            return requests.get(url, headers=_lunarcrush_headers(), timeout=10)
+
+        resp = ratelimit.request_with_retry(_attempt)
+        resp.raise_for_status()
+        data = (resp.json() or {}).get('data')
+        if not data:
+            raise RuntimeError(f'no LunarCrush coin data for {coin_symbol}')
+        return data
+
+    cache_key = f'lunarcrush_coin_{coin_symbol.lower()}'
+    data, cache_age = ratelimit.cached_call(cache_key, _LUNARCRUSH_CACHE_TTL, _do_fetch)
+    if cache_age is not None:
+        print(f"[LUNARCRUSH] cached {cache_age:.0f}s ago for {coin_symbol} (coins)")
     return data
 
 
 def _fetch_lunarcrush_topic_raw(topic_slug):
     """Real /topic/:topic/v1 call. Raises on any failure (incl. missing
-    topic)."""
+    topic). WS-7: same shared TTL cache + bounded 429 retry as
+    _fetch_lunarcrush_coin_raw above -- see its docstring."""
     import requests
 
     key = os.environ.get('LUNARCRUSH_API_KEY', '')
     if not key:
         raise RuntimeError('LUNARCRUSH_API_KEY not set')
-    _lunarcrush_throttle()
-    url = f"{_LUNARCRUSH_BASE}/topic/{topic_slug}/v1"
-    resp = requests.get(url, headers=_lunarcrush_headers(), timeout=10)
-    resp.raise_for_status()
-    data = (resp.json() or {}).get('data')
-    if not data:
-        raise RuntimeError(f'no LunarCrush topic data for {topic_slug}')
+
+    def _do_fetch():
+        _lunarcrush_throttle()
+        url = f"{_LUNARCRUSH_BASE}/topic/{topic_slug}/v1"
+
+        def _attempt():
+            return requests.get(url, headers=_lunarcrush_headers(), timeout=10)
+
+        resp = ratelimit.request_with_retry(_attempt)
+        resp.raise_for_status()
+        data = (resp.json() or {}).get('data')
+        if not data:
+            raise RuntimeError(f'no LunarCrush topic data for {topic_slug}')
+        return data
+
+    cache_key = f'lunarcrush_topic_{topic_slug.lower()}'
+    data, cache_age = ratelimit.cached_call(cache_key, _LUNARCRUSH_CACHE_TTL, _do_fetch)
+    if cache_age is not None:
+        print(f"[LUNARCRUSH] cached {cache_age:.0f}s ago for {topic_slug} (topic)")
     return data
 
 

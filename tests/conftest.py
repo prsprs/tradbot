@@ -79,6 +79,20 @@ def _blocked(test_id, what):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_rate_limit_state_dir(tmp_path, monkeypatch):
+    """WS-7: marketdata.py's LunarCrush throttle/cache (ratelimit.py) share
+    a state dir across processes, resolved from TRADBOT_STATE_DIR (falling
+    back to ~/.cache/tradbot). Without this, the suite would default to
+    that fallback -- besides touching a real path on the dev machine,
+    tests running in the same session would leak rate-limit timestamps and
+    cached responses into each other via that shared file. Redirect every
+    test to its own tmp_path so state never crosses test boundaries and
+    never touches the real cache dir.
+    """
+    monkeypatch.setenv('TRADBOT_STATE_DIR', str(tmp_path / 'tradbot_state'))
+
+
+@pytest.fixture(autouse=True)
 def _block_real_network(request, monkeypatch):
     """Autouse for every test collected under tests/ -- see module
     docstring. Function-scoped: monkeypatch reverts these patches after
