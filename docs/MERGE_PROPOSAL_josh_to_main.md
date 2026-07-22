@@ -4,6 +4,8 @@
 execute and time the merge yourself.** Nothing here has been pushed.
 
 `josh` is **25 commits / 174 files / +26k−15k lines** ahead of `origin/main`
+*(counts as of 2026-07-19 — see the 2026-07-21 addendum at the bottom for
+what has drifted since, including two uncommitted improvement cycles)*
 (re-verified 2026-07-19 evening after the full backlog landed; `main` has
 **zero** divergent commits, so this is a clean fast-forward candidate)
 (`github.com/prsprs/tradbot`). `main` — the branch other users run against
@@ -76,10 +78,10 @@ Ordered by how likely they are to bite. Full detail per row in
 
 ## 3. Suite status
 
-`./venv/bin/python -m pytest tests/ -q` → **798 passed** (0 failures,
-re-verified 2026-07-19 evening at `josh` HEAD after all commits landed;
-the 723 figure elsewhere in same-day docs is an earlier point-in-time
-count). `import crypto_trading_bot` is
+`./venv/bin/python -m pytest tests/ -q` → **1093 passed** (0 failures,
+re-verified 2026-07-21 while landing the cycle 1+2 reconciliation commits;
+the 723/798 figures elsewhere in earlier docs are point-in-time
+counts). `import crypto_trading_bot` is
 side-effect-free; bare `pytest --collect-only` no longer touches the exchange
 (scoped by `pytest.ini`, real-swap scripts renamed `probe_*`).
 
@@ -155,5 +157,64 @@ and merge-ready, with these items to settle **before** pushing:
 
 ---
 
-*Prepared 2026-07-19. Supersession map: `docs/SUPERSEDED.md`. Findings:
+## Addendum (2026-07-21 evening): two uncommitted improvement cycles now ride ahead of this merge
+
+The sections above are accurate **for `josh` HEAD as committed** (now **26**
+commits ahead of `origin/main`, not 25 — the merge-readiness prep commit
+landed after the count was written; still zero divergent `main` commits,
+still a clean fast-forward candidate). Since then, two further improvement
+cycles were implemented and verified but are **deliberately uncommitted**
+per house rules, with their own file-partitioned commit maps:
+
+- **Cycle 1 (2026-07-20/21):** `docs/COMMIT_PROPOSAL_2026-07-21_cascade_followup.md`
+  — suite 798 → 893 at that point.
+- **Cycle 2 (2026-07-21 evening):** `docs/COMMIT_PROPOSAL_2026-07-21_cycle2.md`
+  — suite 893 → **1093** in the working tree (Fable-reviewed, no blockers;
+  10/10 verification checks).
+
+**Merge sequencing implication:** §3's "798 passed" describes committed HEAD
+only. Recommended order: execute the cycle-1 commits, then the cycle-2
+commits, then merge — so `main` receives the fixes below. Merging HEAD alone
+is safe but ships neither cycle.
+
+**Additional §2-class behavior changes `main` users must know about once the
+cycles land** (all fail-closed / additive; full detail in the two commit
+proposals):
+
+6. **Polymarket filter actually applies under santiment discovery** (cycle 1
+   bug fix). On HEAD and `main`-era code, any `--discovery` containing
+   `santiment` silently bypassed the Polymarket filter for **all**
+   candidates while the banner said Enabled. Users who relied on that
+   (unknowingly) filter-free behavior will see candidates excluded — that is
+   the fix working, with truthful `coinsExcluded` in the run summary.
+7. **Single-instance lock** (cycle 2). A second concurrent bot process in
+   the same mode now **refuses to start** (live: no override; whatif:
+   `--allow-concurrent` opts out). Overlapping cron entries that previously
+   coexisted will refuse with a `[INSTANCE LOCK]` message naming the holder
+   PID — stagger schedules or fix the overlap; do not delete lock files
+   mid-run.
+8. **`TRUMP` exclusion is now configurable** (cycle 1): `EXCLUDE_COINS` env
+   / `--exclude-coins` flag; the TRUMP default is unchanged.
+9. **New runtime state dir** (cycle 2): cross-process rate limiting and the
+   LunarCrush TTL cache live in `~/.cache/tradbot` (override:
+   `TRADBOT_STATE_DIR`) — new filesystem footprint, never under
+   `HISTORY_DIR`.
+10. **Additive flags** (no default behavior change; discovery prompts are
+    byte-identical at defaults, pinned by tests): `--quiet`,
+    `--json-summary`, `--print-config`, `--plan`, `--discovery-universe`
+    (invalid env values now fail closed), `--deterministic-sampling`,
+    `--allow-concurrent`, plus new optional record fields (schema v2 +
+    `data_quality`/`market_block_hash`/`spread_pct`/`sampling` — v1 records
+    byte-identical when absent).
+
+No capability was removed in either cycle, so `docs/SUPERSEDED.md` needs no
+new rows; it remains current as the removal/supersession record.
+
+At merge time, §6.5 applies doubly: re-verify commit count, suite count, and
+`git status` fresh — this document's numbers have now drifted three times
+(723 → 790 → 798 committed; 1093 in-tree).
+
+---
+
+*Prepared 2026-07-19; addendum 2026-07-21. Supersession map: `docs/SUPERSEDED.md`. Findings:
 `docs/audit-2026-07-19/EVAL.md`. Plan: `docs/audit-2026-07-19/IMPROVEMENT_PLAN.md`.*

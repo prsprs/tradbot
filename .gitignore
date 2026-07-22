@@ -72,3 +72,12 @@ paper_trades/
 # were previously tracked before this entry was added were untracked via
 # `git rm --cached` in commit a2edfc2 (2026-07-19) and now stay local-only.
 live_trades/
+
+# WS5: research_corpus/ holds promoted what-if run data (never committed -- see scripts/promote_research_run.py)
+research_corpus/
+
+# GV-5 backfill: one-shot script + mapping embed real per-user trading
+# history (record ids, timestamps, Coinbase fills) -- local-only, same rule
+# as history/. check_staged_hygiene.sh also blocks staging these.
+scripts/backfill_trading_mode.py
+scripts/backfill_trading_mode_mapping.md

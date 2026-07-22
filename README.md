@@ -134,6 +134,30 @@ API error, or symbol mismatch counts as an abstain, and the panel **fails
 closed** — it never shrinks the quorum or falls back to a single model's
 opinion to force a decision.
 
+### Excluding coins from trading
+
+Certain coins can be permanently excluded from every BUY (whatif or live) —
+`coinsToExclude` is checked before any budget is committed, so an excluded
+coin is never bought or simulated. The default is `TRUMP`. Override with
+`--exclude-coins=DOGE,SHIB` (comma-separated, case-insensitive) or the
+`EXCLUDE_COINS` env var; CLI takes precedence, matching every other flag's
+precedence. Pass `--exclude-coins=` (empty) to disable exclusions entirely —
+in live mode this prints a `[CONFIG NOTICE]` since it removes a standing
+safety guard. The startup banner always shows the active list and its source
+(`Exclude Coins: TRUMP [default]`).
+
+### Run output: `--quiet` and `--json-summary`
+
+`--quiet` suppresses noisy mid-run chatter (per-buy product-detail JSON
+dumps, per-coin progress banners) while always keeping the startup banner,
+preflight results, every safety-relevant line (`[EXCLUDED]`, `[BLOCKED]`,
+`[SPEND CAP]`, `[DAILY CAP]`, ledger intent/fill lines, `[NO SELL PATH]`),
+and the full `RUN SUMMARY`. `--json-summary[=PATH]` writes a machine-readable
+end-of-run summary (trading mode, panel, per-coin votes/outcomes, spend, and
+order counts) built from the same in-memory state as the console summary;
+PATH defaults to `<HISTORY_DIR>/run_summaries/<run_id>.json` when omitted.
+Both default off — output is byte-identical to before when neither is given.
+
 ### Scoring past recommendations
 
 `tradeanalyzer.py` grades recorded whatif/live recommendations against
@@ -171,6 +195,7 @@ See [OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md) for detailed configuration.
 | **Coin Categorization** | Filter coins by category (meme, DeFi, AI) | [COIN_CATEGORIZATION_FEATURE.md](COIN_CATEGORIZATION_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Uses LunarCrush API |
 | **Coin Choice** | Analyze specific coins directly | [COIN_CHOICE_FEATURE.md](COIN_CHOICE_FEATURE.md) | ✅ Implemented | `crypto_trading_bot.py` | `--coins` flag or `ANALYZE_COINS` env |
 | **Compare with Bitcoin** | Evaluate altcoin alpha vs BTC | [COMPARE_WITH_BITCOIN_FEATURE.md](docs/design/COMPARE_WITH_BITCOIN_FEATURE.md) | 📋 Design Only | — | Risk-adjusted comparison |
+| **Edge-vs-Fee Gating** | Block BUYs whose expected edge can't clear the fee floor | [EDGE_VS_FEE_GATING_FEATURE.md](docs/design/EDGE_VS_FEE_GATING_FEATURE.md) | 📋 Design Only | — | Money-path: spec + review before code |
 | **History Analysis** | Track and analyze recommendation accuracy | [HISTORY_ANALYSIS_FEATURE.md](HISTORY_ANALYSIS_FEATURE.md) | ✅ Implemented | `historyutil.py` | Performance metrics by LLM |
 | **LunarCrush Integration** | Social intelligence data for coins | [LUNAR_CRUSH_FEATURE.md](LUNAR_CRUSH_FEATURE.md) | ✅ Implemented | `lunarcrushutil.py` | Categories, blockchains, sentiment |
 | **Polymarket Integration** | Prediction market sentiment data | [POLYMARKET_FEATURE.md](POLYMARKET_FEATURE.md) | ✅ Implemented | `polymarketutil.py` | Market-validated coin selection |

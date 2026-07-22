@@ -29,11 +29,15 @@ if [ -n "$bad_paths" ]; then
   fail=1
 fi
 
-# --- 2. Local-only files (owner's working notes, user-specific scripts) --
+# --- 2. Local-only files (user-specific scripts) -------------------------
+# EVALUATION_LESSONS_LEARNED_2026-07-18.md was lifted from this list
+# 2026-07-21 after owner review (kept in-repo as the founding empirical
+# record); backfill_trading_mode* stays blocked (embeds real per-user
+# trading history) and is also gitignored.
 local_only=$(printf '%s\n' "$staged" | grep -E \
-  '^(EVALUATION_LESSONS_LEARNED_2026-07-18\.md$|scripts/backfill_trading_mode)')
+  '^scripts/backfill_trading_mode')
 if [ -n "$local_only" ]; then
-  echo "LOCAL-ONLY FILES STAGED (see docs/SESSION_HANDOFF_2026-07-18.md never-stage list):" >&2
+  echo "LOCAL-ONLY FILES STAGED (per-user trading history; never commit):" >&2
   printf '%s\n' "$local_only" >&2
   fail=1
 fi

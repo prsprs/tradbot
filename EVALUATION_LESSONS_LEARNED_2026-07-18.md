@@ -318,6 +318,8 @@ The Part 4 list survives contact with testing intact; adjust as follows:
 
 Modified, not yet committed: `crypto_trading_bot.py` (model IDs → `gemini-3.1-pro-preview`; `extract_recommendation()`; dotenv), `claudeutil.py` / `llm_utils/claude_client.py` (`claude-opus-4-8`; thinking-block-safe text extraction), `openaiutil.py` / `llm_utils/openai_client.py` (`gpt-5.5`; `max_completion_tokens`), `coinbaseutil2.py` (`_log_order_result`, $25→$5 notional), `tradeanalyzer.py` (dotenv). **Committing this working tree is a sensible first act of the next session** (with `lab/session_tests_20260718/` and this document).
 
+> **Done 2026-07-18 (later session):** committed as five logical commits on branch `josh` (`faa8c29`…`2820cd3`), plus onboarding files (`requirements.txt`, `.env.example`, README/.gitignore updates) that surfaced while preparing them. Process lessons in Part 7.
+
 ### 6.2 Implementation queue — validated, ordered, with anchors
 
 Each item is evidence-backed (Part 5 refs) and scoped small enough to verify with the harnesses in `lab/session_tests_20260718/`:
@@ -348,6 +350,41 @@ Deliberately deferred: SELL/exit path design (needs position tracking from #2 fi
 - **The two $5 live trades bought answers code-reading couldn't:** the response-nesting confirmation and the measured fee floor. Budget the occasional deliberate micro-trade when a question is execution-shaped.
 - **Multi-model disagreement is itself a diagnostic:** Claude's refusals located the framing bug; Grok's format drift located the parser gap; Gemini's discovery-vs-analysis self-contradiction (5.4) located the prompt-inconsistency problem. Read the dissents, not just the verdicts.
 - Session artifacts: run logs + harnesses in `lab/session_tests_20260718/`; history contamination from today: ~9 what-if/probe records in `history/recommendations.json` (identifiable by timestamp 2026-07-18 17:50–18:15 UTC).
+
+---
+
+## Part 7 — Git & repo-hygiene lessons (2026-07-18, commit-preparation session)
+
+> These lessons are now codified in AGENTS.md (commit procedure, `check_staged_hygiene.sh`, money-path-commit-alone rule) — AGENTS.md is authoritative; this section is retained as the origin record.
+
+The Part 6.1 working tree was committed to branch `josh` in this session. The mechanics surfaced their own lessons, recorded here so future sessions avoid the same friction.
+
+### 7.1 Commit as you fix; retroactive atomicity is expensive
+
+The eval session left 4 unrelated concerns (env loading, model refresh, parser hardening, trade-size/order-logging) interleaved across 8 files in one dirty tree. Splitting that into reviewable commits after the fact required partial staging of individual hunks inside `crypto_trading_bot.py` — fiddly and error-prone. **Lesson:** during future sessions, commit each logical fix when it's verified (a WIP branch is fine); the eval log already segments the work, so let the commits follow it. One-line rule: if it gets its own section in this doc, it should get its own commit.
+
+### 7.2 Partial-staging techniques that worked (and didn't)
+
+- **Failed:** hand-writing a patch hunk for `git apply --cached` — context lines must match byte-exact (trailing spaces, blank-line prefixes), and it took `--ignore-whitespace --recount` fiddling that still broke on a second hunk set.
+- **Worked:** extracting the wanted hunks *from real `git diff` output* with a small script, then `git apply --cached`.
+- **Worked (simplest):** temporarily reverting the to-be-excluded change in the worktree (`sed`), staging + committing, then restoring it. Caveat: a global text substitution can hit unintended literals — always verify afterward that `git diff` is empty and the intended sites (and only those) carry the change.
+
+### 7.3 A new import must ship with its dependency, in the same commit
+
+`from dotenv import load_dotenv` landed in the eval session with `python-dotenv` in **no** requirements file — and no requirements file covered the main bot's other imports (`coinbase`, `pandas`, …) at all. A fresh clone following the README could not run the bot. Fixed by adding a top-level `requirements.txt`; the deeper lesson is that **fresh-clone verification is currently impossible to automate** because `crypto_trading_bot.py` executes at import (no `main()` guard — auditor #8). Until that lands, the cheap check is: any commit adding an `import` names the package in a requirements file in the same diff.
+
+### 7.4 Ignore rules: scope them, and know their two failure modes
+
+- `*.log` (blanket) collided with wanting the T1–T7 session logs in the repo as cited evidence; they needed `git add -f`, which future contributors won't think to do. Prefer scoping runtime-noise ignores (e.g. a `logs/` dir) over extension-wide patterns, or add explicit `!lab/**/*.log`-style exceptions for evidence directories.
+- `.gitignore` does not untrack: `history/*.csv` is ignored yet three CSVs are tracked and keep receiving user-specific data. Tracked junk also persists (`--use-fib` — an accidental output file named after a CLI flag — and `output6,tmp`, which dodges the `*.tmp` rule via the comma). A small `git rm --cached` hygiene commit is queued as PR-review material; left out of the `josh` branch to keep its scope reviewable.
+
+### 7.5 Secrets: the ignores were right, the process was manual
+
+`.env` and `cdp_api_key.json` were correctly ignored before any commit existed — good. But verification was a hand-rolled grep over the branch diff (which false-positived on `.env.example` placeholders). Worth adopting a pre-commit secret scanner (e.g. gitleaks) before the repo gains more contributors; `.env.example` with obvious placeholders (`your-...-here`) is the pattern that keeps such scanners quiet.
+
+### 7.6 Live-money behavior changes deserve their own commit
+
+The $25→$5 notional reduction was deliberately isolated (with the order-fill logging) into its own commit rather than folded into the parser fix, so PR reviewers see the money-touching change in isolation. Same principle as 7.1, but stronger: **anything that changes what real trades do should never share a commit with anything else.**
 
 ---
 

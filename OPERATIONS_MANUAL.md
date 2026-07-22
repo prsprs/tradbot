@@ -32,6 +32,22 @@ python crypto_trading_bot.py [OPTIONS]
 | `--tiebreaker` | `gemini`, `claude`, `openai`, `grok`, `perplexity`, `none` | `gemini` | Tiebreaker LLM when no consensus |
 | `--log-rounds` | `true`, `false` | `true` | Capture the full panelist responses to a per-run log file at `<HISTORY_DIR>/panel_responses/<run_id>.log` (env: `LOG_INTEGRATION_ROUNDS`). The console shows concise `[PANEL]` lines plus one `[PANEL LOG]` pointer to that file; set `false` to skip the capture entirely |
 | `--show-responses` | flag | *(off)* | Also echo the full panelist responses inline on the console (the legacy behavior), in addition to writing the `panel_responses/` log. Env: `SHOW_PANEL_RESPONSES=true` |
+| `--exclude-coins` | comma-separated | `TRUMP` | Coins to never buy (case-insensitive, checked before any budget is committed). Env: `EXCLUDE_COINS`. `--exclude-coins=` (empty) disables exclusions entirely -- live mode prints a `[CONFIG NOTICE]` when armed this way |
+| `--quiet` | flag | *(off)* | Suppress noisy mid-run chatter (product-detail JSON dumps, per-coin progress banners). Never suppresses the banner, preflight, safety lines (`[EXCLUDED]`/`[BLOCKED]`/`[SPEND CAP]`/`[DAILY CAP]`/ledger lines), or the `RUN SUMMARY`. Env: `QUIET=true` |
+| `--json-summary` | optional path | *(off)* | Write a machine-readable end-of-run summary JSON (trading mode, panel, per-coin votes/outcomes, spend, order counts). Bare flag defaults to `<HISTORY_DIR>/run_summaries/<run_id>.json` |
+| `--live` | flag | *(off)* | Arm live trading. Real orders require BOTH this flag AND `LIVE_TRADING_CONFIRMED=1` (double interlock with `--trading-mode=live`); missing either lock downgrades to what-if with a loud notice |
+| `--allow-concurrent` | flag | *(off)* | Allow this WHAT-IF run to start even when another whatif bot holds the instance lock (research parallelism). Ignored in live mode — concurrent live processes are always refused |
+| `--notional-usd` | positive ≤ 100.00 | `5.00` | USD notional per buy order (CEX and DEX). Env: `TRADE_NOTIONAL_USD` |
+| `--run-spend-cap-usd` | number | `10.00` | Max cumulative intended USD spend across all buys in one run; excess buys are refused and tallied. What-if spend counts too. Env: `RUN_SPEND_CAP_USD` |
+| `--daily-spend-cap-usd` | number | `15.00` | Max cumulative intended LIVE USD spend per UTC day, summed from the execution ledger; excess live buys are refused with `[DAILY CAP]`. What-if spend does not count. Env: `DAILY_SPEND_CAP_USD` |
+| `--discovery-universe` | `meme`, `major`, `defi`, `any` | `meme` | Coin universe the LLM discovery prompt asks about. Env: `DISCOVERY_UNIVERSE` |
+| `--relax-discovery-failure` | flag | *(off)* | Proceed with discovered coins even if the LLM indicates caveats. Env: `RELAX_DISCOVERY_FAILURE` |
+| `--skip-preflight` | flag | *(off)* | Skip the LLM preflight probe (in live mode a failing preflight normally aborts the run — this bypasses that check). Env: `SKIP_PREFLIGHT` |
+| `--skip-analyzer` | flag | *(off)* | Skip the non-fatal history-summary analyzer pass at startup (the summary never blocks trading). Env: `SKIP_ANALYZER` |
+| `--deterministic-sampling` | flag | *(off)* | Send temperature=0 (+ fixed seed where the API accepts one) on analysis requests for supporting providers; what each provider actually sent is recorded per-panelist in the record's `sampling` field. Env: `DETERMINISTIC_SAMPLING` |
+| `--print-config` | flag | — | Resolve the full operational config (flag vs env vs default), print it as JSON, exit 0. No network, no LLM calls, no lock, no history writes; credentials reported presence-only |
+| `--plan` | flag | — | Everything `--print-config` does plus a human-readable plan of what the run WOULD do (effective mode, panel, candidate source, caps, output locations, lock status), then exit 0. Same zero-network guarantee |
+| `--test-wallet` | flag | *(off)* | Test wallet connection on startup (DEX mode only; see the DEX section for `--dex`/`--slippage`) |
 
 **Configuration Precedence:**
 CLI arguments take precedence over environment variables. If neither is set, the default value is used.
@@ -179,6 +195,16 @@ below the fee floor.
 | `CHAINS` | *(empty)* | Filter by blockchain networks (e.g., `solana,base`). Requires cache file |
 | `CATEGORIES` | *(empty)* | Filter by categories (e.g., `meme-coins,defi`). Requires cache file |
 | `POLYMARKET_FILTER` | `false` | If `true`, only analyze coins with active Polymarket prediction markets |
+| `EXCLUDE_COINS` | `TRUMP` | Comma-separated coins to never buy (case-insensitive), checked before any budget is committed. Same as `--exclude-coins`; CLI takes precedence. Pass `--exclude-coins=` (empty) to disable exclusions entirely -- live mode prints a `[CONFIG NOTICE]` when armed with no exclusion list. The startup banner always shows the active list and its source |
+| `QUIET` | `false` | If `true`, suppress noisy mid-run chatter (product-detail JSON dumps, per-coin progress banners). Never suppresses safety lines (banner, preflight, `[EXCLUDED]`/`[BLOCKED]`/`[SPEND CAP]`/`[DAILY CAP]`/ledger lines) or the `RUN SUMMARY`. Same as `--quiet` |
+| `TRADE_NOTIONAL_USD` | `5.00` | USD notional per buy order (positive, ≤ 100.00). Same as `--notional-usd` |
+| `RUN_SPEND_CAP_USD` | `10.00` | Max cumulative intended USD spend per run (what-if counts too). Same as `--run-spend-cap-usd` |
+| `DAILY_SPEND_CAP_USD` | `15.00` | Max cumulative intended LIVE USD spend per UTC day, from the execution ledger. Same as `--daily-spend-cap-usd` |
+| `DISCOVERY_UNIVERSE` | `meme` | Coin universe for LLM discovery: `meme`, `major`, `defi`, or `any`. Same as `--discovery-universe` |
+| `RELAX_DISCOVERY_FAILURE` | `false` | Proceed with discovered coins despite LLM caveats. Same as `--relax-discovery-failure` |
+| `SKIP_PREFLIGHT` | `false` | Skip the LLM preflight probe. Same as `--skip-preflight` |
+| `SKIP_ANALYZER` | `false` | Skip the startup history-summary analyzer pass. Same as `--skip-analyzer` |
+| `DETERMINISTIC_SAMPLING` | `false` | temperature=0 + fixed seed on analysis requests where supported. Same as `--deterministic-sampling` |
 
 ### API Keys
 

@@ -130,6 +130,41 @@ analyzer pass once they cross 24h, and the what-if scorecard grows.
 
 ---
 
+## Promoting research runs
+
+An agent's what-if run (per AGENTS.md hard rule #2, always against a scratch
+`HISTORY_DIR` outside the repo, e.g. `/tmp/tradbot-scratch-<ts>`) is normally
+discarded once the scratch dir is cleaned up — there is no owner-cadence data
+in it. If a scratch run turned out to be worth keeping for research (a novel
+coin set, a probe of a prompt change, an ad hoc comparison), promote its
+what-if recommendations into a durable, sanitized corpus with
+`scripts/promote_research_run.py`:
+
+```bash
+./venv/bin/python scripts/promote_research_run.py /tmp/tradbot-scratch-<ts> --dry-run
+# inspect the printed summary, then drop --dry-run to actually write
+./venv/bin/python scripts/promote_research_run.py /tmp/tradbot-scratch-<ts>
+```
+
+- Only `trading_mode='whatif'` recommendation records are promoted; `live` and
+  `unknown`-mode records are refused and printed. If the scratch dir's
+  `executions.json` contains any row with `trading_mode='live'`, the **entire**
+  run is refused (a scratch dir should never legitimately hold a live ledger
+  row — finding one means it isn't actually scratch).
+- Deduped by record `id`, so re-running on the same (or overlapping) scratch
+  dirs is a no-op for anything already promoted — safe to run opportunistically
+  after any scratch run you want to keep.
+- Add `--with-panel-logs` to also copy the run's `panel_responses/*.log`
+  transcripts alongside the recommendations.
+- Default destination is `research_corpus/` at the repo root. **This directory
+  is never committed** (it's in `.gitignore`, added automatically by the
+  script's first real run if missing) — it's per-checkout research data, same
+  multi-user never-commit norm as `history/`, not a shared corpus distributed
+  via git.
+- Never modifies the scratch dir (read-only) or the real `history/`.
+
+---
+
 ## Example: cron (macOS/Linux)
 
 `crontab -e`, then add (every 6 hours):
