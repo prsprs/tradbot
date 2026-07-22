@@ -5,9 +5,16 @@ from modelregistry import get_model
 
 import panelprompts
 
+import sampling
+
 import voteschema
 
 class PerplexityTrader:
+    # WS5: class-level default so the analysis path is safe on instances built
+    # via __new__ (the request-shape tests) that skip __init__. {} =>
+    # byte-identical requests; __init__ overrides per-instance.
+    _sampling_params = {}
+
     def __init__(self):
         """Initialize the Perplexity client with API credentials from environment."""
         api_key = os.environ.get('PERPLEXITY_API_KEY')
@@ -24,8 +31,14 @@ class PerplexityTrader:
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
+        # WS5: sampling params for ANALYSIS requests. {} unless
+        # --deterministic-sampling is on (then {'temperature': 0}, honored by the
+        # OpenAI-compatible chat API). Only the analysis path (_structured_vote)
+        # passes these; discovery stays untouched. Splatting {} = byte-identical.
+        self._sampling_params = sampling.request_params(
+            'perplexity', sampling.is_enabled())
 
-    def _call_chat(self, content, structured=False):
+    def _call_chat(self, content, structured=False, sampling_params=None):
         """Call Perplexity chat.completions.
 
         T8 phase 2: when structured=True the native json_schema vote format is
@@ -33,7 +46,10 @@ class PerplexityTrader:
         Perplexity-specific). max_tokens stays at the generous 4096 the bot has
         always used: the live TRUNCATION HAZARD (unterminated JSON) appears at
         tight budgets, and a truncated tail fails closed to
-        abstain('parse_failure') rather than being trusted."""
+        abstain('parse_failure') rather than being trusted.
+
+        WS5: sampling_params (analysis path only) merges determinism knobs
+        (temperature=0); None/{} leaves the request byte-identical to today."""
         kwargs = dict(
             model=self.model,
             max_tokens=4096,
@@ -41,6 +57,8 @@ class PerplexityTrader:
         )
         if structured:
             kwargs["response_format"] = voteschema.perplexity_response_format()
+        if sampling_params:
+            kwargs.update(sampling_params)
         response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
@@ -58,7 +76,8 @@ class PerplexityTrader:
         structured path (voteschema.schema_instruction) and with the delimiter
         instruction on the fallback path."""
         try:
-            text = self._call_chat(build_prompt(None), structured=True)
+            text = self._call_chat(build_prompt(None), structured=True,
+                                   sampling_params=self._sampling_params)
             return voteschema.tag_vote_path(text, 'structured')
         except Exception as e:
             if not voteschema.schema_param_rejected(e):
@@ -68,15 +87,27 @@ class PerplexityTrader:
                   "retrying with the delimiter-tag request")
             text = self._call_chat(
                 build_prompt(panelprompts.DELIMITER_VOTE_INSTRUCTION),
-                structured=False)
+                structured=False, sampling_params=self._sampling_params)
             return voteschema.tag_vote_path(text, 'fallback')
 
-    def send_recommendation_request(self, dex_mode: bool = False):
-        """Get cryptocurrency recommendations from Perplexity with live web search."""
+    def send_recommendation_request(self, dex_mode: bool = False, phrase: str = 'meme coins'):
+        """Get cryptocurrency recommendations from Perplexity with live web search.
+
+        WS9b: `phrase` is the resolved --discovery-universe phrase (default
+        'meme coins' == today's hardcoded text, so the .replace() below is a
+        no-op unless a caller passes a different universe phrase; resolved by
+        crypto_trading_bot's get_primary_recommendation, mirroring
+        build_discovery_prompt for the gemini path). Note Perplexity's prompt
+        ending ("...you find.") is NOT byte-identical to the gemini/claude/
+        openai discovery prompts ("...you are aware of.") -- only the
+        "meme coins" phrase is parameterized here. See
+        tests/test_discovery_universe.py.
+        """
         if dex_mode:
             prompt = "What 3 Solana blockchain meme coins are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Only include coins tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT include coins on other chains like Base, Ethereum, or BNB. Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you find."
         else:
             prompt = "What 3 meme coins listed on the Coinbase exchange are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you find."
+        prompt = prompt.replace('meme coins', phrase, 1)
 
         # Discovery parsing is +++SYM+++, not a vote schema — stays unstructured.
         return self._call_chat(prompt)

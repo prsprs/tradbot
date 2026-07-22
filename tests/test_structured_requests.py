@@ -341,6 +341,9 @@ class TestGeminiRequests:
         cap = Capture3(gemini_response("1. PEPE +++PEPE+++"))
         patch_gemini(monkeypatch, cap)
         monkeypatch.setattr(bot, 'DEX_MODE', False, raising=False)
+        # WS9: sendRecommendationRequest also reads DISCOVERY_UNIVERSE (default
+        # 'meme' in real runs via --discovery-universe/DISCOVERY_UNIVERSE).
+        monkeypatch.setattr(bot, 'DISCOVERY_UNIVERSE', 'meme', raising=False)
         monkeypatch.setattr(bot, 'config', 'DISCOVERY_CONFIG_SENTINEL', raising=False)
         bot.sendRecommendationRequest()
         # discovery keeps the plain grounded config -- no structured schema

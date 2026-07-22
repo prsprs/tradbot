@@ -81,12 +81,25 @@ class GrokTrader:
                 structured=False)
             return voteschema.tag_vote_path(text, 'fallback')
 
-    def send_recommendation_request(self, dex_mode: bool = False):
-        """Get cryptocurrency recommendations from Grok."""
+    def send_recommendation_request(self, dex_mode: bool = False, phrase: str = 'meme coins'):
+        """Get cryptocurrency recommendations from Grok.
+
+        WS9b: `phrase` is the resolved --discovery-universe phrase (default
+        'meme coins' == today's hardcoded text, so the .replace() below is a
+        no-op unless a caller passes a different universe phrase; resolved by
+        crypto_trading_bot's get_primary_recommendation, mirroring
+        build_discovery_prompt for the gemini path). Note Grok's prompt text
+        is NOT byte-identical to the gemini/claude/openai discovery prompts
+        (its own "Using real-time web search..." prefix and "...you find."
+        ending) -- only the "meme coins" phrase is parameterized here, the
+        rest of Grok's own wording is untouched. See
+        tests/test_discovery_universe.py.
+        """
         if dex_mode:
             prompt = "Using real-time web search for current market data and sentiment, what 3 Solana blockchain meme coins are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Only include coins tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT include coins on other chains like Base, Ethereum, or BNB. Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you find."
         else:
             prompt = "Using real-time web search for current market data and sentiment, what 3 meme coins listed on the Coinbase exchange are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you find."
+        prompt = prompt.replace('meme coins', phrase, 1)
 
         # Discovery parsing is +++SYM+++, not a vote schema — stays unstructured.
         return self._call_responses_api(prompt)

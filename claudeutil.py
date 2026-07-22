@@ -5,6 +5,8 @@ from modelregistry import get_model
 
 import panelprompts
 
+import sampling
+
 import voteschema
 
 
@@ -24,6 +26,11 @@ def _claude_output_config():
 
 
 class ClaudeTrader:
+    # WS5: class-level default so `**self._sampling_params` is always safe --
+    # incl. instances built via __new__ (the request-shape tests) that skip
+    # __init__. {} => byte-identical requests; __init__ overrides per-instance.
+    _sampling_params = {}
+
     def __init__(self):
         """Initialize the Anthropic Claude client with API credentials from environment."""
         # LM-1: accept the standard ANTHROPIC_API_KEY name too (CLAUDE_API_KEY
@@ -40,14 +47,29 @@ class ClaudeTrader:
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
+        # WS5: sampling params for ANALYSIS requests. {} unless
+        # --deterministic-sampling is on (then {'temperature': 0}); read at
+        # construction (main() sets the env before building traders). Splatting
+        # {} leaves the request byte-identical to today.
+        self._sampling_params = sampling.request_params(
+            'claude', sampling.is_enabled())
     
-    def send_recommendation_request(self, dex_mode: bool = False):
-        """Get cryptocurrency recommendations from Claude."""
+    def send_recommendation_request(self, dex_mode: bool = False, phrase: str = 'meme coins'):
+        """Get cryptocurrency recommendations from Claude.
+
+        WS9b: `phrase` is the resolved --discovery-universe phrase (default
+        'meme coins' == today's hardcoded text, so the .replace() below is a
+        no-op and the prompt stays byte-identical unless a caller passes a
+        different universe phrase; resolved by crypto_trading_bot's
+        get_primary_recommendation, mirroring build_discovery_prompt for the
+        gemini path). See tests/test_discovery_universe.py.
+        """
         if dex_mode:
             prompt = "What 3 Solana blockchain meme coins are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Only include coins tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT include coins on other chains like Base, Ethereum, or BNB. Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you are aware of."
         else:
             prompt = "What 3 meme coins listed on the Coinbase exchange are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you are aware of."
-        
+        prompt = prompt.replace('meme coins', phrase, 1)
+
         message = self.client.messages.create(
             model=self.model,
             max_tokens=4096,
@@ -74,6 +96,7 @@ class ClaudeTrader:
             model=self.model,
             max_tokens=4096,
             output_config=_claude_output_config(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",
@@ -97,6 +120,7 @@ class ClaudeTrader:
             model=self.model,
             max_tokens=4096,
             output_config=_claude_output_config(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",
@@ -117,6 +141,7 @@ class ClaudeTrader:
             model=self.model,
             max_tokens=4096,
             output_config=_claude_output_config(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",
@@ -137,6 +162,7 @@ class ClaudeTrader:
             model=self.model,
             max_tokens=4096,
             output_config=_claude_output_config(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",

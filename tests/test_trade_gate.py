@@ -66,6 +66,7 @@ def buy_calls(monkeypatch, scratch_ledger):
     monkeypatch.setattr(bot, 'DAILY_SPEND_CAP_USD', 15.0, raising=False)
     monkeypatch.setattr(bot, 'spend_tracker', bot.SpendTracker(10.0, 5.0), raising=False)
     monkeypatch.setattr(bot, 'coinsToBuy', [], raising=False)
+    monkeypatch.setattr(bot, 'coinsExcluded', [], raising=False)
     monkeypatch.setattr(bot, 'coinsToExclude', set(), raising=False)
     monkeypatch.setattr(bot, 'whatif_buys', 0, raising=False)
     monkeypatch.setattr(bot, 'daily_cap_blocked', 0, raising=False)
@@ -370,10 +371,14 @@ def test_exclusion_burns_no_run_cap_budget(buy_calls, monkeypatch):
     assert buy_calls == ['ETH']
 
 
-def test_excluded_coin_still_counted_in_coins_to_buy_summary(buy_calls, monkeypatch):
+def test_excluded_coin_not_in_coins_to_buy_but_tracked_separately(buy_calls, monkeypatch):
+    """WS2: an excluded coin must NOT appear in coinsToBuy (which drives the
+    'Coins to buy' summary line) -- it is never bought or simulated. It is
+    tracked in coinsExcluded so the summary can still report it distinctly."""
     monkeypatch.setattr(bot, 'coinsToExclude', {'TRUMP'}, raising=False)
     bot.maybe_execute_buy('TRUMP')
-    assert bot.coinsToBuy == ['TRUMP']        # summary shows the intent
+    assert bot.coinsToBuy == []               # not counted as bought
+    assert bot.coinsExcluded == ['TRUMP']     # tracked distinctly for summary
 
 
 def test_whatif_daily_cap_refuses_from_whatif_intents_and_is_labeled(

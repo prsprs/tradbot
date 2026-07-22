@@ -5,6 +5,7 @@ from google.genai import types
 import argparse
 import datetime
 import json
+import logging
 import os
 import sys
 import time
@@ -41,6 +42,7 @@ import executionledger
 
 import coinmarketcaputil
 
+import modelregistry
 from modelregistry import get_model
 
 import llmpreflight
@@ -48,6 +50,8 @@ import llmpreflight
 import panelprompts
 
 import voteschema
+
+import sampling
 
 import marketdata
 
@@ -104,6 +108,19 @@ Set HISTORY_DIR to redirect history/ledger output to a scratch directory
             'Arm live trading. Executes REAL trades and requires BOTH this flag '
             'AND env LIVE_TRADING_CONFIRMED=1; otherwise the bot runs in whatif '
             'and prints a downgrade notice explaining what is missing.'
+        )
+    )
+
+    # WS-2: single-instance concurrency escape hatch (whatif only). Live has
+    # NO override -- concurrent live processes are always refused.
+    parser.add_argument(
+        '--allow-concurrent',
+        action='store_true',
+        default=False,
+        help=(
+            'Allow this WHATIF run to start even when another whatif bot is '
+            'already running (research/experiment parallelism). Ignored in '
+            'live mode -- concurrent live processes are always refused.'
         )
     )
 
@@ -179,6 +196,20 @@ Set HISTORY_DIR to redirect history/ledger output to a scratch directory
         help='Comma-separated coins to analyze (max 5), or empty for discovery mode'
     )
     
+    # WS9: configurable exclusion list. Default stays exactly 'TRUMP' so
+    # behavior is unchanged when neither the flag nor the env var is set.
+    # `--exclude-coins=` (explicit empty string) is a deliberate override
+    # meaning "no exclusions" -- distinct from simply omitting the flag.
+    parser.add_argument(
+        '--exclude-coins',
+        default=os.environ.get('EXCLUDE_COINS', 'TRUMP'),
+        help=(
+            'Comma-separated coins to never buy (case-insensitive; normalized '
+            'to upper). Default: TRUMP. Pass --exclude-coins= (empty) to '
+            'disable exclusions entirely.'
+        )
+    )
+
     # Chain filter (LunarCrush)
     parser.add_argument(
         '--chains',
@@ -248,7 +279,25 @@ Set HISTORY_DIR to redirect history/ledger output to a scratch directory
         default=os.environ.get('DISCOVERY', 'llm'),
         help='Discovery method: llm, santiment, or both comma-separated (default: llm)'
     )
-    
+
+    # WS9: discovery-universe honesty. The LLM discovery prompt hardcoded
+    # "meme coins" while the banner advertised only "Discovery Methods: llm"
+    # with no disclosure of the universe actually asked about. This flag
+    # parameterizes ONLY the universe phrase in build_discovery_prompt();
+    # 'meme' is the default and reproduces today's prompts byte-for-byte (see
+    # tests/test_discovery_universe.py's pin).
+    parser.add_argument(
+        '--discovery-universe',
+        choices=['meme', 'major', 'defi', 'any'],
+        default=os.environ.get('DISCOVERY_UNIVERSE', 'meme').lower(),
+        help=(
+            'Coin universe the LLM discovery prompt asks about: meme, major '
+            '(large-cap cryptocurrencies), defi (DeFi tokens), or any '
+            '(cryptocurrencies, any category). Default: meme (today\'s '
+            'behavior, unchanged).'
+        )
+    )
+
     # DEX mode - Solana DEX trading via Jupiter + WalletConnect
     parser.add_argument(
         '--dex',
@@ -332,7 +381,98 @@ Set HISTORY_DIR to redirect history/ledger output to a scratch directory
         )
     )
 
-    return parser.parse_args()
+    # WS8: machine-readable run summary. Off by default -- opt in with the
+    # bare flag (path auto-resolved under HISTORY_DIR, historyutil-style) or
+    # an explicit path.
+    parser.add_argument(
+        '--json-summary',
+        nargs='?',
+        const='',
+        default=None,
+        metavar='PATH',
+        help=(
+            'Write a machine-readable run summary JSON at end of run '
+            '(default: off). PATH is optional; when omitted, defaults to '
+            '<HISTORY_DIR>/run_summaries/<run_id>.json (same dir-resolution '
+            'as recommendations.json).'
+        )
+    )
+
+    # WS8: quiet mode. Suppresses noisy mid-run chatter (product-detail JSON
+    # dumps, per-coin progress banners) while NEVER suppressing safety lines
+    # (banner, preflight, [EXCLUDED]/[BLOCKED]/[POLYMARKET FILTER]/
+    # [SPEND CAP]/[DAILY CAP]/[LIVE]/[ORDER]/[FILL]/[NO SELL PATH], RUN SUMMARY).
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        default=os.environ.get('QUIET', 'false').lower() == 'true',
+        help=(
+            'Suppress noisy mid-run chatter (product-detail JSON dumps, '
+            'per-coin progress banners). Safety-relevant output (banner, '
+            'preflight, exclusion/block/cap/order/fill lines, RUN SUMMARY) '
+            'is never suppressed (default: false).'
+        )
+    )
+
+    # WS5: opt-in deterministic sampling. For providers whose current API path
+    # accepts it, sends temperature=0 (+ a fixed seed where supported) on ANALYSIS
+    # requests, so a repeated run is a cleaner instability test. OFF by default;
+    # off => byte-identical requests to today. Providers with no supported knob
+    # (openai/grok on their current reasoning paths) are untouched and recorded
+    # 'provider-default'. The per-provider sampling actually sent lands in each
+    # record's `sampling` field either way.
+    parser.add_argument(
+        '--deterministic-sampling',
+        action='store_true',
+        default=os.environ.get('DETERMINISTIC_SAMPLING', 'false').lower() == 'true',
+        help=(
+            'Send temperature=0 (+ fixed seed where the API accepts one) on '
+            'analysis requests for providers that support it, for more '
+            'repeatable votes. Off by default (requests byte-identical to '
+            'today). What each provider actually sent is recorded per-panelist '
+            'in the record\'s sampling field.'
+        )
+    )
+
+    # WS-6: zero-network config introspection. Both resolve the full config
+    # (reusing the same provenance machinery the run uses) and exit 0 BEFORE
+    # any network/LLM call, before the instance lock, and before the analyzer.
+    parser.add_argument(
+        '--print-config',
+        action='store_true',
+        default=False,
+        help=(
+            'Resolve the full operational config (flag vs env vs default) and '
+            'print it as JSON to stdout, then exit 0 -- no network, no LLM '
+            'calls, no instance lock, no history writes. Secret values are '
+            'never printed (a credentials block reports presence only).'
+        )
+    )
+    parser.add_argument(
+        '--plan',
+        action='store_true',
+        default=False,
+        help=(
+            'Everything --print-config does, plus a human-readable plan of what '
+            'this run WOULD do (effective mode, panel, candidate source, max '
+            'buys/spend, external APIs, output locations, instance-lock status), '
+            'then exit 0. Same zero-network guarantee.'
+        )
+    )
+
+    args = parser.parse_args()
+    # argparse validates `choices` only for CLI-supplied values, not defaults,
+    # so an invalid DISCOVERY_UNIVERSE env value (e.g. "majors") would slip
+    # through, get printed by the banner, and silently fall back to the meme
+    # phrase in build_discovery_prompt() -- a banner/effect-honesty violation.
+    # Fail closed instead.
+    if args.discovery_universe not in DISCOVERY_UNIVERSE_PHRASES:
+        parser.error(
+            f"invalid discovery universe {args.discovery_universe!r} "
+            "(from DISCOVERY_UNIVERSE env or --discovery-universe): "
+            "choose from meme, major, defi, any"
+        )
+    return args
 
 
 def get_config_source(arg_name, env_name):
@@ -370,6 +510,288 @@ def format_daily_cap_banner_line(cap, source):
     except Exception as e:  # corrupt/unreadable ledger -> non-fatal banner
         spent_str = f"spent today unknown [UTC] (ledger unreadable: {e})"
     return f"Daily spend cap: ${cap:.2f} ({spent_str}) [{source}]"
+
+
+# --- WS-6: --print-config / --plan -----------------------------------------
+# A zero-network way to see what a run WOULD do. Everything below derives from
+# the SAME resolution primitives main() uses -- get_config_source (provenance),
+# resolve_trading_mode (the live double-lock), parse_analyze_coins /
+# parse_exclude_coins, resolve_coin_selection_conflict, and modelregistry --
+# so a reported value can never disagree with the value the run resolves. No
+# network, no client construction, no instance-lock acquisition, no history
+# writes: the caller (main) invokes these right after parse_args() and exits
+# before any of that happens.
+
+# Provider -> the env var(s) whose PRESENCE (never value) signals a configured
+# credential. Read straight from os.environ so this is trivially network-free
+# (mirrors the key names the trader classes / genai client require at
+# construction: claudeutil, openaiutil, grokutil, perplexityutil, llmpreflight).
+_CREDENTIAL_ENV_VARS = {
+    'gemini': ('GOOGLE_API_KEY', 'GEMINI_API_KEY'),
+    'claude': ('CLAUDE_API_KEY', 'ANTHROPIC_API_KEY'),
+    'openai': ('OPENAI_API_KEY',),
+    'grok': ('XAI_API_KEY',),
+    'perplexity': ('PERPLEXITY_API_KEY',),
+    'coinmarketcap': ('CMC_API_KEY', 'COINMARKETCAP_API_KEY'),
+    'lunarcrush': ('LUNARCRUSH_API_KEY',),
+}
+
+_MODEL_PROVIDERS = ('gemini', 'claude', 'openai', 'grok', 'perplexity')
+
+
+def _config_source_label(arg_name, env_name):
+    """Normalize get_config_source()'s raw answer to the WS-6 vocabulary:
+    'cli' | 'env' | 'default'. Reuses the exact same provenance machinery the
+    startup banner uses -- no parallel provenance logic."""
+    raw = get_config_source(arg_name, env_name)
+    if raw.startswith('--'):
+        return 'cli'
+    if raw == 'default':
+        return 'default'
+    return 'env'
+
+
+def _credentials_presence(environ):
+    """{provider: 'present'|'absent'} from env-var presence ONLY. Never reads
+    or emits a key value (redaction by construction). Coinbase is reported from
+    its credentials file's existence (no network, no key material)."""
+    out = {}
+    for provider, names in _CREDENTIAL_ENV_VARS.items():
+        present = any((environ.get(n) or '').strip() for n in names)
+        out[provider] = 'present' if present else 'absent'
+    cred_file = environ.get('COINBASE_CREDENTIALS_FILE', 'cdp_api_key.json')
+    out['coinbase'] = 'present' if os.path.exists(cred_file) else 'absent'
+    return out
+
+
+def _resolve_effective_coins(args, environ):
+    """Mirror main()'s coin-selection resolution (parse + provenance-decided
+    conflict handling) without side effects, so --print-config/--plan report
+    the coins/discovery mode the run would ACTUALLY use. Returns
+    (analyze_coins, use_discovery, discovery_methods)."""
+    analyze_coins, _dropped = parse_analyze_coins(args.coins.strip())
+    use_discovery = len(analyze_coins) == 0
+
+    coins_from_cli = get_config_source('--coins', 'ANALYZE_COINS') == '--coins'
+    filter_flags_on_cli = (
+        get_config_source('--chains', 'CHAINS') == '--chains'
+        or get_config_source('--categories', 'CATEGORIES') == '--categories'
+        or get_config_source('--polymarket-filter', 'POLYMARKET_FILTER') == '--polymarket-filter'
+        or get_config_source('--discovery', 'DISCOVERY') == '--discovery'
+    )
+    action, _msg = resolve_coin_selection_conflict(
+        has_explicit_coins=not use_discovery,
+        coins_from_cli=coins_from_cli,
+        filter_flags_on_cli=filter_flags_on_cli,
+        analyze_coins_display=', '.join(analyze_coins),
+    )
+    if action == 'override':
+        analyze_coins = []
+        use_discovery = True
+
+    # Discovery methods (mirror main(): DEX + defaulted discovery -> santiment).
+    discovery_default_used = (
+        args.discovery == environ.get('DISCOVERY', 'llm')
+        and not environ.get('DISCOVERY'))
+    if args.dex and discovery_default_used:
+        discovery_raw = 'santiment'
+    else:
+        discovery_raw = args.discovery.strip().lower()
+    discovery_methods = [m.strip() for m in discovery_raw.split(',') if m.strip()]
+    return analyze_coins, use_discovery, discovery_methods
+
+
+def build_config_report(args, environ):
+    """Fully-resolved operational config with flag-vs-env-vs-default provenance.
+
+    Returns {'settings': {key: {'value', 'source'}}, 'credentials':
+    {provider: 'present'|'absent'}}. Secrets are never included as values.
+    """
+    trading_mode, _notice = resolve_trading_mode(args, environ)
+    analyze_coins, use_discovery, discovery_methods = _resolve_effective_coins(
+        args, environ)
+
+    def entry(value, arg_name, env_name):
+        return {'value': value, 'source': _config_source_label(arg_name, env_name)}
+
+    settings = {}
+    settings['trading_mode'] = entry(trading_mode, '--trading-mode', 'TRADING_MODE')
+    settings['llm_mode'] = entry(args.llm_mode, '--llm-mode', 'LLM_MODE')
+    settings['primary_llm'] = entry(args.primary_llm, '--primary-llm', 'PRIMARY_LLM')
+    settings['compare_llms'] = entry(
+        [x.strip() for x in args.compare_llms.split(',') if x.strip()],
+        '--compare-llms', 'COMPARE_LLMS')
+    settings['coins'] = entry(analyze_coins, '--coins', 'ANALYZE_COINS')
+    settings['discovery'] = entry(discovery_methods, '--discovery', 'DISCOVERY')
+    settings['discovery_universe'] = entry(
+        args.discovery_universe, '--discovery-universe', 'DISCOVERY_UNIVERSE')
+    settings['exclude_coins'] = entry(
+        parse_exclude_coins(args.exclude_coins), '--exclude-coins', 'EXCLUDE_COINS')
+    settings['chains'] = entry(
+        [c.strip().lower() for c in args.chains.split(',') if c.strip()],
+        '--chains', 'CHAINS')
+    settings['categories'] = entry(
+        [c.strip().lower() for c in args.categories.split(',') if c.strip()],
+        '--categories', 'CATEGORIES')
+    settings['polymarket_filter'] = entry(
+        args.polymarket_filter == 'true', '--polymarket-filter', 'POLYMARKET_FILTER')
+    settings['require_consensus'] = entry(
+        args.require_consensus == 'true', '--require-consensus', 'REQUIRE_CONSENSUS')
+    settings['tiebreaker'] = entry(args.tiebreaker, '--tiebreaker', 'INTEGRATION_TIEBREAKER')
+    settings['notional_usd'] = entry(
+        float(args.notional_usd), '--notional-usd', 'TRADE_NOTIONAL_USD')
+    settings['run_spend_cap_usd'] = entry(
+        float(args.run_spend_cap_usd), '--run-spend-cap-usd', 'RUN_SPEND_CAP_USD')
+    settings['daily_spend_cap_usd'] = entry(
+        float(args.daily_spend_cap_usd), '--daily-spend-cap-usd', 'DAILY_SPEND_CAP_USD')
+    settings['dex'] = entry(bool(args.dex), '--dex', 'DEX_MODE')
+    settings['slippage'] = entry(float(args.slippage), '--slippage', 'DEX_SLIPPAGE')
+
+    # Resolved model IDs (single source of truth: modelregistry). Source is
+    # 'env' when the provider's *_MODEL override is set, else 'default'.
+    for provider in _MODEL_PROVIDERS:
+        override_var = modelregistry.ENV_OVERRIDE_VARS[provider]
+        src = 'env' if (environ.get(override_var) or '').strip() else 'default'
+        settings[f'model_{provider}'] = {'value': get_model(provider), 'source': src}
+
+    return {
+        'settings': settings,
+        'credentials': _credentials_presence(environ),
+    }
+
+
+def _instance_lock_held(trading_mode):
+    """Read-only probe of the per-mode single-instance lock -- does NOT acquire
+    it and does NOT create the lock file. Returns (state, path) where state is
+    True (another process holds it), False (free), or None (undeterminable).
+
+    A momentary non-blocking flock probe on an EXISTING file is the only way to
+    tell 'held' from 'free'; it is released immediately and the run is never
+    started under it. If the file does not exist, the lock is free by
+    definition and we never create it (open('a+') would)."""
+    path = executionledger.bot_instance_lock_path(trading_mode)
+    if not os.path.exists(path):
+        return False, path
+    try:
+        import fcntl
+        fh = open(path, 'r')
+    except OSError:
+        return None, path
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return False, path
+    except (OSError, IOError):
+        return True, path
+    finally:
+        fh.close()
+
+
+def build_plan_lines(report, environ):
+    """Human-readable plan derived entirely from a build_config_report() result
+    (so every statement matches the config the run would resolve). Returns a
+    list of lines. Zero network; the only I/O is a read-only lock-file probe."""
+    s = report['settings']
+    mode = s['trading_mode']['value']
+    live_armed = mode == 'live'
+    # Discovery mode iff no explicit coins survived resolution (mirrors main()'s
+    # USE_COIN_DISCOVERY = len(ANALYZE_COINS) == 0).
+    use_discovery = len(s['coins']['value']) == 0
+    notional = s['notional_usd']['value']
+    run_cap = s['run_spend_cap_usd']['value']
+    daily_cap = s['daily_spend_cap_usd']['value']
+    llm_mode = s['llm_mode']['value']
+    compare_llms = s['compare_llms']['value']
+    tiebreaker = s['tiebreaker']['value']
+
+    # Panel composition: compare/integrate use the COMPARE_LLMS panel + a
+    # tiebreaker; a single-provider mode is a one-panelist panel, no tiebreaker.
+    if llm_mode in ('compare', 'integrate'):
+        panel = compare_llms
+        tb = tiebreaker
+    else:
+        panel = [llm_mode]
+        tb = 'n/a (single-provider mode)'
+
+    max_buys = int(run_cap // notional) if notional > 0 else 0
+    applicable_caps = {'run': run_cap}
+    if live_armed:
+        applicable_caps['daily(live)'] = daily_cap
+    max_spend = min(applicable_caps.values())
+    caps_desc = ', '.join(f"{k} ${v:.2f}" for k, v in applicable_caps.items())
+
+    # Candidate source.
+    if use_discovery:
+        candidate = f"discovery (methods: {', '.join(s['discovery']['value']) or 'none'})"
+    else:
+        candidate = f"explicit coins: {', '.join(s['coins']['value'])}"
+
+    # External APIs that WOULD be consulted, gated on the same conditions the
+    # run uses -- never advertise an API a gate would skip.
+    apis = ['Coinbase (market data' + ('' if not s['dex']['value'] else ' + Solana DEX via Jupiter') + ')']
+    apis.append('Google Trends (pytrends)')
+    creds = report['credentials']
+    if creds.get('coinmarketcap') == 'present':
+        apis.append('CoinMarketCap')
+    if creds.get('lunarcrush') == 'present' or s['chains']['value'] or s['categories']['value']:
+        apis.append('LunarCrush')
+    if use_discovery and 'santiment' in s['discovery']['value']:
+        apis.append('Santiment (discovery)')
+    if use_discovery and s['polymarket_filter']['value']:
+        apis.append('Polymarket (filter)')
+    apis.append('LLM providers: ' + ', '.join(panel))
+
+    # Approximate LLM call count: per coin, ~1 round-1 analysis per panelist,
+    # plus up to ~1 round-2 peer pass per panelist, plus at most one tiebreaker.
+    # Discovery mode's coin count is unknown until discovery runs.
+    per_coin = len(panel) * 2 + (1 if tb not in ('none', 'n/a (single-provider mode)') else 0)
+    if use_discovery:
+        calls_desc = (f"~{per_coin} LLM calls per discovered coin "
+                      "(coin count set by discovery) + discovery calls")
+    else:
+        n = len(s['coins']['value'])
+        calls_desc = f"~{per_coin * n} LLM calls ({per_coin} x {n} coins)"
+
+    held, lock_path = _instance_lock_held(mode)
+    lock_state = {True: 'HELD by another process', False: 'FREE', None: 'UNKNOWN'}[held]
+
+    hist_dir = os.path.dirname(executionledger.EXECUTIONS_FILE) or '.'
+
+    lines = []
+    lines.append("=" * 50)
+    lines.append("=== RUN PLAN (no trades; nothing executed) ===")
+    lines.append("=" * 50)
+    lines.append(f"Effective trading mode: {'LIVE' if live_armed else 'WHAT-IF'} "
+                 f"(live armed: {'YES' if live_armed else 'NO'})")
+    lines.append(f"Panel: {', '.join(panel)} | tiebreaker: {tb}")
+    lines.append(f"Candidate source: {candidate}")
+    lines.append(f"Max buys this run: {max_buys} "
+                 f"(run cap ${run_cap:.2f} / notional ${notional:.2f})")
+    lines.append(f"Max spend this run: ${max_spend:.2f} "
+                 f"(min of applicable caps: {caps_desc})")
+    if not live_armed:
+        lines.append("  (daily LIVE cap does not apply in what-if)")
+    lines.append(f"External APIs that would be consulted: {'; '.join(apis)}")
+    lines.append(f"Approx LLM calls: {calls_desc}")
+    lines.append(f"Output locations: history dir={hist_dir}; "
+                 f"run summaries={os.path.join(hist_dir, 'run_summaries')}; "
+                 f"panel responses={os.path.join(hist_dir, 'panel_responses')}")
+    lines.append(f"Instance lock ({mode}): {lock_state} ({lock_path})")
+    lines.append("=" * 50)
+    return lines
+
+
+def emit_config_report_and_exit(args, environ, include_plan):
+    """Print the config report as JSON (and, when include_plan, the plan) and
+    exit 0. Invoked from main() BEFORE the instance lock / analyzer / any
+    network so both flags are a pure read of resolved config."""
+    report = build_config_report(args, environ)
+    print(json.dumps(report, indent=2))
+    if include_plan:
+        print()
+        for line in build_plan_lines(report, environ):
+            print(line)
+    sys.exit(0)
 
 
 def vote_outcome_label(final_action, dispatched):
@@ -412,6 +834,149 @@ def format_vote_outcomes_line(outcomes):
     return "Votes: " + " | ".join(f"{coin} {label}" for coin, label in outcomes)
 
 
+def resolve_json_summary_path(json_summary_arg, run_id):
+    """WS8: resolve --json-summary's effective output path (pure, testable
+    without touching the real HISTORY_DIR).
+
+    `json_summary_arg` is `args.json_summary` verbatim:
+      - None       -> the flag was never given: summary disabled, returns None.
+      - ''         -> the bare flag (`--json-summary` with no PATH): default
+                      path under HISTORY_DIR, same dir-resolution as
+                      recommendations.json (mirrors write_market_blocks'
+                      pattern in historyutil.py -- derived from
+                      historyutil.RECOMMENDATIONS_FILE at call time so a
+                      redirected/scratch HISTORY_DIR is respected).
+      - any other string -> used verbatim as the explicit path.
+    """
+    if json_summary_arg is None:
+        return None
+    if json_summary_arg == '':
+        directory = os.path.join(
+            os.path.dirname(historyutil.RECOMMENDATIONS_FILE) or '.',
+            'run_summaries')
+        return os.path.join(directory, f'{run_id}.json')
+    return json_summary_arg
+
+
+def build_run_summary(run_id, trading_mode, llm_mode, primary_llm, compare_llms,
+                      use_coin_discovery, discovery_methods, analyze_coins,
+                      coins_to_buy, coins_excluded, coin_vote_outcomes,
+                      spend_tracker, daily_spend_cap_usd, daily_cap_blocked,
+                      whatif_mode, whatif_buys, data_quality_by_coin=None,
+                      discovery_universe=None):
+    """WS8: build the machine-readable end-of-run summary dict.
+
+    Built ENTIRELY from in-memory state already accumulated during the run
+    (coin_vote_outcomes, coinsToBuy/coinsExcluded, the shared SpendTracker,
+    whatif_buys/daily_cap_blocked) -- never re-derived from history files, so
+    the JSON can't drift from what the run actually decided/did. Pure
+    function (no I/O) so it's unit-testable without a real run.
+
+    WS4: `data_quality_by_coin` maps coin_symbol -> the derive_data_quality
+    dict for that coin (from DATA_QUALITY_CACHE). When present for a coin, its
+    per-source status is attached to that coin's summary entry; when absent
+    (or the whole arg is None -- a pre-WS4 caller) the entry keeps its exact
+    prior shape, so existing --json-summary consumers are unaffected.
+
+    WS9: `discovery_universe` is the resolved --discovery-universe value.
+    It is recorded as `discovery['universe']` ONLY when llm discovery is
+    actually in use ('llm' in discovery_methods AND use_coin_discovery) --
+    the universe is inert otherwise, same honesty rule the banner follows.
+    Optional (default None) so existing callers/tests that omit it keep the
+    exact prior 'discovery' dict shape.
+    """
+    coins_to_buy_set = set(coins_to_buy)
+    coins_excluded_set = set(coins_excluded)
+    dq_by_coin = data_quality_by_coin or {}
+    live_buys = 0 if whatif_mode else len(coins_to_buy)
+    simulated_buys = whatif_buys if whatif_mode else 0
+
+    def _coin_entry(coin, label):
+        entry = {
+            'coin': coin,
+            'outcome': label,
+            'bought': coin in coins_to_buy_set,
+            'excluded': coin in coins_excluded_set,
+        }
+        dq = dq_by_coin.get(coin)
+        if dq is not None:
+            entry['data_quality'] = dq
+        return entry
+
+    discovery_entry = {
+        'use_coin_discovery': use_coin_discovery,
+        'discovery_methods': list(discovery_methods) if use_coin_discovery else [],
+        'analyze_coins': [] if use_coin_discovery else list(analyze_coins),
+    }
+    if use_coin_discovery and 'llm' in discovery_methods and discovery_universe is not None:
+        discovery_entry['universe'] = discovery_universe
+
+    return {
+        'run_id': run_id,
+        'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        'trading_mode': trading_mode,
+        'panel': {
+            'llm_mode': llm_mode,
+            'primary_llm': primary_llm,
+            'compare_llms': list(compare_llms) if compare_llms else [],
+        },
+        'discovery': discovery_entry,
+        'coins': [_coin_entry(coin, label) for coin, label in coin_vote_outcomes],
+        'spend': {
+            'notional_usd': spend_tracker.notional,
+            'run_spend_cap_usd': spend_tracker.cap,
+            'committed_usd': spend_tracker.spent,
+            'blocked_by_spend_cap': spend_tracker.blocked,
+            'daily_spend_cap_usd': daily_spend_cap_usd,
+            'blocked_by_daily_cap': daily_cap_blocked,
+        },
+        'orders': {
+            'live_buys': live_buys,
+            'simulated_buys': simulated_buys,
+        },
+    }
+
+
+def write_run_summary(path, summary):
+    """WS8: persist the run-summary dict to `path` (atomic temp+replace,
+    same crash-safety pattern as historyutil.write_market_blocks).
+
+    Best-effort by contract: a write failure is caught, warned, and NEVER
+    raises -- writing the summary must not be able to abort a trading run.
+    Returns the path on success, None on failure.
+    """
+    try:
+        directory = os.path.dirname(path) or '.'
+        os.makedirs(directory, exist_ok=True)
+        tmp = os.path.join(
+            directory, f'.run_summary.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+        with open(tmp, 'w') as f:
+            json.dump(summary, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return path
+    except Exception as e:
+        print(f"[HISTORY WARN] could not write run summary to {path}: {e} "
+              "(RUN SUMMARY console output is unaffected)")
+        return None
+
+
+# WS8: quiet-mode gate, pre-declared (unlike most args-derived globals) so
+# functions like buy_something -- which tests drive directly via monkeypatched
+# module globals, without running main() -- have a sane default (noisy/
+# unchanged behavior) even when nothing has set it yet.
+QUIET_MODE = False
+
+# WS5: deterministic-sampling gate, pre-declared for the same reason as
+# QUIET_MODE -- helpers (gemini_structured_config, _resolved_sampling) read it
+# via globals().get so they have a sane default (OFF) when driven directly by
+# tests without running main(). main() assigns it AND mirrors it into
+# os.environ before constructing the traders, so every provider (which reads
+# DETERMINISTIC_SAMPLING at __init__) agrees with the recorded value.
+DETERMINISTIC_SAMPLING = False
+
+
 # === T9: real Coinbase market data injection (plan Phase 2) ==================
 # The market block (Coinbase OHLCV summary + Fibonacci levels PRIMARY, plus
 # demoted Google-Trends, CMC (T12), and SOCIAL/LunarCrush (T13) SECONDARY
@@ -442,6 +1007,138 @@ MARKET_BLOCK_CACHE = {}
 # bounds staleness for the hypothetical looping case.
 MARKET_BLOCK_TTL_SECONDS = int(os.environ.get('MARKET_BLOCK_TTL_SECONDS', 900))  # 15 min default
 MARKET_BLOCK_FETCHED_AT = {}
+
+# WS4 (improvement cycle 2): the per-coin structured data_quality derived from
+# the SAME branch variables that decide the market block's content (see
+# derive_data_quality). Populated alongside MARKET_BLOCK_CACHE by
+# build_market_block_for_coin, read by _record_provenance (into the record)
+# and the end-of-run build_run_summary (into --json-summary). Keyed by coin
+# symbol; parallel to MARKET_BLOCK_CACHE rather than folded into it so tests
+# that inject raw block strings into MARKET_BLOCK_CACHE are unaffected (same
+# rationale as MARKET_BLOCK_FETCHED_AT above).
+DATA_QUALITY_CACHE = {}
+
+# WS4: the market-data sources whose per-coin status the block discloses. Order
+# is the block's own PRIMARY-then-SECONDARY layout (coinbase/fibonacci primary;
+# google_trends/cmc/social secondary). Polymarket is deliberately NOT here: it
+# is a discovery-time coin FILTER, not a per-coin market-block section, so it
+# never reaches an analysis prompt and has no honest per-coin status to report.
+DATA_QUALITY_SOURCES = ('coinbase', 'fibonacci', 'google_trends', 'cmc', 'social')
+
+
+def derive_data_quality(coin_symbol, candle_client, summary, fib,
+                        market_data_reason, trends_status, cmc_status,
+                        social_status, cmc_configured=None,
+                        social_configured=None):
+    """WS4: structured per-source data_quality for `coin_symbol`, derived from
+    the EXACT branch variables that decided what reached the analysis prompt.
+
+    Returns {source: {'status': 'ok'|'degraded'|'failed'|'skipped',
+    'detail': str}} over DATA_QUALITY_SOURCES. EFFECT HONESTY (the whole
+    point): this reads the same `summary`/`fib`/`market_data_reason` and the
+    same `*_status` dicts that build_market_block_for_coin fed into
+    marketdata.build_market_block -- never an independent re-fetch or re-check
+    that could disagree with the block the panel actually saw.
+
+    Status vocabulary:
+      ok       -- the source's data reached the prompt intact.
+      degraded -- partial/lower-confidence data reached the prompt (fib
+                  couldn't compute but price/volume did; Trends below its
+                  measurement floor; CMC returned but only via an ambiguous
+                  symbol-only lookup).
+      failed   -- the source was configured/attempted but nothing usable
+                  reached the prompt (fetch error, 429, empty series).
+      skipped  -- the source was disabled by configuration, so it was never
+                  attempted (DEX mode => no Coinbase candles; no CMC/LunarCrush
+                  API key). Distinct from `failed` so a run reasoning from a
+                  deliberately-reduced source set is not mistaken for a
+                  degraded/broken one.
+
+    cmc_configured/social_configured default to the live config (a truthy API
+    key) so the skipped-vs-failed split for the secondary sources reads the
+    same variable that gates their fetch; tests pass explicit booleans.
+    """
+    if cmc_configured is None:
+        cmc_configured = bool(coinmarketcaputil.CMC_API_KEY)
+    if social_configured is None:
+        social_configured = bool(os.environ.get('LUNARCRUSH_API_KEY', ''))
+
+    dq = {}
+
+    # --- coinbase (PRIMARY: OHLCV candles) ---
+    if summary is not None:
+        window = summary.get('window_days') or 0
+        dq['coinbase'] = {
+            'status': 'ok',
+            'detail': f"{summary.get('n_candles', 0)} candles / {window:.1f}d",
+        }
+    elif candle_client is None:
+        # DEX mode: no Coinbase client is a config choice, not a failure.
+        dq['coinbase'] = {
+            'status': 'skipped',
+            'detail': market_data_reason or 'no Coinbase candle client (DEX mode)',
+        }
+    else:
+        dq['coinbase'] = {
+            'status': 'failed',
+            'detail': market_data_reason or 'no market-data series reached the prompt',
+        }
+
+    # --- fibonacci (PRIMARY: retracement levels over the candles) ---
+    if summary is None:
+        # No candles => fib was never attempted (block emits no FIBONACCI line).
+        dq['fibonacci'] = {'status': 'skipped',
+                           'detail': 'no candles to analyze (see coinbase)'}
+    elif fib is not None:
+        dq['fibonacci'] = {
+            'status': 'ok',
+            'detail': f"trend {fib.get('trend_direction', 'n/a')}",
+        }
+    else:
+        dq['fibonacci'] = {
+            'status': 'degraded',
+            'detail': 'retracement levels unavailable; price/volume summary only',
+        }
+
+    # --- google_trends (SECONDARY) ---
+    ts = (trends_status or {}).get('status', 'unavailable')
+    if ts == 'present':
+        dq['google_trends'] = {'status': 'ok', 'detail': 'search-interest series present'}
+    elif ts == 'below_floor':
+        dq['google_trends'] = {'status': 'degraded',
+                               'detail': 'search volume below measurement floor'}
+    elif ts == 'failed':
+        dq['google_trends'] = {'status': 'failed',
+                               'detail': 'fetch failed (rate limit)'}
+    else:  # 'unavailable' / unknown
+        dq['google_trends'] = {'status': 'failed', 'detail': 'no series returned'}
+
+    # --- cmc (SECONDARY: CoinMarketCap) ---
+    cmc = cmc_status or {}
+    if cmc.get('status') == 'present':
+        # F3: a symbol-only lookup (no CMC id resolved) can silently be the
+        # wrong asset for a colliding ticker -- the block itself discloses this
+        # as an AMBIGUITY WARNING, so it reaches the prompt DEGRADED, not clean.
+        if not (cmc.get('data') or {}).get('id_resolved', True):
+            dq['cmc'] = {'status': 'degraded',
+                         'detail': 'symbol-only lookup (possible asset ambiguity)'}
+        else:
+            dq['cmc'] = {'status': 'ok', 'detail': 'rank/dominance/supply present'}
+    elif not cmc_configured:
+        dq['cmc'] = {'status': 'skipped', 'detail': 'COINMARKETCAP_API_KEY not set'}
+    else:
+        dq['cmc'] = {'status': 'failed', 'detail': cmc.get('reason') or 'no data returned'}
+
+    # --- social (SECONDARY: LunarCrush) ---
+    social = social_status or {}
+    if social.get('status') == 'present':
+        dq['social'] = {'status': 'ok', 'detail': 'galaxy/sentiment/volume present'}
+    elif not social_configured:
+        dq['social'] = {'status': 'skipped', 'detail': 'LUNARCRUSH_API_KEY not set'}
+    else:
+        dq['social'] = {'status': 'failed', 'detail': social.get('reason') or 'no data returned'}
+
+    return dq
 
 
 def get_trends_status(coin_symbol):
@@ -537,10 +1234,28 @@ def build_market_block_for_coin(coin_symbol, candle_client):
             reason = f'{type(e).__name__}: {e}'
             print(f"[MARKET DATA] fetch/compute failed for {coin_symbol}: {reason}")
 
+    # WS4: fetch CMC/SOCIAL here (instead of letting build_market_block
+    # self-fetch) so this function holds the EXACT status dicts that shape the
+    # block, and can derive an effect-honest data_quality from them. Passing
+    # them in leaves the block byte-identical -- build_market_block only
+    # self-fetches when these are None -- and adds NO extra network calls
+    # (still one CMC + one SOCIAL fetch per coin per run, gated by this
+    # function's cache). The autouse marketdata.fetch_* stubs in the market-
+    # data tests still apply (module-global lookup at call time).
+    cmc_status = marketdata.fetch_cmc_status(coin_symbol)
+    social_status = marketdata.fetch_social_status(coin_symbol)
+
     block = marketdata.build_market_block(coin_symbol, summary, fib, trends_status,
-                                          unavailable_reason=reason)
+                                          unavailable_reason=reason,
+                                          cmc_status=cmc_status,
+                                          social_status=social_status)
     MARKET_BLOCK_CACHE[coin_symbol] = block
     MARKET_BLOCK_FETCHED_AT[coin_symbol] = time.time()
+    # WS4: derive + cache the per-source data_quality from the same variables
+    # that decided the block content (never a parallel re-check).
+    DATA_QUALITY_CACHE[coin_symbol] = derive_data_quality(
+        coin_symbol, candle_client, summary, fib, reason,
+        trends_status, cmc_status, social_status)
     return block
 
 
@@ -575,15 +1290,44 @@ def is_valid_coin_symbol(text):
     return True
 
 
-def sendRecommendationRequest():
-    """Get coin recommendations from Gemini."""
-    if DEX_MODE:
+# WS9: universe phrase per --discovery-universe/DISCOVERY_UNIVERSE value.
+# 'meme' is the default and is the literal phrase already hardcoded in both
+# prompts below, so build_discovery_prompt(..., universe='meme') is a no-op
+# substitution -- byte-identical to the pre-WS9 prompts (pinned by
+# tests/test_discovery_universe.py).
+DISCOVERY_UNIVERSE_PHRASES = {
+    'meme': 'meme coins',
+    'major': 'large-cap cryptocurrencies',
+    'defi': 'DeFi tokens',
+    'any': 'cryptocurrencies (any category)',
+}
+
+
+def build_discovery_prompt(dex_mode, universe):
+    """WS9: build the LLM discovery prompt (DEX or CEX variant), with the
+    coin-universe phrase parameterized by `universe`.
+
+    This is a pure substitution over the ORIGINAL hardcoded prompt text --
+    only the "meme coins" phrase changes; the +++SYM+++/***FAILED*** output
+    contract, the DEX tradeability constraints, and every other word are
+    untouched. With universe='meme' the `.replace()` below is a no-op, so the
+    returned string is byte-identical to the prompts as they existed before
+    this flag was added.
+    """
+    phrase = DISCOVERY_UNIVERSE_PHRASES.get(universe, DISCOVERY_UNIVERSE_PHRASES['meme'])
+    if dex_mode:
         # Solana DEX mode: only recommend Solana meme coins tradeable via Jupiter
         prompt = "What 3 Solana blockchain meme coins are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Only include coins tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT include coins on other chains like Base, Ethereum, or BNB. Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you are aware of."
     else:
         # CEX mode: Coinbase-listed coins
         prompt = "What 3 meme coins listed on the Coinbase exchange are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you are aware of."
-    
+    return prompt.replace('meme coins', phrase, 1)
+
+
+def sendRecommendationRequest():
+    """Get coin recommendations from Gemini."""
+    prompt = build_discovery_prompt(DEX_MODE, DISCOVERY_UNIVERSE)
+
     try:
         response = client.models.generate_content(
             model=get_model('gemini'),
@@ -603,12 +1347,19 @@ def gemini_structured_config():
     tests/fixtures/structured_output/gemini.json): response_schema and the
     google_search tool coexist in one request; the schema must not carry
     additionalProperties. Discovery calls keep the plain grounded `config`.
+
+    WS5: under --deterministic-sampling, temperature=0 + a fixed seed are folded
+    into the config (both are accepted GenerateContentConfig fields). Flag off,
+    sampling.request_params returns {} so the config is byte-identical to today.
     """
-    return types.GenerateContentConfig(
+    cfg = dict(
         tools=[types.Tool(google_search=types.GoogleSearch())],
         response_mime_type="application/json",
         response_schema=voteschema.schema_for_gemini(),
     )
+    cfg.update(sampling.request_params(
+        'gemini', bool(globals().get('DETERMINISTIC_SAMPLING', False))))
+    return types.GenerateContentConfig(**cfg)
 
 
 def sendCoinCheckRequest(coin, market_block=None):
@@ -698,20 +1449,35 @@ def sendIntegratedTrendCheckRequest(coin_symbol, peer_analysis, trends_data=None
 
 
 def get_primary_recommendation():
-    """Get coin recommendations from the PRIMARY_LLM."""
+    """Get coin recommendations from the PRIMARY_LLM.
+
+    WS9b: when PRIMARY_LLM is claude/openai/grok/perplexity, this is a live
+    discovery path (run_llm_discovery -> get_primary_recommendation), so the
+    resolved --discovery-universe phrase must reach the provider's discovery
+    prompt exactly as it does for the gemini path (build_discovery_prompt).
+    Each provider owns its own prompt template (grok/perplexity carry
+    provider-specific wording, not byte-identical to the gemini/claude/openai
+    text) -- only the "meme coins" phrase is parameterized, resolved here
+    (the call site) and passed down as a finished string so the provider
+    utils need no import of this module (avoids an import cycle: they are
+    imported BY crypto_trading_bot). Default 'meme coins' keeps every
+    provider's prompt byte-identical when DISCOVERY_UNIVERSE is unset/'meme'.
+    """
     global claude_trader, openai_trader, grok_trader, perplexity_trader
-    
+    phrase = DISCOVERY_UNIVERSE_PHRASES.get(
+        DISCOVERY_UNIVERSE, DISCOVERY_UNIVERSE_PHRASES['meme'])
+
     if PRIMARY_LLM == 'gemini':
         response = sendRecommendationRequest()
         return response.text if response else None
     elif PRIMARY_LLM == 'claude' and claude_trader:
-        return claude_trader.send_recommendation_request(dex_mode=DEX_MODE)
+        return claude_trader.send_recommendation_request(dex_mode=DEX_MODE, phrase=phrase)
     elif PRIMARY_LLM == 'openai' and openai_trader:
-        return openai_trader.send_recommendation_request(dex_mode=DEX_MODE)
+        return openai_trader.send_recommendation_request(dex_mode=DEX_MODE, phrase=phrase)
     elif PRIMARY_LLM == 'grok' and grok_trader:
-        return grok_trader.send_recommendation_request(dex_mode=DEX_MODE)
+        return grok_trader.send_recommendation_request(dex_mode=DEX_MODE, phrase=phrase)
     elif PRIMARY_LLM == 'perplexity' and perplexity_trader:
-        return perplexity_trader.send_recommendation_request(dex_mode=DEX_MODE)
+        return perplexity_trader.send_recommendation_request(dex_mode=DEX_MODE, phrase=phrase)
     else:
         print(f"Warning: PRIMARY_LLM '{PRIMARY_LLM}' not available, falling back to Gemini")
         response = sendRecommendationRequest()
@@ -1152,6 +1918,12 @@ class PanelDecision:
         majority_action: most common non-abstain vote (None on a tie or when
             nobody voted). Recorded for MEASUREMENT even when not traded.
         block_reason: why the decision was blocked ('<code>: detail'), else None.
+        vote_details: WS3 persistence-only sidecar mirroring `votes`, but
+            carrying per-LLM confidence: {llm: {'action': <vote str or None for
+            an abstain>, 'confidence': <0..1 float or None>}}. Populated for
+            every panelist that ran (real vote or abstain). It never feeds any
+            decision/consensus math -- it exists solely so the full decision
+            record (confidence included) reaches history.
     """
     action: Optional[str]
     consensus_state: str
@@ -1160,6 +1932,7 @@ class PanelDecision:
     deciding_llms: List[str] = field(default_factory=list)
     majority_action: Optional[str] = None
     block_reason: Optional[str] = None
+    vote_details: Dict[str, Dict] = field(default_factory=dict)
 
     @property
     def consensus(self):
@@ -1354,6 +2127,111 @@ def log_panel_response(provider, coin_symbol, round_label, response_text):
     print(f"[PANEL] {provider}/{coin_symbol} {round_label}: {_panel_response_summary(response_text)}")
 
 
+def _vote_confidence(response_text):
+    """WS3 persistence-only: best-effort per-model confidence (0..1 float) from
+    a panelist response, or None. NEVER affects the vote or the decision -- a
+    None/empty response, a fallback delimiter-tag response (not JSON), or any
+    parse failure yields None. Never raises. Re-parses the already-in-memory
+    response rather than threading a new return through resolve_vote, so the
+    decision path's contract is untouched (AGENTS.md 'inject at seams')."""
+    if response_text is None:
+        return None
+    try:
+        vote, _err = voteschema.parse_vote(response_text)
+    except Exception:
+        return None
+    if vote is None:
+        return None
+    try:
+        return float(vote.confidence)
+    except (TypeError, ValueError):
+        return None
+
+
+# === WS3: schema-v2 provenance for history records ==========================
+#
+# Persistence only -- these helpers read what the run already computed (the
+# cached market block, the resolved model IDs, the panel that ran) and never
+# influence any decision. All are best-effort: a field that cannot be computed
+# is omitted (None) so a provenance hiccup can never abort or alter trading.
+
+def _analysis_prompt_hash(coin_symbol):
+    """sha256[:16] of the PRIMARY Round-1 coin-check prompt built for this coin.
+
+    Reconstructs the prompt from the same builder + cached market block the run
+    sent (panelprompts.coin_check_prompt with default kwargs = the
+    gemini/claude/openai bytes; grok/perplexity primaries add a preamble, so
+    the hash is a stable, reproducible identity of coin+data+template rather
+    than a literal byte-copy of every provider's variant). None if it cannot be
+    rebuilt. Never raises."""
+    try:
+        coin_type = "cryptocurrency" if not USE_COIN_DISCOVERY else "meme coin"
+        mb = _resolve_market_block(coin_symbol, PRIMARY_LLM)
+        prompt = panelprompts.coin_check_prompt(coin_symbol, coin_type, mb)
+        return historyutil.prompt_hash(prompt)
+    except Exception:
+        return None
+
+
+def _resolved_models(decision):
+    """Panelist -> resolved model ID (modelregistry) for every panelist
+    represented in the decision, i.e. what actually ran (tiebreaker included,
+    since it appears in vote_details). None when nothing is resolvable.
+    Never raises."""
+    models = {}
+    for llm in (decision.vote_details or {}):
+        try:
+            models[llm] = get_model(llm)
+        except Exception:
+            pass
+    return models or None
+
+
+def _resolved_sampling(decision):
+    """WS5: panelist -> the sampling record ('provider-default' or the dict of
+    sampling params actually sent) for every panelist represented in the
+    decision. Derived from sampling.record over the SAME DETERMINISTIC_SAMPLING
+    flag the traders read, so the record matches what each request carried.
+    None when nothing is resolvable. Never raises."""
+    deterministic = bool(globals().get('DETERMINISTIC_SAMPLING', False))
+    out = {}
+    for llm in (decision.vote_details or {}):
+        try:
+            out[llm] = sampling.record(llm, deterministic)
+        except Exception:
+            pass
+    return out or None
+
+
+def _record_provenance(coin_symbol, decision):
+    """WS3 schema-v2 kwargs for record_recommendation. market_block_ref is the
+    per-run file every coin shares; market_block_present is per-coin (True iff
+    this coin's frozen block was cached, hence will be in that file).
+
+    WS5: also carries market_block_hash (the decision fingerprint -- sha256[:16]
+    of THIS coin's exact cached block, the same string write_market_blocks
+    persists, so a reader can recompute + verify) and per-provider sampling
+    provenance."""
+    block = MARKET_BLOCK_CACHE.get(coin_symbol)
+    present = bool(block)
+    return dict(
+        schema_version=2,
+        vote_details=(decision.vote_details or None),
+        prompt_hash=_analysis_prompt_hash(coin_symbol),
+        models=_resolved_models(decision),
+        market_block_ref=historyutil.market_block_ref(RUN_ID),
+        market_block_present=present,
+        # WS5: fingerprint of the EXACT block string (None when uncached, so the
+        # field is simply omitted and the record shape is unchanged for that coin).
+        market_block_hash=historyutil.market_block_hash(block),
+        sampling=_resolved_sampling(decision),
+        # WS4: the per-source market-data status this coin's panel reasoned
+        # over (None when nothing was cached -- e.g. a directly-injected block
+        # in tests -- so an omitted field keeps the v1 record shape).
+        data_quality=(DATA_QUALITY_CACHE.get(coin_symbol) or None),
+    )
+
+
 def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_check=False, trends_data=None):
     """Process a coin recommendation with optional LLM comparison or integration.
 
@@ -1403,23 +2281,30 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             return PanelDecision(action=None, consensus_state='blocked',
                                  votes={llm: 'ABSTAIN(client_init_failure)'},
                                  abstains={llm: 'client_init_failure'},
-                                 block_reason=reason)
+                                 block_reason=reason,
+                                 vote_details={llm: {'action': None,
+                                                     'confidence': None}})
         if PRIMARY_LLM == llm:
             resp_text, rec = primary_response_text, primary_rec
         else:
             resp_text, rec = get_llm_response(llm, coin_symbol, use_trend_check)
+        confidence = _vote_confidence(resp_text)  # WS3 persistence only
         if isinstance(rec, voteschema.Abstain):
             reason = rec.reason
         elif rec:
             action = rec.upper().strip()
             return PanelDecision(action=action, consensus_state='single',
                                  votes={llm: action}, deciding_llms=[llm],
-                                 majority_action=action)
+                                 majority_action=action,
+                                 vote_details={llm: {'action': action,
+                                                     'confidence': confidence}})
         else:
             reason = 'error' if not resp_text else 'parse_failure'
         return PanelDecision(action=None, consensus_state='single',
                              votes={llm: f'ABSTAIN({reason})'},
-                             abstains={llm: reason})
+                             abstains={llm: reason},
+                             vote_details={llm: {'action': None,
+                                                 'confidence': confidence}})
 
     if LLM_MODE not in ('compare', 'integrate'):
         # Unknown mode: fail closed — never fall back to the primary's vote.
@@ -1440,10 +2325,12 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
         r1_responses = {}
         r1_votes = {}    # llm -> normalized real vote ('BUY'/'SELL'/'HOLD')
         r1_abstains = {}  # llm -> 'error' | 'parse_failure'
+        r1_confidences = {}  # WS3 persistence only: llm -> 0..1 float or None
 
         def tally_round1(llm, resp, rec):
             if resp:
                 r1_responses[llm] = resp
+            r1_confidences[llm] = _vote_confidence(resp)
             if isinstance(rec, voteschema.Abstain):
                 # T8: explicit structured abstains carry their own reason
                 # ('refusal' | 'parse_failure' | 'symbol_mismatch')
@@ -1473,15 +2360,35 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                     display[llm] = f'ABSTAIN({abstains[llm]})'
             return display
 
-        def decide(votes, abstains):
+        def build_vote_details(votes, abstains, confidences):
+            """WS3 persistence-only sidecar: per-panelist {action, confidence}.
+            action is the vote string, or None for an abstain; confidence is a
+            0..1 float or None. Mirrors votes_display's panel iteration so the
+            two stay aligned; never feeds any decision math."""
+            details = {}
+            for llm in panel:
+                if llm in votes:
+                    details[llm] = {'action': votes[llm],
+                                    'confidence': confidences.get(llm)}
+                elif llm in abstains:
+                    details[llm] = {'action': None,
+                                    'confidence': confidences.get(llm)}
+            return details
+
+        def decide(votes, abstains, confidences):
             """Resolve a final vote set into a PanelDecision (fail closed).
 
             Abstains are EXCLUDED from agreement math (no empty-string
             normalization), and under REQUIRE_CONSENSUS any abstain blocks.
             Policy: unanimity is required to TRADE under REQUIRE_CONSENSUS;
             majority_action is recorded for MEASUREMENT only.
+
+            `confidences` (llm -> 0..1 float or None) is WS3 persistence-only:
+            it is folded into vote_details on the returned PanelDecision and
+            never participates in the agreement/quorum/tiebreaker logic.
             """
             display = votes_display(votes, abstains)
+            details = build_vote_details(votes, abstains, confidences)
             majority = _majority_action(list(votes.values()))
             for llm, reason in abstains.items():
                 print(f"  [ABSTAIN] {llm}: {reason}")
@@ -1491,7 +2398,8 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                 return PanelDecision(action=None, consensus_state='blocked',
                                      votes=display, abstains=dict(abstains),
                                      majority_action=majority,
-                                     block_reason=reason)
+                                     block_reason=reason,
+                                     vote_details=details)
 
             # T3(b): sub-quorum never yields a lone tradeable vote
             if len(votes) < 2:
@@ -1507,7 +2415,8 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                 return PanelDecision(action=action, consensus_state='unanimous',
                                      votes=display, abstains=dict(abstains),
                                      deciding_llms=[llm for llm in panel if llm in votes],
-                                     majority_action=majority)
+                                     majority_action=majority,
+                                     vote_details=details)
 
             # Non-unanimous panel
             if REQUIRE_CONSENSUS:
@@ -1529,12 +2438,13 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             return PanelDecision(action=action, consensus_state='tiebreaker',
                                  votes=display, abstains=dict(abstains),
                                  deciding_llms=[INTEGRATION_TIEBREAKER],
-                                 majority_action=majority)
+                                 majority_action=majority,
+                                 vote_details=details)
 
         # === COMPARE MODE ===
         if LLM_MODE == 'compare':
             print(f"\n[COMPARISON] " + ", ".join(f"{k}: {v}" for k, v in votes_display(r1_votes, r1_abstains).items()))
-            return decide(r1_votes, r1_abstains)
+            return decide(r1_votes, r1_abstains, r1_confidences)
 
         # === INTEGRATE MODE: Round 2 cross-feeding ===
         print(f"\n[INTEGRATE] Round 1 - " + ", ".join(f"{k}: {v}" for k, v in votes_display(r1_votes, r1_abstains).items()))
@@ -1546,10 +2456,11 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
         #   is already guaranteed to block.
         r1_error_abstains = {llm for llm in r1_abstains if llm not in r1_responses}
         if len(r1_responses) < 2 or (REQUIRE_CONSENSUS and r1_error_abstains):
-            return decide(r1_votes, r1_abstains)
+            return decide(r1_votes, r1_abstains, r1_confidences)
 
         r2_votes = {}
         r2_abstains = {}
+        r2_confidences = {}  # WS3 persistence only: llm -> 0..1 float or None
         for llm in panel:
             if llm not in r1_responses:
                 # Errored out of Round 1: abstain carries into the final set
@@ -1563,6 +2474,7 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
             combined_peer = "\n\n".join(peer_analyses)
 
             resp, rec = get_llm_response(llm, coin_symbol, use_trend_check, combined_peer, trends_data)
+            r2_confidences[llm] = _vote_confidence(resp)
             if isinstance(rec, voteschema.Abstain):
                 r2_abstains[llm] = rec.reason
             elif rec:
@@ -1580,7 +2492,9 @@ def process_coin_with_comparison(coin_symbol, primary_response_text, use_trend_c
                 print(f"  [FLIP] {llm.capitalize()} changed: {r1_val} -> {r2_val}")
 
         print(f"\n[INTEGRATE FINAL] " + ", ".join(f"{k}: {v}" for k, v in votes_display(r2_votes, r2_abstains).items()))
-        return decide(r2_votes, r2_abstains)
+        # Merge so carried-over Round-1 abstainers keep their R1 confidence
+        # while re-queried panelists get their R2 confidence (R2 wins).
+        return decide(r2_votes, r2_abstains, {**r1_confidences, **r2_confidences})
 
     except Exception as e:
         # T3(f): an exception in the multi-LLM block blocks the decision —
@@ -1684,6 +2598,72 @@ def resolve_trading_mode(args, env):
     return 'whatif', None
 
 
+def acquire_instance_lock_or_exit(trading_mode, allow_concurrent=False):
+    """Startup single-instance guard (WS-2). Acquire the per-mode process lock
+    or refuse to start.
+
+    Motivation: the owner once launched 5 concurrent `--live` bots. The ledger
+    lock serialized the money gate, but concurrent live processes are
+    unsupervisable and multiply the exchange rate-limit footprint. This is the
+    OUTERMOST lock (docs/INVARIANTS.md (b)): acquired once here, before any
+    network/LLM/ledger work, and never interleaved with the ledger or
+    recommendations locks.
+
+    Per-mode lock files (bot_instance.<mode>.lock) mean a live run and a whatif
+    run can hold their own locks simultaneously -- intended, since whatif is
+    read-only research that cannot touch the live money path.
+
+    Policy:
+      * live: another holder -> FAIL CLOSED (print refusal with holder PID and
+        lock path, exit non-zero). NO override -- allow_concurrent is ignored
+        for live on purpose.
+      * whatif: refuse by default with the same style of message; but
+        allow_concurrent (the --allow-concurrent flag) proceeds with a printed
+        warning, for deliberate research/experiment parallelism.
+
+    Returns the held InstanceLock on success (keep it alive for the process
+    lifetime), or None when whatif proceeds under --allow-concurrent without
+    the lock (another process holds it). Calls sys.exit on refusal.
+    """
+    lock, holder_pid = executionledger.bot_instance_lock(trading_mode)
+    path = executionledger.bot_instance_lock_path(trading_mode)
+
+    if lock is not None:
+        # Banner honesty: derive the path from the real lock, not a guess.
+        print(f"Instance lock: acquired ({path})")
+        return lock
+
+    # Contention: another live process of this mode already holds the lock.
+    who = (f"PID {holder_pid}" if holder_pid is not None
+           else "an unknown PID (lock file empty/unreadable)")
+
+    if trading_mode == 'live':
+        print("\n" + "=" * 66)
+        print("[INSTANCE LOCK] REFUSED: another bot is already running in "
+              f"LIVE mode ({who}).")
+        print(f"Lock file: {path}")
+        print("Concurrent live processes are unsupervisable and amplify "
+              "exchange rate limits. Refusing to start.")
+        print("(There is NO override for live -- stop the other process first.)")
+        print("=" * 66 + "\n")
+        sys.exit(1)
+
+    # whatif
+    if allow_concurrent:
+        print(f"[INSTANCE LOCK] WARNING: another whatif bot holds {path} "
+              f"({who}); --allow-concurrent given, proceeding WITHOUT the "
+              "single-instance guard (research/experiment parallelism).")
+        return None
+
+    print("\n" + "=" * 66)
+    print(f"[INSTANCE LOCK] REFUSED: another bot is already running in "
+          f"WHATIF mode ({who}).")
+    print(f"Lock file: {path}")
+    print("Pass --allow-concurrent to run parallel whatif/research processes.")
+    print("=" * 66 + "\n")
+    sys.exit(1)
+
+
 def new_run_id(now=None):
     """One run_id per process invocation (T2), e.g. run_20260719T101112Z_3f9a1c.
 
@@ -1709,6 +2689,20 @@ def parse_analyze_coins(raw):
     deduped = list(dict.fromkeys(
         c.strip().upper() for c in raw.split(',') if c.strip()))
     return deduped[:5], max(0, len(deduped) - 5)
+
+
+def parse_exclude_coins(raw):
+    """Parse --exclude-coins/EXCLUDE_COINS into a deduped, order-preserving,
+    upper-cased symbol list (WS9). No 5-coin cap here -- unlike --coins this
+    is a blocklist, not a per-run analysis set.
+
+    An empty/whitespace-only `raw` (e.g. explicit `--exclude-coins=`) returns
+    an empty list -- a deliberate "no exclusions" override, distinct from the
+    'TRUMP' default that applies only when neither the flag nor the env var
+    is given (see parse_args' --exclude-coins default).
+    """
+    return list(dict.fromkeys(
+        c.strip().upper() for c in raw.split(',') if c.strip()))
 
 
 def validate_notional(value):
@@ -1764,7 +2758,12 @@ def _current_ask(product):
     """Best available "current ask" for a product, for the what-if synthetic
     fill. The Coinbase Product type exposes `price` and `mid_market_price` but
     not a discrete ask, so we prefer an `ask` if present, then mid_market,
-    then last price. Returns a float or None."""
+    then last price. Returns a float or None.
+
+    NOTE: this is the FILL price (any usable number is fine, incl. mid/last
+    fallbacks). It is deliberately NOT reused for the honest RECORD bid/ask --
+    see _honest_bid_ask, which never falls back to mid/last (that would fabricate
+    a spread)."""
     if product is None:
         return None
     for attr in ('ask', 'best_ask', 'mid_market_price', 'price'):
@@ -1775,6 +2774,68 @@ def _current_ask(product):
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def _float_or_none(val):
+    """float(val) or None -- never raises. Empty string / None -> None (an ''
+    order-book price is corruption, not a zero)."""
+    if val in (None, ''):
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _honest_bid_ask(coin_symbol):
+    """WS5: best-effort HONEST (bid, ask) for the record's spread data.
+
+    Read-only, POST-decision (record time, never in the decision path), and
+    NEVER raises -- any failure returns (None, None). Uses Coinbase
+    get_best_bid_ask: the get_product payload the record's price comes from
+    exposes only price + mid_market_price, NOT a discrete bid/ask (verified
+    against the SDK Product type), so honest spread data requires this endpoint.
+    Falls back to (None, None) in DEX mode / when the client lacks the method /
+    on any error, so the record honestly stores None rather than a fabricated
+    or mid-derived spread. Observability only -- zero gating.
+    """
+    client = getattr(trader, 'client', None)
+    if client is None or not hasattr(client, 'get_best_bid_ask'):
+        return None, None
+    try:
+        resp = client.get_best_bid_ask(product_ids=[f"{coin_symbol}-USD"])
+        pricebooks = getattr(resp, 'pricebooks', None) or []
+        if not pricebooks:
+            return None, None
+        pb = pricebooks[0]
+        bids = getattr(pb, 'bids', None) or []
+        asks = getattr(pb, 'asks', None) or []
+        bid = _float_or_none(getattr(bids[0], 'price', None)) if bids else None
+        ask = _float_or_none(getattr(asks[0], 'price', None)) if asks else None
+        return bid, ask
+    except Exception as e:
+        print(f"[HISTORY] best_bid_ask fetch failed for {coin_symbol}: {e}; "
+              "recording bid/ask=None (observability only, decision unaffected)")
+        return None, None
+
+
+def _spread_pct(bid, ask):
+    """WS5: ((ask-bid)/mid*100) when both are real positive prices, else None
+    (never fabricated). mid = (bid+ask)/2."""
+    if bid is None or ask is None or bid <= 0 or ask <= 0:
+        return None
+    mid = (bid + ask) / 2.0
+    if mid <= 0:
+        return None
+    return (ask - bid) / mid * 100.0
+
+
+def _bid_ask_spread_kwargs(coin_symbol):
+    """WS5: the honest bid/ask/spread kwargs for record_recommendation, captured
+    at record time. Best-effort; all None when unavailable. Spread into the
+    record_recommendation call alongside **_record_provenance()."""
+    bid, ask = _honest_bid_ask(coin_symbol)
+    return dict(bid_price=bid, ask_price=ask, spread_pct=_spread_pct(bid, ask))
 
 
 def buy_something(coinToBuy):
@@ -1792,10 +2853,15 @@ def buy_something(coinToBuy):
         The deterministic client_order_id ties a retry to the same order.
         """
         product_id = coinToBuy + "-USD"
-        print("\n--- Getting coin Product Details BEFORE for: ", product_id)
+        # WS8: the product-detail dump is noisy per-buy chatter, not a safety
+        # line -- suppressed under --quiet. Visible by default (unchanged
+        # behavior when --quiet is absent).
+        if not QUIET_MODE:
+            print("\n--- Getting coin Product Details BEFORE for: ", product_id)
 
         usd_product = trader.get_product_details(product_id)
         if usd_product:
+            if not QUIET_MODE:
                 print(json.dumps(usd_product.to_dict(), indent=2))
         else:
             print("Could not retrieve product details.")
@@ -1866,10 +2932,12 @@ def buy_something(coinToBuy):
                   f"(order_id={result.order_id}, size={result.filled_size}, "
                   f"avg={result.avg_fill_price}, fees={result.fees_usd})")
 
-        print("\n--- Getting coin Product Details AFTER for: ", product_id)
+        if not QUIET_MODE:
+            print("\n--- Getting coin Product Details AFTER for: ", product_id)
 
         usd_product = trader.get_product_details(product_id)
         if usd_product:
+            if not QUIET_MODE:
                 print(json.dumps(usd_product.to_dict(), indent=2))
         else:
             print("Could not retrieve product details.")
@@ -1910,9 +2978,11 @@ def maybe_execute_buy(coin_symbol):
     global whatif_buys, daily_cap_blocked
 
     # 0. Exclusion list -- both modes, BEFORE any budget is committed (MP-6a +
-    # MP-9). Still counted in coinsToBuy so the summary shows the intent.
+    # MP-9). Tracked in coinsExcluded (NOT coinsToBuy) so the summary's "Coins
+    # to buy" reflects only coins actually bought/simulated; excluded coins are
+    # reported on their own distinct summary line.
     if coin_symbol in coinsToExclude:
-        coinsToBuy.append(coin_symbol)
+        coinsExcluded.append(coin_symbol)
         print(f"[EXCLUDED] {coin_symbol} is on the exclude list "
               f"({TRADING_MODE}); no order placed, no budget committed.")
         return
@@ -2113,8 +3183,53 @@ def get_filtered_coinbase_coins() -> list:
     
     if not USE_COIN_FILTERING:
         return all_coins
-    
+
     return apply_coin_filters(all_coins)
+
+
+def apply_polymarket_filter_to_candidates(candidates, llm_coins, enabled,
+                                          filter_fn=None):
+    """WS1: apply the Polymarket filter to a unioned hybrid-discovery candidate set.
+
+    The legacy filtered-discovery path (get_filtered_coinbase_coins ->
+    apply_coin_filters -> filter_coins_by_polymarket) only runs when santiment
+    is NOT in --discovery, so hybrid discovery bypassed the Polymarket filter
+    entirely -- for both llm- and santiment-sourced coins -- while the banner
+    still advertised it as enabled. This helper restores the filter at a
+    testable seam.
+
+    Args:
+        candidates: unioned, de-duplicated, upper-cased candidate symbols
+            (llm coins first, then santiment).
+        llm_coins: the raw llm-discovery symbols (any case), used only to label
+            the source of removed coins: a coin present here is 'llm', else
+            'santiment' -- matching main()'s per-coin discovery_source logic
+            (llm coins are unioned first, so llm wins on overlap).
+        enabled: POLYMARKET_FILTER. When False this is a no-op passthrough and
+            filter_fn is never called (so the banner/summary lines, gated on
+            the same flag, stay honest).
+        filter_fn: injection seam for tests; defaults to
+            filter_coins_by_polymarket. Failure semantics mirror the legacy
+            path -- a Polymarket API error makes filter_coins_by_polymarket
+            return [] (get_active_events swallows the RequestException and
+            returns []), so every candidate is dropped (fail-closed). The
+            empty result then flows into the existing "no discovered coins"
+            abort; the filter never fails open onto an unfiltered set.
+
+    Returns:
+        (kept, removed) where kept is the filtered candidate list (order
+        preserved) and removed is a list of (symbol, source) tuples.
+    """
+    if not enabled or not candidates:
+        return list(candidates), []
+    if filter_fn is None:
+        filter_fn = filter_coins_by_polymarket
+    llm_upper = {c.upper() for c in llm_coins}
+    kept = filter_fn(candidates, verbose=True)
+    kept_set = set(kept)
+    removed = [(c, 'llm' if c in llm_upper else 'santiment')
+               for c in candidates if c not in kept_set]
+    return kept, removed
 
 
 
@@ -2462,7 +3577,7 @@ def main():
     file read them at call time.
     """
     global args, pytrends
-    global coinsToBuy, coinsToSell, coinsToHold, coin_vote_outcomes
+    global coinsToBuy, coinsToSell, coinsToHold, coinsExcluded, coin_vote_outcomes
     global TRADING_MODE, WHATIF_MODE, LLM_MODE, PRIMARY_LLM, COMPARE_LLMS
     global REQUIRE_CONSENSUS, INTEGRATION_TIEBREAKER, LOG_INTEGRATION_ROUNDS
     global SHOW_PANEL_RESPONSES
@@ -2470,6 +3585,7 @@ def main():
     global CHAINS_RAW, CHAINS, CATEGORIES_RAW, CATEGORIES, POLYMARKET_FILTER
     global USE_COIN_FILTERING, DEX_MODE, discovery_default_used, DISCOVERY_RAW
     global DISCOVERY_METHODS, USE_LLM_DISCOVERY, USE_SANTIMENT_DISCOVERY
+    global DISCOVERY_UNIVERSE
     global DEX_SLIPPAGE, TEST_WALLET, EXCHANGE_MODE
     global EXPORT_CANDIDATES, CANDIDATE_DIR, CANDIDATE_BLOCKCHAIN
     global EXPORT_RECOMMENDATIONS, RELAX_DISCOVERY_FAILURE
@@ -2478,6 +3594,7 @@ def main():
     global whatif_buys, whatif_sells, trader
     global NOTIONAL_USD, RUN_SPEND_CAP_USD, spend_tracker, DAILY_SPEND_CAP_USD
     global RUN_ID, daily_cap_blocked
+    global QUIET_MODE, INSTANCE_LOCK, DETERMINISTIC_SAMPLING
 
     # TS-3: .env is loaded HERE, as main()'s first action -- never at import
     # time. It must precede parse_args() (whose defaults read os.environ) and
@@ -2497,8 +3614,51 @@ def main():
         print(dotenv_live_warning)
         print("!" * 66 + "\n")
 
+    # WS8 investigation: the owner sees stray `[INFO] HTTP Request: ...`
+    # lines on the console. This codebase never calls logging.basicConfig()
+    # itself (confirmed: no logging import/config anywhere in this module's
+    # import chain before this point) -- the root cause is a side effect of
+    # `marketdata`'s top-level `from fibonacci_analyzer import ...`:
+    # fibonacci_analyzer.py runs `logging.basicConfig(level=logging.INFO,
+    # ...)` at IMPORT time (for its own standalone-CLI usage), which installs
+    # an INFO-level StreamHandler on the ROOT logger as a side effect of
+    # simply importing this bot. httpx (used internally by the coinbase and
+    # google-genai SDKs) logs its own "HTTP Request: ..." line at INFO and,
+    # having no handler/level of its own, propagates straight through that
+    # root handler. Confirmed by reproduction (import crypto_trading_bot,
+    # then emit an httpx-logger INFO record -- it printed with the exact
+    # `[INFO] HTTP Request: ...` shape before this line, and silently
+    # disappears after it). Targeted fix: raise ONLY httpx's own level, so
+    # fibonacci_analyzer's own INFO logging (useful for its CLI tool) and any
+    # other library's warnings/errors are untouched.
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+
     # Parse command-line arguments
     args = parse_args()
+
+    # WS-6: --print-config / --plan are pure config introspection. Handle them
+    # HERE -- right after parse_args() and the .env load above, but BEFORE any
+    # network/LLM call, before the single-instance lock, before the analyzer
+    # summary, and before any history write. They resolve the full config
+    # (reusing get_config_source provenance + the same resolution helpers the
+    # run uses) and exit 0. Secret values are never printed.
+    if getattr(args, 'print_config', False) or getattr(args, 'plan', False):
+        emit_config_report_and_exit(args, os.environ, include_plan=args.plan)
+
+    # WS8: quiet mode gate. Read once here; buy_something (and any other
+    # noisy-chatter print site) checks this global directly rather than
+    # threading a parameter through -- same pattern as every other
+    # args-derived module global in this function.
+    QUIET_MODE = args.quiet
+
+    # WS5: resolve the deterministic-sampling flag ONCE, and mirror it into
+    # os.environ so the traders constructed further down (each reads
+    # DETERMINISTIC_SAMPLING at __init__) and the recorded per-provider sampling
+    # (_resolved_sampling reads this global) can never disagree. Writing both
+    # 'true'/'false' explicitly makes a --deterministic-sampling flag with no
+    # env var still reach the traders.
+    DETERMINISTIC_SAMPLING = bool(args.deterministic_sampling)
+    os.environ['DETERMINISTIC_SAMPLING'] = 'true' if DETERMINISTIC_SAMPLING else 'false'
 
     # Initialize pytrends with desired language and timezone
 
@@ -2511,6 +3671,11 @@ def main():
     coinsToSell = []
 
     coinsToHold = []
+
+    # WS2: coins skipped by the exclusion list (coinsToExclude). Kept separate
+    # from coinsToBuy so the run summary's "Coins to buy" is truthful -- an
+    # excluded coin is never bought or simulated.
+    coinsExcluded = []
 
     # Per-coin final-vote outcomes for the RUN SUMMARY vote table (see
     # format_vote_outcomes_line). Appended once per coin, right after the
@@ -2539,6 +3704,17 @@ def main():
         for line in live_downgrade_notice.splitlines():
             print("[LIVE LOCK] " + line)
         print("!" * 66 + "\n")
+
+    # WS-2: single-instance process lock. Acquired HERE -- after arg/config
+    # resolution (trading mode is known) and BEFORE any network/LLM/ledger
+    # work below -- so a second concurrent process of this mode is refused
+    # before it can touch the exchange or the money record. This is the
+    # outermost lock (docs/INVARIANTS.md (b)); the returned handle is kept in
+    # a module global so it lives for the whole process (flock releases on
+    # process death). None is a legitimate value (whatif --allow-concurrent).
+    global INSTANCE_LOCK
+    INSTANCE_LOCK = acquire_instance_lock_or_exit(
+        TRADING_MODE, allow_concurrent=getattr(args, 'allow_concurrent', False))
 
     # T10: fire-and-forget history-summary analyzer pass. Imported lazily (so
     # `import crypto_trading_bot` stays side-effect-free) and fully guarded --
@@ -2686,6 +3862,10 @@ def main():
             sys.exit(1)
     USE_LLM_DISCOVERY = 'llm' in DISCOVERY_METHODS
     USE_SANTIMENT_DISCOVERY = 'santiment' in DISCOVERY_METHODS
+    # WS9: universe phrase for the LLM discovery prompt (build_discovery_prompt
+    # reads this same resolved value; the banner line below does too, so
+    # neither can drift from what the prompt actually asked for).
+    DISCOVERY_UNIVERSE = args.discovery_universe
     DEX_SLIPPAGE = args.slippage
     TEST_WALLET = args.test_wallet
     EXCHANGE_MODE = "solana-dex" if DEX_MODE else "cex"
@@ -2805,7 +3985,16 @@ def main():
     # Coinbase credentials are loaded from JSON file (cdp_api_key.json)
     # Can be overridden with COINBASE_CREDENTIALS_FILE env var
 
-    coinsToExclude = {'TRUMP'}
+    # WS9: configurable exclusion list (was hardcoded {'TRUMP'}). Default
+    # stays exactly 'TRUMP' (see --exclude-coins), so an unset flag/env run
+    # behaves identically to before. An explicit `--exclude-coins=` (empty)
+    # is a deliberate "no exclusions" override -- flagged loudly below when
+    # live mode is armed, since it removes a standing safety guard.
+    coinsToExclude = set(parse_exclude_coins(args.exclude_coins))
+    if not coinsToExclude and not WHATIF_MODE:
+        print("[CONFIG NOTICE] --exclude-coins is explicitly empty: LIVE mode "
+              "is armed with NO exclusion list. Every discovered/specified "
+              "coin is eligible for a real order.")
 
     # What-if mode tracking
     whatif_buys = 0
@@ -2889,7 +4078,13 @@ def main():
     if USE_COIN_DISCOVERY:
         discovery_source = get_config_source('--discovery', 'DISCOVERY')
         print(f"Coin Selection: Discovery Mode [{coins_source}]")
-        print(f"Discovery Methods: {', '.join(DISCOVERY_METHODS)} [{discovery_source}]")
+        # WS9: banner honesty -- when llm discovery is active, disclose the
+        # universe phrase actually sent in the prompt (same DISCOVERY_UNIVERSE
+        # build_discovery_prompt reads; never a second literal).
+        discovery_methods_display = ', '.join(DISCOVERY_METHODS)
+        if USE_LLM_DISCOVERY:
+            discovery_methods_display += f" (universe: {DISCOVERY_UNIVERSE})"
+        print(f"Discovery Methods: {discovery_methods_display} [{discovery_source}]")
     else:
         print(f"Coin Selection: {', '.join(ANALYZE_COINS)} [{coins_source}]")
 
@@ -2921,6 +4116,12 @@ def main():
     if LLM_MODE in ['compare', 'integrate']:
         tiebreaker_source = get_config_source('--tiebreaker', 'INTEGRATION_TIEBREAKER')
         print(f"Tiebreaker: {INTEGRATION_TIEBREAKER} [{tiebreaker_source}]")
+
+    # WS9: exclusion list + provenance (matches the banner's [--flag]/[ENV
+    # env]/[default] style used throughout).
+    exclude_coins_source = get_config_source('--exclude-coins', 'EXCLUDE_COINS')
+    exclude_coins_display = ', '.join(sorted(coinsToExclude)) if coinsToExclude else '(none)'
+    print(f"Exclude Coins: {exclude_coins_display} [{exclude_coins_source}]")
 
     print("="*50 + "\n")
 
@@ -2969,7 +4170,9 @@ def main():
         print("")
 
         for i, coin_symbol in enumerate(ANALYZE_COINS):
-            print(f"\n--- Analyzing coin {i+1}/{len(ANALYZE_COINS)}: {coin_symbol} ---")
+            # WS8: per-coin progress banner is chatter, not a safety line.
+            if not QUIET_MODE:
+                print(f"\n--- Analyzing coin {i+1}/{len(ANALYZE_COINS)}: {coin_symbol} ---")
 
             # T9: build the real market-data block once for this coin
             # (Coinbase OHLCV summary + Fibonacci levels, plus demoted Google
@@ -3033,7 +4236,12 @@ def main():
                     block_reason=decision.block_reason,
                     majority_action=decision.majority_action,
                     trading_mode=TRADING_MODE,
-                    run_id=RUN_ID
+                    run_id=RUN_ID,
+                    # WS5: honest bid/ask/spread captured at record time
+                    # (best-effort, post-decision, never blocks the decision).
+                    **_bid_ask_spread_kwargs(coin_symbol),
+                    # WS3: full decision record (per-LLM confidence) + provenance
+                    **_record_provenance(coin_symbol, decision)
                 )
 
             # T3(c) mode-aware trade gate: unanimity is required to TRADE under
@@ -3078,6 +4286,21 @@ def main():
                 discovered_coins.append(coin.upper())
                 seen.add(coin.upper())
 
+        # WS1: apply the Polymarket filter to the UNIONED candidate set. In
+        # hybrid discovery mode the legacy filter path
+        # (get_filtered_coinbase_coins -> apply_coin_filters) is skipped
+        # (gated `and not USE_SANTIMENT_DISCOVERY` above), so without this the
+        # Polymarket filter was silently bypassed for BOTH llm- and
+        # santiment-sourced candidates while the banner still advertised
+        # "Polymarket Filter: Enabled". Failure semantics mirror the legacy
+        # path -- see the helper docstring.
+        discovered_coins, removed_by_polymarket = \
+            apply_polymarket_filter_to_candidates(
+                discovered_coins, llm_coins, POLYMARKET_FILTER)
+        for coin, source in removed_by_polymarket:
+            print(f"[POLYMARKET FILTER] Removed {coin} (source: {source}) "
+                  f"-- no active Polymarket market")
+
         # Cap at 6 coins (3 LLM + 3 Santiment max)
         if len(discovered_coins) > 6:
             print(f"Capping discovered coins from {len(discovered_coins)} to 6")
@@ -3113,7 +4336,10 @@ def main():
             elif coin_symbol in [c.upper() for c in santiment_coins]:
                 discovery_source = "santiment"
 
-            print(f"\n--- Analyzing discovered coin {i+1}/{len(discovered_coins)}: {coin_symbol} (from {discovery_source}) ---")
+            # WS8: per-coin progress banner is chatter, not a safety line.
+            if not QUIET_MODE:
+                print(f"\n--- Analyzing discovered coin {i+1}/{len(discovered_coins)}: "
+                      f"{coin_symbol} (from {discovery_source}) ---")
 
             # T9: build the real market-data block once for this coin
             # (Coinbase OHLCV summary + Fibonacci levels, plus demoted Google
@@ -3175,7 +4401,12 @@ def main():
                     block_reason=decision.block_reason,
                     majority_action=decision.majority_action,
                     trading_mode=TRADING_MODE,
-                    run_id=RUN_ID
+                    run_id=RUN_ID,
+                    # WS5: honest bid/ask/spread captured at record time
+                    # (best-effort, post-decision, never blocks the decision).
+                    **_bid_ask_spread_kwargs(coin_symbol),
+                    # WS3: full decision record (per-LLM confidence) + provenance
+                    **_record_provenance(coin_symbol, decision)
                 )
 
             # T3(c) mode-aware trade gate: unanimity is required to TRADE under
@@ -3185,6 +4416,16 @@ def main():
             dispatched = gate_and_maybe_buy(decision, final_action, coin_symbol)
             coin_vote_outcomes.append(
                 (coin_symbol, vote_outcome_label(final_action, dispatched)))
+
+    # WS3: persist this run's frozen per-coin market blocks once, after
+    # analysis. Records already carry market_block_ref (the promise); this
+    # writes the file it points at. Best-effort by contract (write_market_blocks
+    # warns and returns None on failure) -- a snapshot write must never abort or
+    # alter a trading run.
+    _mb_ref = historyutil.write_market_blocks(RUN_ID, dict(MARKET_BLOCK_CACHE))
+    if _mb_ref:
+        print(f"[HISTORY] Wrote market-block snapshot for "
+              f"{len(MARKET_BLOCK_CACHE)} coin(s) -> {_mb_ref}")
 
     # Print summary
     print("\n" + "="*50)
@@ -3214,6 +4455,10 @@ def main():
         print(f"Candidate Export: Enabled ({EXPORT_RECOMMENDATIONS} recommendations)")
         print(f"Candidate Dir: {CANDIDATE_DIR}")
     print(f"Coins to buy: {coinsToBuy}")
+    # WS2: excluded coins are reported distinctly -- they are never bought or
+    # simulated, so they must not inflate "Coins to buy" above.
+    if coinsExcluded:
+        print(f"Excluded (not bought): {coinsExcluded}")
     # Compact per-coin vote outcome table (coin_vote_outcomes is populated by
     # both analysis loops, right after the trade gate runs, in analysis
     # order). Skipped entirely on a zero-coin run rather than printing a bare
@@ -3244,6 +4489,39 @@ def main():
         print(f"Simulated BUY orders: {whatif_buys}")
         print("No actual trades were executed.")
     print("="*50)
+
+    # WS8: machine-readable run summary. Off by default (args.json_summary is
+    # None unless --json-summary was given); built from the SAME in-memory
+    # state the console RUN SUMMARY above just printed, never re-derived from
+    # history files. Best-effort (write_run_summary never raises) -- this
+    # NEVER blocks or alters trading, same contract as write_market_blocks.
+    json_summary_path = resolve_json_summary_path(args.json_summary, RUN_ID)
+    if json_summary_path:
+        summary = build_run_summary(
+            run_id=RUN_ID,
+            trading_mode=TRADING_MODE,
+            llm_mode=LLM_MODE,
+            primary_llm=PRIMARY_LLM,
+            compare_llms=COMPARE_LLMS,
+            use_coin_discovery=USE_COIN_DISCOVERY,
+            discovery_methods=DISCOVERY_METHODS,
+            analyze_coins=ANALYZE_COINS,
+            coins_to_buy=coinsToBuy,
+            coins_excluded=coinsExcluded,
+            coin_vote_outcomes=coin_vote_outcomes,
+            spend_tracker=spend_tracker,
+            daily_spend_cap_usd=DAILY_SPEND_CAP_USD,
+            daily_cap_blocked=daily_cap_blocked,
+            whatif_mode=WHATIF_MODE,
+            whatif_buys=whatif_buys,
+            # WS4: per-coin market-data status accumulated during the run.
+            data_quality_by_coin=dict(DATA_QUALITY_CACHE),
+            # WS9: recorded only when llm discovery is actually in use.
+            discovery_universe=DISCOVERY_UNIVERSE,
+        )
+        written_path = write_run_summary(json_summary_path, summary)
+        if written_path:
+            print(f"[HISTORY] Wrote run summary -> {written_path}")
 
 
 if __name__ == "__main__":

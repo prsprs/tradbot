@@ -5,10 +5,17 @@ from modelregistry import get_model
 
 import panelprompts
 
+import sampling
+
 import voteschema
 
 
 class OpenAITrader:
+    # WS5: class-level default so `**self._sampling_params` is always safe --
+    # incl. instances built via __new__ (the request-shape tests) that skip
+    # __init__. {} => byte-identical requests; __init__ overrides per-instance.
+    _sampling_params = {}
+
     def __init__(self):
         """Initialize the OpenAI client with API credentials from environment."""
         api_key = os.environ.get('OPENAI_API_KEY')
@@ -21,14 +28,31 @@ class OpenAITrader:
         # Use "cryptocurrency" when coins are specified, "meme coin" for discovery mode
         analyze_coins = os.environ.get('ANALYZE_COINS', '').strip()
         self.coin_type = "cryptocurrency" if analyze_coins else "meme coin"
+        # WS5: sampling params for ANALYSIS requests. gpt-5.x REJECTS temperature
+        # (AGENTS.md gotcha) and its seed behavior on the reasoning path is
+        # unverified, so sampling.request_params('openai', ...) returns {} even
+        # under --deterministic-sampling -> requests stay byte-identical and the
+        # record honestly says 'provider-default'. Kept as a splat so a future
+        # verified knob is a one-line table change with no call-site edit.
+        self._sampling_params = sampling.request_params(
+            'openai', sampling.is_enabled())
     
-    def send_recommendation_request(self, dex_mode: bool = False):
-        """Get cryptocurrency recommendations from OpenAI."""
+    def send_recommendation_request(self, dex_mode: bool = False, phrase: str = 'meme coins'):
+        """Get cryptocurrency recommendations from OpenAI.
+
+        WS9b: `phrase` is the resolved --discovery-universe phrase (default
+        'meme coins' == today's hardcoded text, so the .replace() below is a
+        no-op unless a caller passes a different universe phrase; resolved by
+        crypto_trading_bot's get_primary_recommendation, mirroring
+        build_discovery_prompt for the gemini path). See
+        tests/test_discovery_universe.py.
+        """
         if dex_mode:
             prompt = "What 3 Solana blockchain meme coins are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Only include coins tradeable on Solana DEX aggregators like Jupiter (e.g., BONK, WIF, POPCAT, JUP, PYTH, RAY, ORCA, MANGO, or other Solana SPL tokens). Do NOT include coins on other chains like Base, Ethereum, or BNB. Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you are aware of."
         else:
             prompt = "What 3 meme coins listed on the Coinbase exchange are major crypto analysts and influencers online currently discussing as having potential for short-term price appreciation? Once you have identified the top 3 being discussed, number them and indicate which show the most positive social media sentiment in the last 4 hours. Put 3 plus signs around EACH coin symbol separately at the end of your response. If you cannot identify any coins being actively discussed, include ***FAILED*** at the end of your output. Base your response on actual analyst discussions you are aware of."
-        
+        prompt = prompt.replace('meme coins', phrase, 1)
+
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=4096,
@@ -57,6 +81,7 @@ class OpenAITrader:
             model=self.model,
             max_completion_tokens=4096,
             response_format=voteschema.openai_response_format(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",
@@ -77,6 +102,7 @@ class OpenAITrader:
             model=self.model,
             max_completion_tokens=4096,
             response_format=voteschema.openai_response_format(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",
@@ -97,6 +123,7 @@ class OpenAITrader:
             model=self.model,
             max_completion_tokens=4096,
             response_format=voteschema.openai_response_format(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",
@@ -117,6 +144,7 @@ class OpenAITrader:
             model=self.model,
             max_completion_tokens=4096,
             response_format=voteschema.openai_response_format(),
+            **self._sampling_params,
             messages=[
                 {
                     "role": "user",

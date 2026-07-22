@@ -17,6 +17,7 @@ ledger, no network / no LLM / no orders) and tests/test_trade_gate.py
 globals don't exist as module attributes until main() runs, hence
 raising=False).
 """
+import json
 import sys
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def buy_calls(monkeypatch, scratch_ledger):
     monkeypatch.setattr(bot, 'DAILY_SPEND_CAP_USD', 15.0, raising=False)
     monkeypatch.setattr(bot, 'spend_tracker', bot.SpendTracker(10.0, 5.0), raising=False)
     monkeypatch.setattr(bot, 'coinsToBuy', [], raising=False)
+    monkeypatch.setattr(bot, 'coinsExcluded', [], raising=False)
     monkeypatch.setattr(bot, 'coinsToExclude', set(), raising=False)
     monkeypatch.setattr(bot, 'whatif_buys', 0, raising=False)
     monkeypatch.setattr(bot, 'daily_cap_blocked', 0, raising=False)
@@ -180,3 +182,208 @@ def test_wiring_blocked_decision_labels_blocked(buy_calls):
     dispatched = bot.gate_and_maybe_buy(dec, None, 'ETH')
     assert bot.vote_outcome_label(None, dispatched) == 'BLOCKED'
     assert buy_calls == []
+
+
+# ============================================================================
+# WS8a: --json-summary path resolution (pure function, no I/O)
+# ============================================================================
+
+def test_resolve_json_summary_path_none_means_disabled():
+    """The flag was never given (args.json_summary defaults to None) ->
+    summary generation is skipped entirely."""
+    assert bot.resolve_json_summary_path(None, 'run_x') is None
+
+
+def test_resolve_json_summary_path_bare_flag_defaults_under_history_dir(
+        monkeypatch, tmp_path):
+    """Bare `--json-summary` (argparse const='') resolves to
+    <dir-of-RECOMMENDATIONS_FILE>/run_summaries/<run_id>.json -- the same
+    dir-resolution write_market_blocks uses for market_blocks/, so a
+    redirected/scratch HISTORY_DIR is respected."""
+    import historyutil
+    monkeypatch.setattr(
+        historyutil, 'RECOMMENDATIONS_FILE',
+        str(tmp_path / 'recommendations.json'), raising=False)
+    path = bot.resolve_json_summary_path('', 'run_20260721T000000Z_test01')
+    assert path == str(
+        tmp_path / 'run_summaries' / 'run_20260721T000000Z_test01.json')
+
+
+def test_resolve_json_summary_path_explicit_path_used_verbatim():
+    assert bot.resolve_json_summary_path('/tmp/custom/summary.json', 'run_x') \
+        == '/tmp/custom/summary.json'
+
+
+# ============================================================================
+# WS8b: build_run_summary -- pure, reuses in-memory run state
+# ============================================================================
+
+def _build_summary(**overrides):
+    kwargs = dict(
+        run_id='run_20260721T000000Z_test01',
+        trading_mode='whatif',
+        llm_mode='compare',
+        primary_llm='gemini',
+        compare_llms=['gemini', 'claude'],
+        use_coin_discovery=False,
+        discovery_methods=['llm'],
+        analyze_coins=['BTC', 'ETH'],
+        coins_to_buy=['BTC'],
+        coins_excluded=['TRUMP'],
+        coin_vote_outcomes=[('BTC', 'BUY->ordered'), ('ETH', 'HOLD'),
+                            ('TRUMP', 'BUY->ordered')],
+        spend_tracker=bot.SpendTracker(10.0, 5.0),
+        daily_spend_cap_usd=15.0,
+        daily_cap_blocked=0,
+        whatif_mode=True,
+        whatif_buys=1,
+    )
+    kwargs.update(overrides)
+    return bot.build_run_summary(**kwargs)
+
+
+def test_build_run_summary_shape_and_content():
+    summary = _build_summary()
+    assert summary['run_id'] == 'run_20260721T000000Z_test01'
+    assert summary['trading_mode'] == 'whatif'
+    assert summary['panel'] == {
+        'llm_mode': 'compare', 'primary_llm': 'gemini',
+        'compare_llms': ['gemini', 'claude'],
+    }
+    assert summary['discovery']['use_coin_discovery'] is False
+    assert summary['discovery']['analyze_coins'] == ['BTC', 'ETH']
+    assert summary['discovery']['discovery_methods'] == []  # inert in coin-choice mode
+    coins = {c['coin']: c for c in summary['coins']}
+    assert coins['BTC'] == {'coin': 'BTC', 'outcome': 'BUY->ordered',
+                            'bought': True, 'excluded': False}
+    assert coins['TRUMP'] == {'coin': 'TRUMP', 'outcome': 'BUY->ordered',
+                              'bought': False, 'excluded': True}
+    assert summary['spend']['committed_usd'] == 0.0
+    assert summary['spend']['run_spend_cap_usd'] == 10.0
+    assert summary['spend']['daily_spend_cap_usd'] == 15.0
+    assert summary['orders'] == {'live_buys': 0, 'simulated_buys': 1}
+    # ISO 8601 UTC timestamp, parseable
+    import datetime
+    datetime.datetime.fromisoformat(summary['timestamp'])
+
+
+def test_build_run_summary_discovery_mode_reports_methods_not_coins():
+    summary = _build_summary(use_coin_discovery=True, discovery_methods=['llm', 'santiment'])
+    assert summary['discovery']['discovery_methods'] == ['llm', 'santiment']
+    assert summary['discovery']['analyze_coins'] == []
+
+
+def test_build_run_summary_live_mode_counts_live_not_simulated_buys():
+    summary = _build_summary(whatif_mode=False, whatif_buys=0,
+                             coins_to_buy=['BTC', 'ETH'])
+    assert summary['orders'] == {'live_buys': 2, 'simulated_buys': 0}
+
+
+# ============================================================================
+# WS8c: write_run_summary -- atomic write, best-effort (never raises)
+# ============================================================================
+
+def test_write_run_summary_writes_valid_json(tmp_path):
+    path = str(tmp_path / 'run_summaries' / 'r1.json')
+    summary = {'run_id': 'r1', 'coins': []}
+    result = bot.write_run_summary(path, summary)
+    assert result == path
+    with open(path) as f:
+        assert json.load(f) == summary
+
+
+def test_write_run_summary_never_raises_on_failure(tmp_path):
+    """A write failure (parent path component is a FILE, not a directory) is
+    caught, warned, and returns None -- writing the summary must never be
+    able to abort a trading run."""
+    blocker = tmp_path / 'blocker'
+    blocker.write_text('not a directory')
+    bad_path = str(blocker / 'sub' / 'r1.json')
+    result = bot.write_run_summary(bad_path, {'run_id': 'r1'})
+    assert result is None
+
+
+# ============================================================================
+# WS8d: --quiet suppresses product-detail dumps, never safety lines
+# ============================================================================
+
+def test_quiet_mode_suppresses_product_json_dumps(scratch_ledger, monkeypatch):
+    """Real buy_something whatif path (same fixture as
+    tests/test_trade_gate.py::test_whatif_simulated_fill_records_estimated_fees)
+    with QUIET_MODE on: the product-detail JSON dump and progress header must
+    not appear on stdout."""
+    class FakeProduct:
+        price = '100.0'
+
+        def to_dict(self):
+            return {'price': '100.0'}
+
+    class FakeTrader:
+        def get_product_details(self, product_id):
+            return FakeProduct()
+
+    monkeypatch.setattr(bot, 'trader', FakeTrader(), raising=False)
+    monkeypatch.setattr(bot, 'WHATIF_MODE', True, raising=False)
+    monkeypatch.setattr(bot, 'DEX_MODE', False, raising=False)
+    monkeypatch.setattr(bot, 'TRADING_MODE', 'whatif', raising=False)
+    monkeypatch.setattr(bot, 'NOTIONAL_USD', 5.0, raising=False)
+    monkeypatch.setattr(bot, 'RUN_ID', 'run_20260721T000000Z_test02', raising=False)
+    monkeypatch.setattr(bot, 'QUIET_MODE', True, raising=False)
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        bot.buy_something('BTC')
+    out = buf.getvalue()
+    assert 'Getting coin Product Details' not in out
+    assert '"price": "100.0"' not in out
+
+
+def test_quiet_mode_does_not_suppress_product_dumps_by_default(
+        scratch_ledger, monkeypatch):
+    """Sanity pin: without --quiet (QUIET_MODE False, the module default),
+    the product-detail dump is unchanged from before WS8."""
+    class FakeProduct:
+        price = '100.0'
+
+        def to_dict(self):
+            return {'price': '100.0'}
+
+    class FakeTrader:
+        def get_product_details(self, product_id):
+            return FakeProduct()
+
+    monkeypatch.setattr(bot, 'trader', FakeTrader(), raising=False)
+    monkeypatch.setattr(bot, 'WHATIF_MODE', True, raising=False)
+    monkeypatch.setattr(bot, 'DEX_MODE', False, raising=False)
+    monkeypatch.setattr(bot, 'TRADING_MODE', 'whatif', raising=False)
+    monkeypatch.setattr(bot, 'NOTIONAL_USD', 5.0, raising=False)
+    monkeypatch.setattr(bot, 'RUN_ID', 'run_20260721T000000Z_test03', raising=False)
+    monkeypatch.setattr(bot, 'QUIET_MODE', False, raising=False)
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        bot.buy_something('BTC')
+    out = buf.getvalue()
+    assert 'Getting coin Product Details' in out
+    assert '"price": "100.0"' in out
+
+
+def test_quiet_mode_never_suppresses_exclusion_safety_line(monkeypatch):
+    """[EXCLUDED] is a safety line (must survive --quiet). maybe_execute_buy
+    prints it unconditionally regardless of QUIET_MODE -- this pins that the
+    quiet gate was never applied to it."""
+    monkeypatch.setattr(bot, 'coinsToExclude', {'TRUMP'}, raising=False)
+    monkeypatch.setattr(bot, 'coinsExcluded', [], raising=False)
+    monkeypatch.setattr(bot, 'QUIET_MODE', True, raising=False)
+    monkeypatch.setattr(bot, 'TRADING_MODE', 'whatif', raising=False)
+
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        bot.maybe_execute_buy('TRUMP')
+    assert '[EXCLUDED]' in buf.getvalue()

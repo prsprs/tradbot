@@ -11,6 +11,7 @@ distinct from the history/ package (history/recorder.py's HistoryRecorder),
 which is llm_compare.py's recorder. See AGENTS.md's "check both stacks" rule.
 """
 
+import hashlib
 import json
 import os
 import uuid
@@ -45,6 +46,78 @@ def format_price(price: float, symbol: str = '$') -> str:
 def ensure_history_dir():
     """Create history directory if it doesn't exist."""
     os.makedirs(HISTORY_DIR, exist_ok=True)
+
+
+# === WS3 (schema v2) provenance helpers =====================================
+
+def prompt_hash(prompt: str) -> str:
+    """sha256[:16] hex digest of an analysis prompt (WS3 provenance).
+
+    Deliberately mirrors history/recorder.HistoryRecorder._hash_prompt so the
+    two history stacks produce identical hashes for identical prompt bytes.
+    """
+    return hashlib.sha256(prompt.encode()).hexdigest()[:16]
+
+
+def market_block_ref(run_id: str) -> str:
+    """Relative ref stored on records, pointing at this run's market-block file
+    (`market_blocks/<run_id>.json`). Relative so it is portable across the
+    per-user/scratch HISTORY_DIR redirections."""
+    return os.path.join('market_blocks', f'{run_id}.json')
+
+
+def market_block_hash(block_text: Optional[str]) -> Optional[str]:
+    """WS5: sha256[:16] of the EXACT per-coin market-block string.
+
+    The fingerprint that lets a reader distinguish "same data snapshot, different
+    vote" (model instability) from "different snapshot". It hashes the identical
+    string that write_market_blocks persists into
+    market_blocks/<run_id>.json[coin_symbol] (that sidecar stores
+    {coin: block_text} verbatim), so a reader can recompute
+    market_block_hash(blocks[coin]) and verify it against the record. Returns
+    None for a missing/empty block (nothing was cached for this coin), which
+    keeps the record byte-identical to a pre-WS5 record for that coin.
+    """
+    if not block_text:
+        return None
+    return hashlib.sha256(block_text.encode()).hexdigest()[:16]
+
+
+def write_market_blocks(run_id: str, blocks: Dict[str, str]) -> Optional[str]:
+    """Persist this run's frozen per-coin market blocks (WS3).
+
+    Writes {coin: block_text} to <HISTORY_DIR>/market_blocks/<run_id>.json and
+    returns the relative ref (see market_block_ref). HISTORY_DIR redirection is
+    respected exactly like recommendations.json -- the directory is derived from
+    RECOMMENDATIONS_FILE at call time, so a scratch/what-if HISTORY_DIR (or a
+    test that monkeypatches RECOMMENDATIONS_FILE) lands the file in the same
+    redirected tree. Atomic (temp + os.replace) so a crash never leaves a
+    truncated file.
+
+    Best-effort by contract: a write failure (or nothing to write) returns None
+    with a warning and NEVER raises -- persisting the snapshot must not be able
+    to abort a trading run.
+    """
+    if not blocks:
+        return None
+    try:
+        directory = os.path.join(os.path.dirname(RECOMMENDATIONS_FILE) or '.',
+                                 'market_blocks')
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, f'{run_id}.json')
+        tmp = os.path.join(directory,
+                           f'.market_blocks.{os.getpid()}.{uuid.uuid4().hex}.tmp')
+        with open(tmp, 'w') as f:
+            json.dump(blocks, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return market_block_ref(run_id)
+    except Exception as e:
+        print(f"[HISTORY WARN] could not write market blocks for run "
+              f"{run_id}: {e} (records still reference the path; snapshot "
+              "missing for this run)")
+        return None
 
 
 def _quarantine_corrupt_recommendations() -> Optional[str]:
@@ -137,7 +210,17 @@ def create_recommendation_record(
     block_reason: Optional[str] = None,
     majority_action: Optional[str] = None,
     trading_mode: str = 'unknown',
-    run_id: Optional[str] = None
+    run_id: Optional[str] = None,
+    schema_version: Optional[int] = None,
+    vote_details: Optional[Dict[str, Dict]] = None,
+    prompt_hash: Optional[str] = None,
+    models: Optional[Dict[str, str]] = None,
+    market_block_ref: Optional[str] = None,
+    market_block_present: Optional[bool] = None,
+    market_block_hash: Optional[str] = None,
+    spread_pct: Optional[float] = None,
+    sampling: Optional[Dict[str, object]] = None,
+    data_quality: Optional[Dict[str, Dict]] = None
 ) -> Dict:
     """Create a recommendation record with all required fields.
 
@@ -173,6 +256,38 @@ def create_recommendation_record(
             Validated against VALID_TRADING_MODES; raises ValueError otherwise.
         run_id: Identifier shared by every record written by one process
             invocation (e.g. 'run_20260718T195400Z'), or None.
+        schema_version: WS3 record-schema version (2 for full-decision-record
+            writers). Optional; absent on legacy v1 records, which are treated
+            as v1 implicitly. All WS3 fields below are optional and default to
+            None, so a caller omitting them produces a byte-identical v1 record.
+        vote_details: Per-LLM {action, confidence} on ALL records (directional
+            and blocked). action is the vote string or None for an abstain;
+            confidence is a 0..1 float or None (abstains / legacy parse paths).
+        prompt_hash: sha256[:16] of the primary analysis prompt actually sent
+            (see prompt_hash()).
+        models: Panelist -> resolved model ID (from modelregistry) that actually
+            ran, tiebreaker included when used.
+        market_block_ref: Relative path to this run's frozen market-block file
+            (see market_block_ref()).
+        market_block_present: True iff this coin's frozen market block was
+            captured in the referenced file.
+        market_block_hash: WS5 sha256[:16] of this coin's EXACT market-block
+            string (see market_block_hash()) -- the decision fingerprint a
+            reader recomputes from the sidecar to verify. Optional; None (e.g.
+            no block cached) keeps the byte-identical record shape.
+        spread_pct: WS5 derived bid/ask spread as ((ask-bid)/mid*100), or None
+            when honest bid AND ask were not both available (never fabricated).
+        sampling: WS5 per-provider {llm: sampling} where sampling is the dict of
+            sampling params actually sent on that panelist's analysis request
+            (e.g. {'temperature': 0}) or the string 'provider-default' when the
+            code set nothing. Records what was ACTUALLY sent, never an invented
+            value. Optional; omitted keeps the byte-identical record shape.
+        data_quality: WS4 (cycle 2) per-source status of the market-data block
+            this coin's panel actually reasoned over, as
+            {source: {'status': 'ok'|'degraded'|'failed'|'skipped',
+            'detail': str}} over coinbase/fibonacci/google_trends/cmc/social.
+            Provenance only (no tradeanalyzer reader today); optional, so
+            omitting it keeps a byte-identical v1 record.
 
     Returns:
         Dictionary containing the recommendation record.
@@ -223,6 +338,39 @@ def create_recommendation_record(
     if majority_action is not None:
         record['majority_action'] = majority_action
 
+    # WS3 (schema v2) provenance + full decision detail. Each field is written
+    # only when supplied; a caller that omits them all reproduces the exact v1
+    # record shape, so the analyzer and the 109 existing records are unaffected.
+    if schema_version is not None:
+        record['schema_version'] = schema_version
+    if vote_details is not None:
+        record['vote_details'] = {llm: dict(d) for llm, d in vote_details.items()}
+    if prompt_hash is not None:
+        record['prompt_hash'] = prompt_hash
+    if models is not None:
+        record['models'] = dict(models)
+    if market_block_ref is not None:
+        record['market_block_ref'] = market_block_ref
+    if market_block_present is not None:
+        record['market_block_present'] = market_block_present
+
+    # WS5 (cycle 2): decision fingerprint + honest spread + sampling provenance.
+    # Each written only when supplied so an omitting caller reproduces the exact
+    # prior record shape (byte-identity preserved, RECORD_SCHEMA evolution rule).
+    if market_block_hash is not None:
+        record['market_block_hash'] = market_block_hash
+    if spread_pct is not None:
+        record['spread_pct'] = spread_pct
+    if sampling is not None:
+        record['sampling'] = {llm: (dict(s) if isinstance(s, dict) else s)
+                              for llm, s in sampling.items()}
+
+    # WS4 (cycle 2): per-source data-quality of the market block. Written only
+    # when supplied (deep-copied so a later caller mutation can't reach the
+    # persisted record); omitting it preserves the exact prior record shape.
+    if data_quality is not None:
+        record['data_quality'] = {src: dict(d) for src, d in data_quality.items()}
+
     return record
 
 
@@ -245,7 +393,19 @@ def record_recommendation(
     block_reason: Optional[str] = None,
     majority_action: Optional[str] = None,
     trading_mode: str = 'unknown',
-    run_id: Optional[str] = None
+    run_id: Optional[str] = None,
+    schema_version: Optional[int] = None,
+    vote_details: Optional[Dict[str, Dict]] = None,
+    prompt_hash: Optional[str] = None,
+    models: Optional[Dict[str, str]] = None,
+    market_block_ref: Optional[str] = None,
+    market_block_present: Optional[bool] = None,
+    market_block_hash: Optional[str] = None,
+    bid_price: Optional[float] = None,
+    ask_price: Optional[float] = None,
+    spread_pct: Optional[float] = None,
+    sampling: Optional[Dict[str, object]] = None,
+    data_quality: Optional[Dict[str, Dict]] = None
 ) -> Optional[Dict]:
     """Record a recommendation by fetching current price from trader and saving.
 
@@ -271,6 +431,20 @@ def record_recommendation(
         trading_mode: 'live' | 'whatif' | 'unknown' (T2), passed through to
             create_recommendation_record.
         run_id: Process-run identifier (T2), passed through.
+        schema_version / vote_details / prompt_hash / models /
+            market_block_ref / market_block_present: WS3 schema-v2 fields,
+            passed through to create_recommendation_record (see there).
+        market_block_hash / spread_pct / sampling: WS5 fields, passed through
+            to create_recommendation_record (see there).
+        bid_price / ask_price: WS5 honest bid/ask captured by the CALLER (the
+            two crypto_trading_bot loops fetch real best_bid/best_ask via
+            Coinbase get_best_bid_ask -- the get_product payload exposes neither,
+            only price/mid_market_price). When supplied they OVERRIDE the
+            product-attribute fallback below; None means "caller had nothing,
+            fall back to whatever the product exposes" (preserving prior
+            behavior for callers that don't pass them).
+        data_quality: WS4 per-source market-data status, passed through (see
+            create_recommendation_record).
 
     Returns:
         The saved recommendation record (None only when `recommendation` is
@@ -310,6 +484,15 @@ def record_recommendation(
         print(f"[HISTORY] Error fetching price for {coin_symbol}: {e}; "
               "recording with price=None (DI-3)")
 
+    # WS5: the caller (crypto_trading_bot) captures honest best_bid/best_ask via
+    # the Coinbase get_best_bid_ask endpoint, which the get_product payload does
+    # NOT expose. A caller-supplied value OVERRIDES the product-attribute
+    # fallback above; None means the caller had nothing, so keep the fallback.
+    if bid_price is not None:
+        bid = bid_price
+    if ask_price is not None:
+        ask = ask_price
+
     rec_record = create_recommendation_record(
         coin_symbol=coin_symbol,
         recommendation=recommendation,
@@ -327,7 +510,17 @@ def record_recommendation(
         block_reason=block_reason,
         majority_action=majority_action,
         trading_mode=trading_mode,
-        run_id=run_id
+        run_id=run_id,
+        schema_version=schema_version,
+        vote_details=vote_details,
+        prompt_hash=prompt_hash,
+        models=models,
+        market_block_ref=market_block_ref,
+        market_block_present=market_block_present,
+        market_block_hash=market_block_hash,
+        spread_pct=spread_pct,
+        sampling=sampling,
+        data_quality=data_quality
     )
     try:
         save_recommendation(rec_record)
