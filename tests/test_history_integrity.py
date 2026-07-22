@@ -28,7 +28,21 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / 'scripts'))
 
 import historyutil
-import backfill_trading_mode as backfill
+
+# scripts/backfill_trading_mode.py is deliberately local-only (it embeds
+# real per-user trading history; gitignored + blocked by
+# check_staged_hygiene.sh), so it is absent in CI and fresh clones. Only
+# the tests marked requires_backfill skip in that case -- the historyutil
+# tests in this module always run.
+try:
+    import backfill_trading_mode as backfill
+except ModuleNotFoundError:
+    backfill = None
+
+requires_backfill = pytest.mark.skipif(
+    backfill is None,
+    reason='local-only script (gitignored per-user trading history) not present',
+)
 
 
 # ============================================================================
@@ -226,6 +240,7 @@ def _synth_record(rec_id, coin='ETH', rec='HOLD', extra=None):
     return r
 
 
+@requires_backfill
 def test_apply_backfill_maps_known_ids_and_defaults_unknown():
     records = [
         _synth_record('rec_live_1'),
@@ -244,6 +259,7 @@ def test_apply_backfill_maps_known_ids_and_defaults_unknown():
     assert by_id['rec_not_in_mapping']['trading_mode'] == 'unknown'
 
 
+@requires_backfill
 def test_apply_backfill_idempotent_second_run_is_noop():
     records = [_synth_record('rec_a'), _synth_record('rec_b')]
     mapping = {'rec_a': 'live', 'rec_b': 'whatif'}
@@ -258,6 +274,7 @@ def test_apply_backfill_idempotent_second_run_is_noop():
     assert second_pass == first_pass
 
 
+@requires_backfill
 def test_apply_backfill_skips_records_that_already_have_trading_mode():
     """A record that already carries trading_mode (from any source, not
     just a prior backfill run) is left completely alone, even if the
@@ -275,6 +292,7 @@ def test_apply_backfill_skips_records_that_already_have_trading_mode():
     assert by_id['rec_d']['trading_mode'] == 'whatif'
 
 
+@requires_backfill
 def test_apply_backfill_preserves_unrelated_fields_verbatim():
     """Every field other than the newly-added trading_mode is byte-for-byte
     (via equality) identical to the input -- the backfill adds exactly one
@@ -294,12 +312,14 @@ def test_apply_backfill_preserves_unrelated_fields_verbatim():
     assert 'trading_mode' not in original
 
 
+@requires_backfill
 def test_apply_backfill_rejects_mapping_with_invalid_mode():
     records = [_synth_record('rec_f')]
     with pytest.raises(ValueError):
         backfill.apply_backfill(records, mapping={'rec_f': 'simulated'})
 
 
+@requires_backfill
 def test_mode_counts_distinguishes_missing_from_unknown():
     has_none = _synth_record('rec_g', extra={'trading_mode': 'unknown'})
     has_nothing = _synth_record('rec_h')
@@ -309,6 +329,7 @@ def test_mode_counts_distinguishes_missing_from_unknown():
 
 # ---- backfill_file: end-to-end against a temp JSON file -------------------
 
+@requires_backfill
 def test_backfill_file_end_to_end_writes_backup_and_updates(tmp_path):
     target = tmp_path / 'recommendations.json'
     original_records = [_synth_record('rec_x'), _synth_record('rec_y')]
@@ -335,6 +356,7 @@ def test_backfill_file_end_to_end_writes_backup_and_updates(tmp_path):
     assert by_id['rec_y']['trading_mode'] == 'whatif'
 
 
+@requires_backfill
 def test_backfill_file_second_run_is_noop_and_writes_no_new_backup(tmp_path):
     target = tmp_path / 'recommendations.json'
     target.write_text(json.dumps({'recommendations': [_synth_record('rec_z')]}, indent=2))
@@ -352,6 +374,7 @@ def test_backfill_file_second_run_is_noop_and_writes_no_new_backup(tmp_path):
     assert target.read_text() == after_first_run  # file untouched
 
 
+@requires_backfill
 def test_backfill_file_dry_run_does_not_write(tmp_path):
     target = tmp_path / 'recommendations.json'
     original_text = json.dumps({'recommendations': [_synth_record('rec_w')]}, indent=2)
@@ -372,10 +395,12 @@ def test_backfill_file_dry_run_does_not_write(tmp_path):
 # only -- does not modify history/recommendations.json).
 # ============================================================================
 
+@requires_backfill
 def test_production_mapping_values_are_all_valid():
     assert set(backfill.MAPPING.values()) <= backfill.VALID_MODES
 
 
+@requires_backfill
 def test_production_mapping_covers_every_2026_07_18_record_in_real_history():
     real_history = REPO_ROOT / 'history' / 'recommendations.json'
     if not real_history.exists():
