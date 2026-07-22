@@ -70,6 +70,30 @@ WIN = 'WIN'
 LOSS = 'LOSS'
 NEUTRAL = 'NEUTRAL'   # HOLD -- recorded, never win/loss
 
+# HOLD counterfactual classes (WS3, cycle 2). A HOLD's `outcome` STAYS NEUTRAL --
+# it is never a WIN/LOSS and remains out of every existing aggregation universe
+# (Brier, per-provider win-rates, WIN/LOSS math). `hold_class` is a NEW, purely
+# additive DERIVED field grading the counterfactual "had we BOUGHT instead?" so a
+# HOLD that dodged a loss is distinguished from one that missed a win -- the
+# highest-value learning-loop gap (48/54 live votes were HOLD, all scored NEUTRAL).
+# The excess it grades is the SAME fee-adjusted BUY excess grade() consumes
+# (excess_return_pct('BUY', ...)); only the band cut below differs.
+GOOD_AVOID = 'GOOD_AVOID'            # excess <= -band: a BUY would have LOST
+MISSED_WIN = 'MISSED_WIN'            # excess >= +band: a BUY would have beaten the benchmark
+CORRECT_NEUTRAL = 'CORRECT_NEUTRAL'  # excess strictly inside the band: HOLD rightly sat out
+HOLD_UNSCORABLE = 'HOLD_UNSCORABLE'  # no maturity/rec price or no benchmark: no counterfactual
+HOLD_CLASSES = (GOOD_AVOID, MISSED_WIN, CORRECT_NEUTRAL, HOLD_UNSCORABLE)
+
+# grade() has NO band -- it is a hard zero cut (excess>0 WIN else LOSS) -- so there
+# is no existing band/threshold constant to reuse for the THREE-way HOLD split
+# (GOOD_AVOID / CORRECT_NEUTRAL / MISSED_WIN). This is the one new constant WS3
+# adds: the fee-adjusted excess magnitude (percentage points) below which a
+# counterfactual BUY is treated as noise -- the HOLD was neither a good avoid nor
+# a missed win. Judgment call (reported): default 2.0 pp. Boundary semantics are
+# pinned INCLUSIVE to the outer, decisive classes (|excess| == band is decisive,
+# not neutral), mirroring grade() where the excess==0 tie is a LOSS, not a draw.
+HOLD_COUNTERFACTUAL_BAND_PCT = 2.0
+
 DIRECTIONAL_ACTIONS = frozenset({'BUY', 'SELL'})
 
 # Scoring methodology (F4): whether the endpoint prices were taken AT the
@@ -87,7 +111,10 @@ AT_RUN_TIME = 'scored_at_run_time'
 # (see utc_epoch) meant every at-maturity candle lookup on a non-UTC machine was
 # hours off and the wrong verdict was frozen; bumping discards those v2 states so
 # the corrupted grades are re-scored once against the corrected windows.
-STATE_VERSION = 3
+# v4 (WS3, cycle 2): the frozen state now carries `hold_class` (the HOLD
+# counterfactual grade). v3 states lack it, so a frozen HOLD would thaw with
+# hold_class=None; bumping discards them so every HOLD is re-classified once.
+STATE_VERSION = 4
 
 
 def state_key(rec: Dict) -> str:
@@ -182,6 +209,28 @@ def grade(action: str, coin_return_pct: float, benchmark_return_pct: float,
     """
     excess = excess_return_pct(action, coin_return_pct, benchmark_return_pct, fee_floor_pct)
     return (WIN if excess > 0 else LOSS), excess
+
+
+def classify_hold_counterfactual(excess_pct: Optional[float],
+                                 band_pct: float = HOLD_COUNTERFACTUAL_BAND_PCT) -> str:
+    """Derived HOLD class from the counterfactual BUY's fee-adjusted excess (WS3).
+
+    `excess_pct` is excess_return_pct('BUY', coin_return, benchmark_return, fee) --
+    the exact fee-adjusted excess grade() consumes, so a HOLD is judged against the
+    same bar a real BUY is. None (no benchmark / no priced window) -> HOLD_UNSCORABLE.
+
+    Boundary (pinned): edges are INCLUSIVE to the outer, decisive classes --
+    excess >= +band -> MISSED_WIN, excess <= -band -> GOOD_AVOID, strictly between
+    -> CORRECT_NEUTRAL. This mirrors grade(), where the excess==0 tie is decisive
+    (a LOSS), not parked in a neutral band.
+    """
+    if excess_pct is None:
+        return HOLD_UNSCORABLE
+    if excess_pct >= band_pct:
+        return MISSED_WIN
+    if excess_pct <= -band_pct:
+        return GOOD_AVOID
+    return CORRECT_NEUTRAL
 
 
 def normalize_block_reason(reason: Optional[str]) -> str:
@@ -472,6 +521,59 @@ def get_current_price(coin_symbol: str, trader=None, exchange: str = None) -> Op
 
 
 # ---------------------------------------------------------------------------
+# Window-return kernel (shared by score_record and the WS4 shadow pass)
+# ---------------------------------------------------------------------------
+@dataclass
+class WindowReturns:
+    """Coin- and benchmark-return over [t_rec, maturity] for one record.
+
+    This is the raw material the fee-adjusted excess kernel (grade/
+    excess_return_pct) consumes. It is action-agnostic on purpose: the same
+    returns grade a real BUY, a counterfactual BUY under a shadow policy, or a
+    per-provider SELL vote -- only the action passed to grade() differs.
+    """
+    coin_return_pct: float
+    benchmark_return_pct: float
+    coin_end: float
+    methodology: str
+
+
+def compute_window_returns(coin: str, rec_price: float, exchange: Optional[str],
+                           ts: datetime, maturity_time: datetime, benchmark: str,
+                           provider) -> Tuple[Optional[WindowReturns], Optional[str], str]:
+    """Return (WindowReturns | None, failure_reason | None, methodology).
+
+    Prefers window-END prices at the maturity horizon; if EITHER the coin's or
+    the benchmark's maturity candle is unreachable, degrades BOTH endpoints to
+    run-time current prices (never a mix) and flags AT_RUN_TIME. failure_reason
+    is 'no_current_price' or 'no_benchmark' when returns can't be formed.
+    """
+    coin_end = provider.price_at(coin, maturity_time)
+    bench_end = coin_end if coin == benchmark else provider.price_at(benchmark, maturity_time)
+    if coin_end is not None and bench_end is not None:
+        methodology = AT_MATURITY
+    else:
+        methodology = AT_RUN_TIME
+        coin_end = provider.current_price(coin, exchange)
+        bench_end = coin_end if coin == benchmark else provider.current_price(benchmark)
+
+    if coin_end is None:
+        return None, 'no_current_price', methodology
+    coin_return = pct_change(rec_price, coin_end)
+    if coin_return is None:
+        return None, 'no_current_price', methodology
+
+    if coin == benchmark:
+        bench_return = 0.0
+    else:
+        bench_then = provider.price_at(benchmark, ts)
+        bench_return = pct_change(bench_then, bench_end) if (bench_then and bench_end) else None
+        if bench_return is None:
+            return None, 'no_benchmark', methodology
+    return WindowReturns(coin_return, bench_return, coin_end, methodology), None, methodology
+
+
+# ---------------------------------------------------------------------------
 # Per-record scoring
 # ---------------------------------------------------------------------------
 @dataclass
@@ -493,8 +595,13 @@ class ScoredRecord:
     fee_source: str = ''                # 'assumed' | 'ledger'
     excess_return_pct: Optional[float] = None
     outcome: Optional[str] = None       # WIN | LOSS | NEUTRAL | None
+    hold_class: Optional[str] = None    # WS3 derived HOLD counterfactual class (HOLDs only)
     methodology: str = ''               # AT_MATURITY | AT_RUN_TIME (F4)
     frozen: bool = False                # reused from persisted state
+    # WS4 schema-v2 passthrough (per-provider analytics). Read straight off the
+    # raw record so every category carries them; None on legacy v1 records.
+    vote_details: Optional[Dict] = None  # {llm: {action, confidence}} (WS3)
+    schema_version: Optional[int] = None
 
 
 def _is_trading_record(rec: Dict) -> bool:
@@ -519,10 +626,14 @@ def score_record(rec: Dict, now: datetime, maturity_hours: float,
     llm_source = rec.get('llm_source', '')
     mode = rec.get('trading_mode', 'unknown')
 
+    vote_details = rec.get('vote_details')
+    schema_version = rec.get('schema_version')
+
     def make(category, **kw):
         return ScoredRecord(rec_id=rec_id, timestamp=ts_raw, trading_mode=mode,
                             coin=coin, action=action, llm_source=llm_source,
-                            category=category, **kw)
+                            category=category, vote_details=vote_details,
+                            schema_version=schema_version, **kw)
 
     # 0. Frozen: a record scored on a prior run stays scored (T10 item 3),
     #    keyed collision-safely on the record's identifying tuple (F4).
@@ -535,7 +646,7 @@ def score_record(rec: Dict, now: datetime, maturity_hours: float,
                     benchmark_return_pct=s.get('benchmark_return_pct'),
                     fee_floor_pct=s.get('fee_floor_pct'), fee_source=s.get('fee_source', ''),
                     excess_return_pct=s.get('excess_return_pct'),
-                    outcome=s.get('outcome'),
+                    outcome=s.get('outcome'), hold_class=s.get('hold_class'),
                     methodology=s.get('methodology', ''))
 
     # 1. Not a trade record at all.
@@ -564,18 +675,50 @@ def score_record(rec: Dict, now: datetime, maturity_hours: float,
     # to run-time current prices and FLAG it (methodology), never mixing the two.
     maturity_time = ts + timedelta(hours=maturity_hours)
 
-    # 4a. HOLD -- non-directional; recorded as NEUTRAL (informational move).
+    # 4a. HOLD -- non-directional. `outcome` STAYS NEUTRAL (preserved: a HOLD is
+    #     never WIN/LOSS and remains out of every existing aggregation). We
+    #     additionally grade the DERIVED counterfactual "had we BOUGHT instead?"
+    #     into hold_class, reusing the SAME BUY window-return + fee-adjusted excess
+    #     kernel a real BUY uses (compute_window_returns + excess_return_pct('BUY')).
+    #     A HOLD whose counterfactual BUY cannot be priced (no rec price, no coin
+    #     price, or no benchmark) stays NEUTRAL but is HOLD_UNSCORABLE, preserving
+    #     the legacy AT_RUN_TIME best-effort coin-move fallback.
     if action == 'HOLD':
-        cur = provider.price_at(coin, maturity_time)
+        rec_price_raw = rec.get('price_at_recommendation')
+        try:
+            rp = float(rec_price_raw)
+        except (TypeError, ValueError):
+            rp = 0.0
+        wr = None
         methodology = AT_MATURITY
-        if cur is None:
-            cur = provider.current_price(coin, rec.get('exchange'))
-            methodology = AT_RUN_TIME
-        rec_price = rec.get('price_at_recommendation')
-        move = pct_change(rec_price, cur) if cur is not None else None
+        if rp > 0:
+            wr, _fail, methodology = compute_window_returns(
+                coin, rp, rec.get('exchange'), ts, maturity_time, benchmark, provider)
+        if wr is None:
+            # No priced counterfactual -> HOLD_UNSCORABLE. Preserve the legacy
+            # best-effort coin move (at-maturity price, else degrade to run-time)
+            # so the NEUTRAL record still carries coin_return_pct where a coin
+            # price exists; excess/benchmark stay None (no counterfactual formed).
+            cur = provider.price_at(coin, maturity_time)
+            meth = AT_MATURITY
+            if cur is None:
+                cur = provider.current_price(coin, rec.get('exchange'))
+                meth = AT_RUN_TIME
+            move = pct_change(rec_price_raw, cur) if cur is not None else None
+            return make(SCORED, reason='hold_neutral', outcome=NEUTRAL,
+                        hold_class=HOLD_UNSCORABLE, rec_price=rec_price_raw,
+                        current_price=cur, coin_return_pct=move, methodology=meth)
+        # Counterfactual BUY excess under the assumed fee floor -- a HOLD never
+        # has a ledger fill, so there is no actual round-trip fee to join.
+        excess = excess_return_pct('BUY', wr.coin_return_pct,
+                                   wr.benchmark_return_pct, fee_floor_pct)
         return make(SCORED, reason='hold_neutral', outcome=NEUTRAL,
-                    rec_price=rec_price, current_price=cur, coin_return_pct=move,
-                    methodology=methodology)
+                    hold_class=classify_hold_counterfactual(excess),
+                    rec_price=rp, current_price=wr.coin_end,
+                    coin_return_pct=wr.coin_return_pct,
+                    benchmark_return_pct=wr.benchmark_return_pct,
+                    fee_floor_pct=fee_floor_pct, fee_source='assumed',
+                    excess_return_pct=excess, methodology=methodology)
 
     # 4b. Unrecognized action (not BUY/SELL/HOLD/NONE) -- cannot grade.
     if action not in DIRECTIONAL_ACTIONS:
@@ -592,32 +735,15 @@ def score_record(rec: Dict, now: datetime, maturity_hours: float,
 
     # Window-END prices at the maturity horizon (preferred). If EITHER the coin's
     # or the benchmark's maturity candle is unreachable, degrade BOTH endpoints
-    # to run-time current prices so the record is never graded on a mix.
-    coin_end = provider.price_at(coin, maturity_time)
-    bench_end = coin_end if coin == benchmark else provider.price_at(benchmark, maturity_time)
-    if coin_end is not None and bench_end is not None:
-        methodology = AT_MATURITY
-    else:
-        methodology = AT_RUN_TIME
-        coin_end = provider.current_price(coin, rec.get('exchange'))
-        bench_end = coin_end if coin == benchmark else provider.current_price(benchmark)
-
-    if coin_end is None:
-        return make(EXPIRED_UNSCORABLE, reason='no_current_price', methodology=methodology)
-    coin_return = pct_change(rec_price, coin_end)
-    if coin_return is None:
-        return make(EXPIRED_UNSCORABLE, reason='no_current_price', methodology=methodology)
-
-    # Benchmark return over the SAME window [t_rec, endpoint]. When the coin IS
-    # the benchmark, there is no alternative asset -> benchmark return is 0 and
-    # the decision is judged on absolute return vs fees.
-    if coin == benchmark:
-        bench_return = 0.0
-    else:
-        bench_then = provider.price_at(benchmark, ts)
-        bench_return = pct_change(bench_then, bench_end) if (bench_then and bench_end) else None
-        if bench_return is None:
-            return make(EXPIRED_UNSCORABLE, reason='no_benchmark', methodology=methodology)
+    # to run-time current prices so the record is never graded on a mix. Shared
+    # with the WS4 shadow pass via compute_window_returns.
+    wr, fail_reason, methodology = compute_window_returns(
+        coin, rec_price, rec.get('exchange'), ts, maturity_time, benchmark, provider)
+    if wr is None:
+        return make(EXPIRED_UNSCORABLE, reason=fail_reason, methodology=methodology)
+    coin_end = wr.coin_end
+    coin_return = wr.coin_return_pct
+    bench_return = wr.benchmark_return_pct
 
     # Fee: actual from ledger if a fill joins, else the assumed floor.
     actual_fee = actual_roundtrip_fee_pct(rec.get('run_id'), coin, ledger_rows,
@@ -668,6 +794,18 @@ class AnalysisResult:
             counts[s.category] += 1
         return counts
 
+    def hold_class_counts(self) -> Dict[str, int]:
+        """Counts per HOLD counterfactual class over scored HOLD records (WS3).
+
+        Additive: HOLDs remain outcome=NEUTRAL and are untouched by every other
+        aggregation; this is a separate lens over the sit-out decisions.
+        """
+        counts = {c: 0 for c in HOLD_CLASSES}
+        for s in self.scored:
+            if s.action == 'HOLD' and s.hold_class:
+                counts[s.hold_class] = counts.get(s.hold_class, 0) + 1
+        return counts
+
 
 def analyze(records: List[Dict], now: datetime, maturity_hours: float,
             fee_floor_pct: float, benchmark: str, provider,
@@ -692,6 +830,7 @@ def analyze(records: List[Dict], now: datetime, maturity_hours: float,
                     'benchmark_return_pct': s.benchmark_return_pct,
                     'fee_floor_pct': s.fee_floor_pct, 'fee_source': s.fee_source,
                     'excess_return_pct': s.excess_return_pct, 'outcome': s.outcome,
+                    'hold_class': s.hold_class,
                     'methodology': s.methodology,
                     'scored_at': now.isoformat() + 'Z',
                 }
@@ -726,6 +865,394 @@ def panel_stats(records: List[Dict]) -> Dict:
         'consensus_state_hist': state_hist,
         'per_llm_votes': per_llm,
     }
+
+
+# ===========================================================================
+# WS4 -- per-provider decomposition, aggregation-policy counterfactuals,
+# confidence calibration, and multi-horizon maturation sweep.
+#
+# Everything below is READ-ONLY analytics over already-loaded history records.
+# None of it feeds the trading path, mutates judged state, or places a trade.
+# New report sections are gated on the presence of vote_details (WS3 schema-v2)
+# data, so the default single-horizon output is unchanged for the 109 legacy
+# v1 records that carry none.
+# ===========================================================================
+
+def _vote_action(detail: Optional[Dict]) -> Optional[str]:
+    """Uppercased action from a vote_details entry, or None for an abstain."""
+    if not detail:
+        return None
+    a = detail.get('action')
+    return a.upper().strip() if isinstance(a, str) and a.strip() else None
+
+
+def grade_provider_vote(action: Optional[str], coin_return_pct: float,
+                        benchmark_return_pct: float,
+                        fee_floor_pct: float) -> Optional[str]:
+    """Grade one provider's vote AS IF EXECUTED, under the shared fee kernel.
+
+    BUY/SELL -> WIN|LOSS (grade()); HOLD -> NEUTRAL; anything else (abstain /
+    None / unrecognized) -> None (the provider took no directional position, so
+    it neither wins nor loses on this record).
+    """
+    if action in DIRECTIONAL_ACTIONS:
+        outcome, _ = grade(action, coin_return_pct, benchmark_return_pct, fee_floor_pct)
+        return outcome
+    if action == 'HOLD':
+        return NEUTRAL
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 1: per-provider attribution (true decomposition + legacy fallback)
+# ---------------------------------------------------------------------------
+def provider_attribution(scored_directional: List[ScoredRecord]) -> Dict:
+    """Per-provider win/loss from vote_details, with a legacy llm_source fallback.
+
+    Over the SCORED directional records (which already carry the priced window
+    returns), each provider's own vote is re-graded as if executed:
+      * records WITH vote_details -> true per-provider decomposition. A provider
+        wins when ITS vote (not the consensus action) would have graded WIN.
+      * records WITHOUT vote_details (legacy v1) -> the old comma-joined
+        llm_source string is used verbatim and the record's own outcome is
+        attributed to that whole source string, clearly labeled legacy.
+
+    Returns {'providers': {p: {'win','loss','neutral','n'}},
+             'legacy': {llm_source: {'win','loss'}},
+             'legacy_n': int}.
+    """
+    providers: Dict[str, Dict[str, int]] = {}
+    legacy: Dict[str, Dict[str, int]] = {}
+    legacy_n = 0
+    for s in scored_directional:
+        if s.coin_return_pct is None or s.benchmark_return_pct is None:
+            continue  # only records with the full return kernel are gradeable
+        fee = s.fee_floor_pct if s.fee_floor_pct is not None else DEFAULT_FEE_FLOOR_PCT
+        if s.vote_details:
+            for prov, detail in s.vote_details.items():
+                outcome = grade_provider_vote(_vote_action(detail), s.coin_return_pct,
+                                              s.benchmark_return_pct, fee)
+                if outcome is None:
+                    continue
+                d = providers.setdefault(prov, {'win': 0, 'loss': 0, 'neutral': 0, 'n': 0})
+                if outcome == WIN:
+                    d['win'] += 1
+                elif outcome == LOSS:
+                    d['loss'] += 1
+                else:
+                    d['neutral'] += 1
+                d['n'] += 1
+        else:
+            legacy_n += 1
+            src = s.llm_source or 'unknown'
+            d = legacy.setdefault(src, {'win': 0, 'loss': 0})
+            if s.outcome == WIN:
+                d['win'] += 1
+            elif s.outcome == LOSS:
+                d['loss'] += 1
+    return {'providers': providers, 'legacy': legacy, 'legacy_n': legacy_n}
+
+
+def provider_hold_quality(scored_holds: List[ScoredRecord]) -> Dict:
+    """Per-provider HOLD-quality tallies over scored HOLD records (WS3).
+
+    A provider is credited a HOLD only on records where ITS OWN vote was HOLD
+    (from vote_details); the record's derived `hold_class` (an action-agnostic
+    counterfactual-BUY grade, identical for every HOLD voter) is the quality.
+
+    This NEVER touches WIN/LOSS math or Brier inputs -- HOLD is excluded from
+    those by construction (grade_provider_vote maps HOLD -> NEUTRAL, and Brier
+    only sees directional votes). It is a separate, additive quality lens on the
+    sit-out decisions that dominate live sessions.
+
+    Records without vote_details fall back to the comma-joined `llm_source`
+    string, mirroring provider_attribution's legacy handling.
+
+    Returns {provider: {good_avoids, missed_wins, correct_neutral, unscorable, n}}.
+    """
+    _KEYMAP = {GOOD_AVOID: 'good_avoids', MISSED_WIN: 'missed_wins',
+               CORRECT_NEUTRAL: 'correct_neutral', HOLD_UNSCORABLE: 'unscorable'}
+    out: Dict[str, Dict[str, int]] = {}
+
+    def _bump(name: str, hclass: str):
+        d = out.setdefault(name, {'good_avoids': 0, 'missed_wins': 0,
+                                  'correct_neutral': 0, 'unscorable': 0, 'n': 0})
+        d[_KEYMAP.get(hclass, 'unscorable')] += 1
+        d['n'] += 1
+
+    for s in scored_holds:
+        if s.action != 'HOLD' or s.hold_class is None:
+            continue
+        if s.vote_details:
+            for prov, detail in s.vote_details.items():
+                if _vote_action(detail) == 'HOLD':
+                    _bump(prov, s.hold_class)
+        else:
+            _bump(s.llm_source or 'unknown', s.hold_class)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 2: aggregation-policy counterfactuals (pure policy functions)
+# ---------------------------------------------------------------------------
+# Each policy is a pure function vote_details -> bool ("would this policy BUY?").
+# Abstains / null actions count as non-BUY (never as a BUY). These are the unit
+# under test in tests/test_analyzer_ws4.py -- keep them side-effect-free.
+
+def _buy_voters(vote_details: Dict) -> List[str]:
+    return [p for p, d in vote_details.items() if _vote_action(d) == 'BUY']
+
+
+def policy_unanimous_buy(vote_details: Dict) -> bool:
+    """Every present provider voted BUY (an abstain breaks unanimity)."""
+    voters = list(vote_details)
+    return bool(voters) and all(_vote_action(vote_details[p]) == 'BUY' for p in voters)
+
+
+def policy_majority_buy(vote_details: Dict) -> bool:
+    """More than half of the present providers voted BUY."""
+    voters = list(vote_details)
+    return bool(voters) and len(_buy_voters(vote_details)) * 2 > len(voters)
+
+
+def policy_n_of_buy(vote_details: Dict, n: int) -> bool:
+    """At least n providers voted BUY."""
+    return len(_buy_voters(vote_details)) >= n
+
+
+def policy_any_buy(vote_details: Dict) -> bool:
+    """At least one provider voted BUY."""
+    return len(_buy_voters(vote_details)) >= 1
+
+
+def policy_single_provider_buy(vote_details: Dict, provider: str) -> bool:
+    """The named provider voted BUY (it need not be present on the record)."""
+    return _vote_action(vote_details.get(provider)) == 'BUY'
+
+
+def standard_policies(providers: List[str]) -> Dict[str, callable]:
+    """Build the shadow-policy set for a provider universe (deterministic order).
+
+    unanimous-BUY, majority-BUY, 2-of-N-BUY, any-BUY, plus one policy per
+    single provider. 2-of-N is only added when there are >= 2 providers.
+    """
+    policies: Dict[str, callable] = {
+        'unanimous-BUY': policy_unanimous_buy,
+        'majority-BUY': policy_majority_buy,
+    }
+    if len(providers) >= 2:
+        policies['2-of-N-BUY'] = lambda vd: policy_n_of_buy(vd, 2)
+    policies['any-BUY'] = policy_any_buy
+    for p in sorted(providers):
+        policies[f'only-{p}-BUY'] = (lambda prov: (lambda vd: policy_single_provider_buy(vd, prov)))(p)
+    return policies
+
+
+# ---------------------------------------------------------------------------
+# Shadow-scoring pass (shared by counterfactuals + calibration)
+# ---------------------------------------------------------------------------
+@dataclass
+class ShadowRow:
+    """One record's action-agnostic window returns, for WS4 research analytics.
+
+    Computed over EVERY record carrying vote_details (directional, HOLD, or
+    blocked), independent of what the consensus gate actually decided -- that is
+    the whole point of a counterfactual. `matured` is True only when the record
+    is a mature live/whatif trade with a usable rec price AND priced returns.
+    """
+    vote_details: Dict
+    coin: str
+    trading_mode: str
+    matured: bool
+    coin_return_pct: Optional[float] = None
+    benchmark_return_pct: Optional[float] = None
+    fee_floor_pct: Optional[float] = None
+
+
+def shadow_score(records: List[Dict], now: datetime, maturity_hours: float,
+                 fee_floor_pct: float, benchmark: str, provider,
+                 ledger_rows: Optional[List[Dict]] = None) -> List[ShadowRow]:
+    """Compute action-agnostic window returns for every vote_details record.
+
+    Mirrors score_record's directional pricing path but ignores the recorded
+    action, so a policy or a single provider's vote can be graded on records the
+    consensus gate blocked or held. Records without a usable price / benchmark /
+    maturity land as matured=False and contribute only to the "not matured"
+    count. Never persists anything.
+    """
+    ledger_rows = ledger_rows or []
+    rows: List[ShadowRow] = []
+    for rec in records:
+        vd = rec.get('vote_details')
+        if not vd:
+            continue
+        coin = rec.get('coin_symbol', 'UNKNOWN')
+        mode = rec.get('trading_mode', 'unknown')
+        row = ShadowRow(vote_details=vd, coin=coin, trading_mode=mode, matured=False)
+        if mode in ('live', 'whatif') and _is_trading_record(rec):
+            ts = parse_timestamp(rec.get('timestamp', ''))
+            try:
+                rec_price = float(rec.get('price_at_recommendation'))
+            except (TypeError, ValueError):
+                rec_price = 0.0
+            if ts is not None and rec_price > 0:
+                age_hours = (now - ts).total_seconds() / 3600.0
+                if age_hours >= maturity_hours:
+                    maturity_time = ts + timedelta(hours=maturity_hours)
+                    wr, _reason, _method = compute_window_returns(
+                        coin, rec_price, rec.get('exchange'), ts, maturity_time,
+                        benchmark, provider)
+                    if wr is not None:
+                        actual_fee = actual_roundtrip_fee_pct(
+                            rec.get('run_id'), coin, ledger_rows, side='BUY')
+                        fee = actual_fee if actual_fee is not None else fee_floor_pct
+                        row.matured = True
+                        row.coin_return_pct = wr.coin_return_pct
+                        row.benchmark_return_pct = wr.benchmark_return_pct
+                        row.fee_floor_pct = fee
+        rows.append(row)
+    return rows
+
+
+def aggregation_counterfactuals(shadow_rows: List[ShadowRow],
+                                providers: List[str]) -> Dict:
+    """Per-policy would-trade count, win rate, and mean fee-adjusted excess.
+
+    RESEARCH ONLY -- these are shadow policies scored on past data, NOT an
+    execution recommendation. A policy "trades" a record when it evaluates BUY
+    on that record's vote_details; the trade's outcome is grade('BUY', ...) over
+    the matured window returns. would_trade counts all rows (matured or not);
+    win rate and mean excess are over the MATURED traded subset only.
+
+    Returns {'policies': {name: {'would_trade','matured_trades','wins',
+             'win_rate'|None,'mean_excess'|None}}, 'matured_total': int}.
+    """
+    policies = standard_policies(providers)
+    matured_rows = [r for r in shadow_rows if r.matured]
+    out: Dict[str, Dict] = {}
+    for name, fn in policies.items():
+        would_trade = sum(1 for r in shadow_rows if fn(r.vote_details))
+        wins = 0
+        excesses: List[float] = []
+        for r in matured_rows:
+            if not fn(r.vote_details):
+                continue
+            outcome, excess = grade('BUY', r.coin_return_pct,
+                                    r.benchmark_return_pct, r.fee_floor_pct)
+            excesses.append(excess)
+            if outcome == WIN:
+                wins += 1
+        n = len(excesses)
+        out[name] = {
+            'would_trade': would_trade,
+            'matured_trades': n,
+            'wins': wins,
+            'win_rate': (wins / n) if n else None,
+            'mean_excess': (sum(excesses) / n) if n else None,
+        }
+    return {'policies': out, 'matured_total': len(matured_rows)}
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 3: confidence calibration (reliability buckets + Brier score)
+# ---------------------------------------------------------------------------
+def confidence_bucket(conf: float, width: float = 0.1) -> Tuple[float, float]:
+    """The [lo, hi) reliability bucket a confidence falls in (0.1-wide default).
+
+    conf == 1.0 is clamped into the top [0.9, 1.0) bucket rather than a
+    degenerate [1.0, 1.1) one.
+    """
+    # round() before floor() so 0.6/0.1 == 5.9999.. doesn't fall into [0.5,0.6).
+    idx = int(math.floor(round(conf / width, 9)))
+    lo = idx * width
+    if lo >= 1.0:  # clamp the 1.0 edge into the top bucket
+        lo = 1.0 - width
+    return (round(lo, 10), round(lo + width, 10))
+
+
+def confidence_calibration(shadow_rows: List[ShadowRow]) -> Dict:
+    """Reliability buckets + Brier score over provider DIRECTIONAL votes.
+
+    For each provider's BUY/SELL vote that carries a numeric confidence on a
+    matured record, grade the vote (WIN=1 / LOSS=0) and bucket by confidence.
+    Brier treats confidence as P(win): mean((confidence - win)^2). HOLD/abstain
+    votes and non-numeric confidences are excluded. Buckets report n so the
+    caller can suppress conclusions when n is tiny.
+
+    Returns {'buckets': {(lo,hi): {'n','wins','win_rate'}}, 'brier'|None,
+             'n': total graded directional votes}.
+    """
+    buckets: Dict[Tuple[float, float], Dict[str, float]] = {}
+    brier_terms: List[float] = []
+    for r in shadow_rows:
+        if not r.matured:
+            continue
+        for detail in r.vote_details.values():
+            action = _vote_action(detail)
+            if action not in DIRECTIONAL_ACTIONS:
+                continue
+            conf = detail.get('confidence') if isinstance(detail, dict) else None
+            if not isinstance(conf, (int, float)) or isinstance(conf, bool):
+                continue
+            conf = float(conf)
+            outcome, _ = grade(action, r.coin_return_pct, r.benchmark_return_pct,
+                               r.fee_floor_pct)
+            win = 1 if outcome == WIN else 0
+            brier_terms.append((conf - win) ** 2)
+            key = confidence_bucket(conf)
+            b = buckets.setdefault(key, {'n': 0, 'wins': 0})
+            b['n'] += 1
+            b['wins'] += win
+    for b in buckets.values():
+        b['win_rate'] = b['wins'] / b['n'] if b['n'] else None
+    brier = (sum(brier_terms) / len(brier_terms)) if brier_terms else None
+    return {'buckets': buckets, 'brier': brier, 'n': len(brier_terms)}
+
+
+def shadow_provider_universe(shadow_rows: List[ShadowRow]) -> List[str]:
+    """All providers seen in any shadow row's vote_details (sorted)."""
+    seen = set()
+    for r in shadow_rows:
+        seen.update(r.vote_details.keys())
+    return sorted(seen)
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 4: multi-horizon maturation sweep (compute WITHOUT persisting)
+# ---------------------------------------------------------------------------
+def horizon_sweep(records: List[Dict], now: datetime, horizons: List[float],
+                  fee_floor_pct: float, benchmark: str, provider,
+                  ledger_rows: Optional[List[Dict]] = None) -> Dict[float, Dict]:
+    """Score matured records at each horizon; return the grade distribution.
+
+    STATE SAFETY (judgment call): each horizon is scored with frozen_state=None
+    -- compute-WITHOUT-persisting -- so the sweep never reads or writes the
+    single-horizon judged-state sidecar. Rationale: the sidecar's collision-safe
+    key (state_key) is NOT horizon-aware, so persisting a 6h verdict under the
+    same key would overwrite the canonical 24h verdict and silently corrupt the
+    frozen single-horizon grades. A per-horizon namespace was the alternative;
+    recomputing is simpler, has no migration surface, and the sweep is a
+    research view that is cheap to regenerate. The canonical 24h run in
+    cli_main still persists exactly as before.
+
+    Returns {horizon: {'scored','pending','expired','win','loss','neutral'}}.
+    """
+    ledger_rows = ledger_rows or []
+    out: Dict[float, Dict] = {}
+    for h in horizons:
+        res = analyze(records, now, h, fee_floor_pct, benchmark, provider,
+                      ledger_rows, frozen_state=None)  # never persist
+        directional = [s for s in res.scored if s.action in DIRECTIONAL_ACTIONS]
+        lc = res.lifecycle_counts()
+        out[h] = {
+            'scored': lc[SCORED],
+            'pending': lc[PENDING],
+            'expired': lc[EXPIRED_UNSCORABLE],
+            'win': sum(1 for s in directional if s.outcome == WIN),
+            'loss': sum(1 for s in directional if s.outcome == LOSS),
+            'neutral': sum(1 for s in res.scored if s.outcome == NEUTRAL),
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -837,22 +1364,106 @@ def print_mode_section(mode: str, result: AnalysisResult):
     at_run = sum(1 for s in directional if s.methodology == AT_RUN_TIME)
     if directional:
         print(f"  methodology: {at_mat} at-maturity, {at_run} degraded to run-time")
-    # per-LLM
-    per_llm: Dict[str, Dict[str, int]] = {}
-    for s in directional:
-        d = per_llm.setdefault(s.llm_source or 'unknown', {'win': 0, 'loss': 0})
-        if s.outcome == WIN:
-            d['win'] += 1
-        elif s.outcome == LOSS:
-            d['loss'] += 1
-    if per_llm:
-        print("  per-LLM:")
-        for llm, d in sorted(per_llm.items()):
+    # Per-provider decomposition (WS4). True per-provider attribution from
+    # vote_details where present; legacy comma-joined llm_source for v1 records.
+    attr = provider_attribution(directional)
+    if attr['providers']:
+        print("  per-provider (from vote_details; each provider's OWN vote regraded):")
+        for prov, d in sorted(attr['providers'].items()):
+            judged = d['win'] + d['loss']
+            neutral = f", {d['neutral']} HOLD" if d['neutral'] else ''
+            if judged:
+                print(f"    {prov}: {d['win']}/{judged} win "
+                      f"({100 * d['win'] / judged:.1f}%){neutral}")
+            else:
+                print(f"    {prov}: 0 directional graded{neutral}")
+    if attr['legacy']:
+        label = "  per-LLM (legacy llm_source string, v1 records):"
+        print(label)
+        for llm, d in sorted(attr['legacy'].items()):
             judged = d['win'] + d['loss']
             if judged:
                 print(f"    {llm}: {d['win']}/{judged} win ({100 * d['win'] / judged:.1f}%)")
             else:
                 print(f"    {llm}: 0 graded")
+    # Per-provider HOLD quality (WS3). Each provider's OWN HOLD vote regraded as a
+    # counterfactual BUY -- NOT win/loss, kept separate from the Brier/win-rate math.
+    hq = provider_hold_quality(holds)
+    if hq:
+        print("  per-provider HOLD quality (each provider's OWN HOLD vote, "
+              "counterfactual-graded; NOT win/loss):")
+        for prov, d in sorted(hq.items()):
+            print(f"    {prov}: {d['good_avoids']} good-avoid, "
+                  f"{d['missed_wins']} missed-win, "
+                  f"{d['correct_neutral']} correct-neutral, "
+                  f"{d['unscorable']} unscorable (n={d['n']})")
+
+
+def print_hold_classification(result: AnalysisResult):
+    """HOLD counterfactual classification counts (WS3).
+
+    DERIVED, research-only: every HOLD stays outcome=NEUTRAL (never WIN/LOSS,
+    excluded from Brier and per-provider win-rates). This grades the "had we
+    BOUGHT instead?" counterfactual so a HOLD that dodged a loss is separated from
+    one that missed a win. Prints nothing when there are no scored HOLDs.
+    """
+    hc = result.hold_class_counts()
+    total = sum(hc.values())
+    if not total:
+        return
+    print(f"\n--- HOLD COUNTERFACTUAL CLASSIFICATION ({total} scored HOLDs) ---")
+    print("  DERIVED, research-only: HOLD stays NEUTRAL (never WIN/LOSS, excluded "
+          "from Brier / win-rates).")
+    print(f"  Grades the 'had we BOUGHT?' counterfactual at a "
+          f"+/-{HOLD_COUNTERFACTUAL_BAND_PCT:.1f}pp fee-adjusted excess band.")
+    print(f"  GOOD_AVOID (dodged a loss):   {hc[GOOD_AVOID]}")
+    print(f"  MISSED_WIN (missed a gain):   {hc[MISSED_WIN]}")
+    print(f"  CORRECT_NEUTRAL (in band):    {hc[CORRECT_NEUTRAL]}")
+    print(f"  HOLD_UNSCORABLE (no price):   {hc[HOLD_UNSCORABLE]}")
+
+
+def print_counterfactuals(cf: Dict):
+    """RESEARCH-ONLY aggregation-policy counterfactual section."""
+    print(f"\n--- AGGREGATION-POLICY COUNTERFACTUALS "
+          f"({cf['matured_total']} matured records with vote_details) ---")
+    print("  RESEARCH ONLY -- shadow policies scored on past data; NOT an "
+          "execution recommendation.")
+    print(f"  {'policy':<22} {'would_trade':>11} {'matured':>7} {'win_rate':>9} "
+          f"{'mean_excess%':>12}")
+    for name, d in cf['policies'].items():
+        wr = f"{100 * d['win_rate']:.1f}%" if d['win_rate'] is not None else '  n/a'
+        me = f"{d['mean_excess']:+.2f}" if d['mean_excess'] is not None else '   n/a'
+        print(f"  {name:<22} {d['would_trade']:>11} {d['matured_trades']:>7} "
+              f"{wr:>9} {me:>12}")
+
+
+def print_calibration(cal: Dict):
+    """Confidence-calibration section (reliability buckets + Brier)."""
+    print(f"\n--- CONFIDENCE CALIBRATION ({cal['n']} directional votes with "
+          "numeric confidence) ---")
+    if not cal['n']:
+        print("  (no numeric confidences on matured directional votes)")
+        return
+    print(f"  {'confidence':<12} {'n':>5} {'win_rate':>9}")
+    for (lo, hi), b in sorted(cal['buckets'].items()):
+        wr = f"{100 * b['win_rate']:.1f}%" if b['win_rate'] is not None else 'n/a'
+        tiny = '  (n small -- no conclusion)' if b['n'] < 5 else ''
+        print(f"  {lo:.1f}-{hi:.1f}    {b['n']:>5} {wr:>9}{tiny}")
+    if cal['brier'] is not None:
+        print(f"  Brier score (confidence as P(win)): {cal['brier']:.4f} "
+              "(lower is better; 0.25 = uninformative 0.5 guess)")
+
+
+def print_horizon_sweep(sweep: Dict[float, Dict]):
+    """Multi-horizon maturation-sweep grade distribution."""
+    print("\n--- MULTI-HORIZON MATURATION SWEEP (computed without persisting "
+          "judged state) ---")
+    print(f"  {'horizon':>8} {'scored':>7} {'pending':>8} {'expired':>8} "
+          f"{'WIN':>5} {'LOSS':>5} {'NEUTRAL':>8}")
+    for h in sorted(sweep):
+        d = sweep[h]
+        print(f"  {h:>6.0f}h {d['scored']:>7} {d['pending']:>8} {d['expired']:>8} "
+              f"{d['win']:>5} {d['loss']:>5} {d['neutral']:>8}")
 
 
 def print_report(result: AnalysisResult, records: List[Dict], now: datetime,
@@ -880,6 +1491,8 @@ def print_report(result: AnalysisResult, records: List[Dict], now: datetime,
 
     print_mode_section('live', result)
     print_mode_section('whatif', result)
+
+    print_hold_classification(result)
 
     # Expired-unscorable reasons (so nothing is a silent drop).
     expired = result.by_category(EXPIRED_UNSCORABLE)
@@ -921,7 +1534,7 @@ def print_report(result: AnalysisResult, records: List[Dict], now: datetime,
 CSV_FIELDS = ['rec_id', 'timestamp', 'trading_mode', 'coin', 'action', 'llm_source',
               'category', 'reason', 'rec_price', 'current_price', 'coin_return_pct',
               'benchmark_return_pct', 'fee_floor_pct', 'fee_source',
-              'excess_return_pct', 'outcome', 'methodology', 'frozen']
+              'excess_return_pct', 'outcome', 'hold_class', 'methodology', 'frozen']
 
 
 def export_csv(result: AnalysisResult, mode: str, output_dir: str, now: datetime) -> Optional[str]:
@@ -993,6 +1606,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help='Assumed round-trip fee floor when the ledger has no fill')
     parser.add_argument('--benchmark', default=DEFAULT_BENCHMARK,
                         help='Benchmark symbol a BUY must beat over the same window')
+    parser.add_argument('--horizons', default=None,
+                        help='Comma-separated maturation horizons in hours for the '
+                             'multi-horizon sweep, e.g. "6,24,72,168". Default: '
+                             'single-horizon (--maturity-hours) only. The sweep is '
+                             'computed without persisting judged state.')
     parser.add_argument('--now', default=None,
                         help='Override evaluation time (ISO-8601 UTC); default: utcnow')
     parser.add_argument('--offline', action='store_true',
@@ -1039,6 +1657,30 @@ def cli_main(argv: Optional[List[str]] = None) -> int:
 
     if not args.quiet:
         print_report(result, records, now, args.maturity_hours, verbose=args.verbose)
+
+    # WS4 research sections. Gated so the default single-horizon output is
+    # unchanged for legacy history with no vote_details: the counterfactual /
+    # calibration sections print only when schema-v2 vote_details records exist,
+    # and the horizon sweep only when --horizons is passed.
+    if not args.quiet:
+        shadow_rows = shadow_score(records, now, args.maturity_hours,
+                                   args.fee_floor_pct, args.benchmark, provider,
+                                   ledger_rows)
+        if shadow_rows:
+            universe = shadow_provider_universe(shadow_rows)
+            print_counterfactuals(aggregation_counterfactuals(shadow_rows, universe))
+            print_calibration(confidence_calibration(shadow_rows))
+
+        if args.horizons:
+            try:
+                horizons = [float(h) for h in args.horizons.split(',') if h.strip()]
+            except ValueError:
+                print(f"Warning: could not parse --horizons {args.horizons!r}; skipping sweep")
+                horizons = []
+            if horizons:
+                sweep = horizon_sweep(records, now, horizons, args.fee_floor_pct,
+                                      args.benchmark, provider, ledger_rows)
+                print_horizon_sweep(sweep)
 
     written = []
     if not args.no_csv:

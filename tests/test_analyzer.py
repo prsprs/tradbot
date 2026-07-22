@@ -768,15 +768,17 @@ def test_distance_guard_degrades_record_honestly_not_at_maturity(monkeypatch):
 # DI-1 -- STATE_VERSION bump so frozen (wrong) verdicts re-score once
 # ===========================================================================
 def test_state_version_bumped_and_prior_version_discarded(tmp_path):
-    """STATE_VERSION is 3, and a prior-version (v2) state file is discarded on
-    load -- forcing the naive-timestamp-era frozen verdicts to be re-scored."""
-    assert ta.STATE_VERSION == 3
+    """STATE_VERSION is 4 (WS3 added hold_class to the frozen shape), and any
+    prior-version state file is discarded on load -- forcing the naive-timestamp-era
+    (v2) and hold_class-less (v3) frozen verdicts to be re-scored once."""
+    assert ta.STATE_VERSION == 4
     path = tmp_path / 'analyzer_state.json'
     key = ta.state_key(rec('x', 'DOGE', 'BUY'))
-    # A v2 file (the format frozen with the DI-1 bug) must be discarded.
-    path.write_text(json.dumps({'version': 2, 'scored': {key: {'outcome': 'WIN'}}}))
-    assert ta.load_state(str(path)) == {}
+    # Prior formats (v2 DI-1-era, v3 pre-hold_class) must be discarded.
+    for stale in (2, 3):
+        path.write_text(json.dumps({'version': stale, 'scored': {key: {'outcome': 'WIN'}}}))
+        assert ta.load_state(str(path)) == {}
     # A current-version file still round-trips.
     ta.save_state(str(path), {key: {'outcome': 'WIN'}})
     assert ta.load_state(str(path)) == {key: {'outcome': 'WIN'}}
-    assert json.loads(path.read_text())['version'] == 3
+    assert json.loads(path.read_text())['version'] == 4
