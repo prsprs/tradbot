@@ -1,6 +1,8 @@
 name: Tests
 
-# Minimal CI: run the test suite on PRs and on pushes to main.
+# Minimal CI: run the test suite on PRs and on pushes to main and josh
+# (josh is the long-lived working branch that receives direct commits, so
+# per-push CI there is the earliest -- often only -- automated signal).
 #
 # scripts/check_staged_hygiene.sh is NOT run here. It inspects `git diff
 # --cached` (the local staging index) to catch never-commit files/secrets
@@ -15,7 +17,7 @@ name: Tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, josh]
 
 jobs:
   test:
